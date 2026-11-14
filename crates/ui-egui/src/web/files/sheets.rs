@@ -42,6 +42,8 @@ pub enum Sheet {
     EmptyTrash,
     /// A trashed item's old place is taken: restore it under another name?
     RestoreTaken(Box<Item>),
+    /// Make a share link (drawn by [`super::share`]).
+    Share(Box<super::share::ShareSheet>),
 }
 
 enum Choice {
@@ -53,6 +55,10 @@ enum Choice {
 
 impl Files {
     pub(super) fn sheet_ui(&mut self, ui: &mut Ui, area: Rect, backend: &mut dyn Backend) {
+        if matches!(self.sheet, Some(Sheet::Share(_))) {
+            self.share_ui(ui, area, backend);
+            return;
+        }
         let t = Tokens::get(ui.ctx());
         let busy = self.net.is_waiting(&Key::Sheet);
         let error = self.sheet_error.clone();
@@ -79,6 +85,7 @@ impl Files {
             Sheet::DeleteForever(ids) => (format!("Delete {} for good?", count(ids.len(), "item")), "Trash".into(), egui::vec2(520.0, 280.0)),
             Sheet::EmptyTrash => ("Empty the trash?".into(), "Trash".into(), egui::vec2(520.0, 280.0)),
             Sheet::RestoreTaken(item) => (format!("“{}” is already there", item.name), item.path.clone(), egui::vec2(560.0, 320.0)),
+            Sheet::Share(_) => return,
         };
         let mut open_folder: Option<usize> = None;
         let mut up_to: Option<usize> = None;
@@ -175,6 +182,7 @@ impl Files {
                             .color(t.muted),
                     );
                 }
+                (Sheet::Share(_), chrome::Part::Body) => {}
                 (Sheet::Clash { .. }, chrome::Part::ActionsLeft) => {
                     if chrome::button(ui, "Skip", ButtonKind::Secondary, None, true).clicked() {
                         choice = Choice::Other(2);
@@ -228,6 +236,7 @@ impl Files {
                             choice = Choice::Confirm;
                         }
                     }
+                    Sheet::Share(_) => {}
                 },
                 (_, chrome::Part::HeroRight) => {}
             },
@@ -340,7 +349,7 @@ impl Files {
                 let after = Self::history_gone(self.trash_all.iter().map(|i| i.path.clone()));
                 self.change_then(backend, vec![req], "Emptied the trash".into(), None, after);
             }
-            Some(other @ Sheet::Clash { .. }) => self.sheet = Some(other),
+            Some(other @ (Sheet::Clash { .. } | Sheet::Share(_))) => self.sheet = Some(other),
             None => {}
         }
     }

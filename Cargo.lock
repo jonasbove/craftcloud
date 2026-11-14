@@ -1016,6 +1016,7 @@ version = "0.1.0"
 dependencies = [
  "craft-dav",
  "craft-xml",
+ "jiff",
  "percent-encoding",
  "serde",
  "serde_json",
@@ -1051,6 +1052,7 @@ dependencies = [
  "egui",
  "egui_kittest",
  "image",
+ "jiff",
  "serde_json",
 ]
 
