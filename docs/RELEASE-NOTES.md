@@ -5,6 +5,9 @@
 - **Server: files opened in the browser stay files.** HTML, SVG and XML that people store are served with a
   sandbox policy, so they never run as pages on your CraftCloud's address. WebDAV names with a backslash are refused
   (as the desktop client already does).
+- **Sync: a file you're saving is never overwritten.** A file changed in the last two seconds waits for the next
+  pass instead of looking unchanged, so a change made in the cloud at the same time now ends in a conflict copy
+  rather than replacing your edit (#36). A download also checks the local file one last time before replacing it.
 - **Building the server image yourself on an arm64 machine works** (a Raspberry Pi, an Apple Silicon Mac):
   `docker compose build` stopped in the web frontend step there. The published images were not affected.
 
