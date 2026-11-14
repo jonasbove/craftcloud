@@ -33,6 +33,10 @@ The first release of CraftCloud: a self-hosted cloud for the Craft apps, running
 - **Every computer syncing an account must run the same version** (see "Upgrade all devices together" below).
 - Windows: the command line prints nothing in a terminal yet, and the tray's Show doesn't bring back a minimized
   window (click the taskbar button).
+- `craftcloud sync --once` leaves a file written in the last 2 seconds for the next pass, but still reports
+  "up to date": run it again in a script that has just written files. *(Added after the release.)*
+- Windows: `craftcloud open` shows paths with a `\\?\` prefix, and a script that captures its output waits until
+  the opened app closes. *(Added after the release.)*
 - macOS: a `craftcloud://` link starts CraftCloud but doesn't open the file yet.
 - The Flatpak can't turn on start at login.
 
