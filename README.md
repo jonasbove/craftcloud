@@ -283,9 +283,24 @@ cd craftcloud-<ver>-linux-x86_64
 ```
 
 CraftCloud then shows up in your app launcher. It lives in the tray (StatusNotifierItem): KDE, Xfce, Cinnamon and
-most desktops show it; on GNOME install the AppIndicator extension, on Hyprland or Sway add Waybar's `tray` module.
-**Settings › Start at login** writes an XDG autostart entry, which GNOME, KDE and Xfce run; on Hyprland use
-`exec-once = craftcloud --hidden` (Sway: `exec craftcloud --hidden`).
+most desktops show it; on GNOME install the AppIndicator extension. **Settings › Start at login** writes an XDG
+autostart entry, which GNOME, KDE and Xfce run. It tells you about conflicts, a sign-in that ran out and a sync
+that can't go on with a desktop notification; clicking one opens the window.
+
+**Hyprland and Sway** have no tray of their own: your bar's tray module is the tray host (Waybar's `tray`, Wayle's
+`systray`, …), and notifications need a notification service (mako, dunst, SwayNC, or one built into the bar).
+Then a left click on the icon opens the window and a right click its menu. Closing the window (Hyprland's
+`killactive`, Sway's `kill`) leaves CraftCloud syncing in the tray; starting it again from the launcher brings the
+window back instead of starting a second copy. These compositors run XDG autostart entries only through a
+session manager that does (UWSM, or systemd's `xdg-desktop-autostart.target`); otherwise start it from the
+compositor's config, which opens no window and shows the icon once the bar is up, whichever starts first:
+
+```sh
+exec-once = craftcloud --hidden     # ~/.config/hypr/hyprland.conf
+exec craftcloud --hidden            # ~/.config/sway/config
+```
+
+If both start it, the second start sees the first and ends.
 
 FreeBSD (`craftcloud-<ver>-freebsd-{x86_64,aarch64}.tar.gz`) and Linux riscv64 (`.deb`, `.rpm`, `.tar.gz`) builds are
 attempted too, but CraftCloud has never been tried there; a release may come without them.

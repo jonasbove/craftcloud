@@ -7,6 +7,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod cli;
+mod notify;
 mod tray;
 
 use std::process::ExitCode;
@@ -329,6 +330,9 @@ struct Client {
     can_hide: bool,
     /// The window closed into the tray (where it can't hide): carry on without one.
     closed_to_tray: bool,
+    /// Asks for the window from elsewhere: the app started again, or a notification clicked.
+    shows: Receiver<()>,
+    notes: notify::Notifier,
 }
 
 impl Client {
@@ -338,10 +342,12 @@ impl Client {
             self.keychain = None;
             self.desktop.keychain_answered(answer);
         }
-        let Some(tray) = &mut self.tray else { return Vec::new() };
         let progress = self.desktop.host.progress();
-        tray.show(TrayView { state: progress.state.clone(), line: status_text(&progress), recent: recent_files(&progress) });
-        let mut requests = Vec::new();
+        self.notes.see(&progress);
+        let mut requests: Vec<Request> = self.shows.try_iter().map(|()| Request::Show).collect();
+        let Some(tray) = &mut self.tray else { return requests };
+        let moving = progress.state == SyncState::Downloading && progress.files_total > 0;
+        tray.show(TrayView { state: progress.state.clone(), line: status_text(&progress), recent: recent_files(&progress), moving });
         for action in tray.actions() {
             let settings = self.desktop.settings().clone();
             match action {
@@ -562,6 +568,26 @@ fn main() -> ExitCode {
         Arc::new(move || wake.wake())
     };
     let store = settings::open();
+    // Started again while it runs (from the app menu, or a second entry at login): the running
+    // client shows its window, and this one ends. A start at login shows nothing.
+    if let Some(dir) = store.dir() {
+        if hidden && control::is_running(dir) {
+            log::info!("CraftCloud is already running");
+            return ExitCode::SUCCESS;
+        }
+        if !hidden && control::show_window(dir) {
+            log::info!("CraftCloud is already running: its window is shown");
+            return ExitCode::SUCCESS;
+        }
+    }
+    let (show_tx, shows) = std::sync::mpsc::channel();
+    let show: control::ShowWindow = {
+        let wake = Arc::clone(&wake);
+        Arc::new(move || {
+            let _ = show_tx.send(());
+            wake.wake();
+        })
+    };
     let saved = store.get().0.clone();
     let keychain = (!saved.server.is_empty()).then(|| read_keychain(saved.server.clone(), store.dir().map(Into::into), &wake));
     let control: control::Slot = Arc::default();
@@ -569,7 +595,7 @@ fn main() -> ExitCode {
     let _control_server = store
         .dir()
         .filter(|dir| !control::is_running(dir))
-        .and_then(|dir| control::serve(dir, Arc::clone(&control)).map_err(|e| log::warn!("no control channel: {e}")).ok());
+        .and_then(|dir| control::serve_window(dir, Arc::clone(&control), Arc::clone(&show)).map_err(|e| log::warn!("no control channel: {e}")).ok());
     let host = NativeHost {
         net: ThreadBackend::new(Arc::clone(&waker)),
         store,
@@ -589,7 +615,8 @@ fn main() -> ExitCode {
         TrayHandle::spawn(move || wake.wake())
     });
     let can_hide = window_can_hide_here(|name| std::env::var_os(name));
-    let mut client = Client { desktop, tray, keychain, can_hide, closed_to_tray: false };
+    let notes = notify::Notifier::spawn(move || show());
+    let mut client = Client { desktop, tray, keychain, can_hide, closed_to_tray: false, shows, notes };
 
     // Started hidden at login where a window can't hide: stay in the tray without mapping one, so
     // no window flashes up. The tray gets a moment to come up; without it the window opens after all.

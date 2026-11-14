@@ -143,6 +143,12 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   OpenID configuration…" and "Testing…" while Test connection runs, a failed test in plain words with the
   server's own words under it, and password sign-in stays on until Test connection has worked for the issuer URL.
   The three Off/On switches are separate widgets again, and the actions wrap on a phone. Web shots `admin-sso*`.
+- 2026-11-14: Desktop on Linux (Hyprland and Sway with a bar's tray, checked with Wayle): desktop notifications for
+  conflicts, a sign-in that ran out and a sync that can't go on (clicking one opens the window); starting the app
+  again while it runs shows its window instead of a second copy with its own tray icon, and a second start at login
+  ends quietly; the tray's icon and menu no longer change at every sync cycle (a tray host rebuilt an open menu each
+  time); a removed device shows as signed out rather than as an error (OxiCloud answers its refresh with 404).
+  The README's Hyprland and Sway notes say how to start it at login there.
 - 2026-11-14: Releases: the Release workflow install-tests every Linux package before it makes a draft
   (`package-test`): the deb on Debian 12 and Ubuntu 22.04/24.04, the rpm on Fedora 41/42 (x86_64 and aarch64),
   the Arch package, the AppImage and the tarball, each installed with its package manager, checked, signed in and
