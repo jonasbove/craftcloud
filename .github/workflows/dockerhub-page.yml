@@ -1,0 +1,43 @@
+name: Docker Hub page
+
+# Keeps the Docker Hub repository's short description and overview in step with docker/DOCKERHUB.md:
+# on a push to main that changes it, and by hand. Needs DOCKERHUB_USERNAME (variable) and
+# DOCKERHUB_TOKEN (secret, read and write).
+
+on:
+  push:
+    branches: [main]
+    paths: [docker/DOCKERHUB.md]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  page:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Update the Docker Hub page
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::notice::Docker Hub isn't set up (DOCKERHUB_USERNAME / DOCKERHUB_TOKEN)."
+            exit 0
+          fi
+          ns="$(printf '%s' "$DOCKERHUB_USERNAME" | tr '[:upper:]' '[:lower:]')"
+          jwt="$(jq -n --arg u "$DOCKERHUB_USERNAME" --arg p "$DOCKERHUB_TOKEN" '{username: $u, password: $p}' \
+            | curl -fsS -H 'Content-Type: application/json' -d @- https://hub.docker.com/v2/users/login | jq -r .token)"
+          echo "::add-mask::$jwt"
+          # Docker Hub's short description is at most 100 characters.
+          jq -n --rawfile full docker/DOCKERHUB.md \
+            --arg short "Your own cloud for the Craft apps: self-hosted file sync, built in Rust (server image)" \
+            '{description: $short, full_description: $full}' \
+            | curl -fsS -o /dev/null -w 'Docker Hub answered %{http_code}\n' -X PATCH \
+                -H "Authorization: Bearer $jwt" -H 'Content-Type: application/json' -d @- \
+                "https://hub.docker.com/v2/repositories/$ns/craftcloud/"

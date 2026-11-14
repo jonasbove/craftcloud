@@ -244,6 +244,8 @@ README's Status section in step.
   from ghcr.io to Docker Hub unchanged (same digests, so the build's attestation covers the copy).
 - `.github/workflows/dockerhub-remove.yml` (**Remove a version from Docker Hub**): by hand, deletes a version's
   two tags there (never `latest`).
+- `.github/workflows/dockerhub-page.yml` (**Docker Hub page**): the Docker Hub description and overview, from
+  `docker/DOCKERHUB.md`, on a push that changes it and by hand.
 - `.github/workflows/packaging-lint.yml` (**Packaging lint**): actionlint, shellcheck on `packaging/`, and the
   desktop entry, AppStream file, Info.plist and MSI sources.
 - One app id everywhere: `io.github.jonasbove.craftcloud` (window app id, desktop entry, icons, AppStream, Flatpak,
