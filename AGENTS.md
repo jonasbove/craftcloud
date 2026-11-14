@@ -264,7 +264,8 @@ README's Status section in step.
   labels from `.github/labels.json` (`.github/scripts/claude-bot.sh`). Claude's file tools are confined to the
   workspace (`blockReadsOutsideWorkingDirectories` plus deny rules for `/proc`, `~/.claude`, `.git` and the like),
   and an answer that looks like it holds a credential is never posted: the review becomes a fixed notice and the
-  job fails.
+  job fails. Claude's answers reach the apply job as a scanned one-day artifact, never through env or outputs,
+  which GitHub prints in the public log.
 - `.github/workflows/claude-issues.yml` (**Claude issue labels**): on a new, edited or reopened issue, Claude adds
   type, platform and area labels, and `❓ needs info` when a bug report lacks steps, version or system. It posts no
   comment; a possible duplicate goes in the run's summary, labelled `👯 duplicate` only when it names an open

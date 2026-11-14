@@ -167,6 +167,33 @@ check "a Cargo.lock checksum" clean "$(printf 'checksum = "3f5a0c9e2b7d4e1f8a6c0
 check "the withheld notice has the marker and no review" yes \
   "$("$bot" withheld-review | head -n1 | grep -q '^<!-- craftcloud-claude-review -->$' && "$bot" withheld-review | grep -q 'was withheld' && echo yes)"
 
+# --- save-answer / answer-state: the answer goes from the action's execution file to the artifact,
+# scanned, and nothing of it is printed.
+exe="$tmp/claude-execution-output.json"
+jq -n '[{type: "system", subtype: "init"}, {type: "result", subtype: "success", is_error: false,
+  structured_output: {gitmoji: ":bug:", labels: ["🐛 bug"]}}]' >"$exe"
+check "an answer is saved" saved "$("$bot" save-answer "$exe" "$tmp/a.json")"
+check "the saved answer is the structured output" '{"gitmoji":":bug:","labels":["🐛 bug"]}' "$(jq -c . "$tmp/a.json")"
+check "a saved answer is ok" ok "$("$bot" answer-state "$tmp/a.json")"
+jq -n --arg t "gh""s_$fake" '[{type: "result", subtype: "success", is_error: false,
+  structured_output: {summary: ("token " + $t)}}]' >"$exe"
+out="$("$bot" save-answer "$exe" "$tmp/b.json")"
+check "an answer with a token is withheld" withheld "$out"
+check "the withheld file holds only the placeholder" '{"withheld":true}' "$(jq -c . "$tmp/b.json")"
+check "the placeholder reads as withheld" withheld "$("$bot" answer-state "$tmp/b.json")"
+check "nothing of the token is printed" '' "$(grep -F "$fake" <<<"$out" || true)"
+printf '{"summary":"sk-ant-oat01-%s"}' "$fake" >"$tmp/c.json"
+check "a file changed after the first scan is caught again" withheld "$("$bot" answer-state "$tmp/c.json")"
+jq -n '[{type: "result", subtype: "error_max_turns", is_error: true, structured_output: {summary: "x"}}]' >"$exe"
+check "a failed run saves nothing" none "$("$bot" save-answer "$exe" "$tmp/d.json")"
+check "and leaves no file" no "$([[ -e "$tmp/d.json" ]] && echo yes || echo no)"
+check "a missing execution file saves nothing" none "$("$bot" save-answer "$tmp/missing.json" "$tmp/e.json")"
+printf 'not json' >"$exe"
+check "a garbled execution file saves nothing" none "$("$bot" save-answer "$exe" "$tmp/f.json")"
+check "a missing answer is none" none "$("$bot" answer-state "$tmp/missing.json")"
+printf '"a string"' >"$tmp/g.json"
+check "an answer that isn't an object is none" none "$("$bot" answer-state "$tmp/g.json")"
+
 [[ ! -e /tmp/pwned ]] && r=clean || r=pwned
 check "nothing ran from any input" clean "$r"
 

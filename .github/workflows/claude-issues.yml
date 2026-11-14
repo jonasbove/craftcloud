@@ -13,8 +13,9 @@ name: Claude issue labels
 # label. Without the CLAUDE_CODE_OAUTH_TOKEN secret it skips with a notice. Issues opened by bots
 # are skipped. Label changes made with GITHUB_TOKEN don't start workflows, so this can't loop.
 # Claude's file tools are confined to the workspace with the same `settings` as claude-pr.yml (see
-# its header), and the apply job writes no text from Claude's answer to the run summary when any of
-# it looks like a credential (claude-bot.sh looks-secret); the job then fails.
+# its header). Claude's answer never passes through env or outputs (GitHub prints them): it is
+# scanned, replaced by a placeholder if it looks like a credential, and handed over as a one-day
+# artifact; the apply job scans it again and then writes no text from it and fails.
 
 on:
   issues:
@@ -29,6 +30,7 @@ concurrency:
 env:
   TRIAGE_MODEL: sonnet
   INPUT_DIR: .untrusted-input
+  ANSWERS_DIR: claude-answers
 
 jobs:
   analyse:
@@ -43,7 +45,6 @@ jobs:
       issues: read
     outputs:
       enabled: ${{ steps.check.outputs.enabled }}
-      triage: ${{ steps.triage.outputs.structured_output }}
     steps:
       - name: Is Claude set up?
         id: check
@@ -121,10 +122,31 @@ jobs:
             --disallowedTools Bash,Edit,MultiEdit,Write,NotebookEdit,WebFetch,WebSearch,Task,Agent
             --json-schema '{"type":"object","additionalProperties":false,"required":["labels","missing_info","missing_info_notes","duplicate_of","duplicate_identical","duplicate_reason"],"properties":{"labels":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":40}},"missing_info":{"type":"boolean"},"missing_info_notes":{"type":"string","maxLength":400},"duplicate_of":{"type":"integer","minimum":0},"duplicate_identical":{"type":"boolean"},"duplicate_reason":{"type":"string","maxLength":400}}}'
 
+      # Claude's answer goes from the action's execution file into the artifact, scanned first
+      # (claude-bot.sh save-answer); it never goes through env, step outputs or the log. The
+      # execution file (the whole session) is deleted so nothing later reads or uploads it.
+      - name: Keep the answer
+        if: ${{ !cancelled() && steps.check.outputs.enabled == 'true' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/$ANSWERS_DIR"
+          echo "triage.json: $(.github/scripts/claude-bot.sh save-answer "$RUNNER_TEMP/claude-execution-output.json" "$RUNNER_TEMP/$ANSWERS_DIR/triage.json")"
+          rm -f "$RUNNER_TEMP/claude-execution-output.json"
+
+      # Artifacts of a public repository can be downloaded by anyone while they exist, so only
+      # scanned answers (or the placeholder) go in, kept for a day.
+      - name: Hand the answers to the apply job
+        if: ${{ !cancelled() && steps.check.outputs.enabled == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: claude-answers
+          path: ${{ runner.temp }}/claude-answers/
+          retention-days: 1
+          if-no-files-found: warn
+
   apply:
     name: Labels
     needs: analyse
-    if: ${{ !cancelled() && needs.analyse.outputs.enabled == 'true' && needs.analyse.outputs.triage != '' }}
+    if: ${{ !cancelled() && needs.analyse.outputs.enabled == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -134,7 +156,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       ISSUE: ${{ github.event.issue.number }}
-      TRIAGE: ${{ needs.analyse.outputs.triage }}
+      ANSWERS_DIR: claude-answers
     steps:
       # main's .github/ only: the lists and scripts that check Claude's answer.
       - name: Check out main's .github
@@ -143,20 +165,36 @@ jobs:
           persist-credentials: false
           sparse-checkout: .github
 
+      - name: Get the answers
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: claude-answers
+          path: ${{ runner.temp }}/claude-answers
+
       - name: Add labels
         run: |
           bot=.github/scripts/claude-bot.sh
           # Claude's answer, as an object or nothing.
-          t="$(jq -c 'if type == "object" then . else {} end' <<<"$TRIAGE" 2>/dev/null || echo '{}')"
-          # Before any of Claude's text goes in the run summary (public on a public repository): does
-          # any of it look like a credential? (Its job had tokens in the environment.) Never prints
-          # the match. Labels still go on, as they are taken from a fixed list.
+          answer="$RUNNER_TEMP/$ANSWERS_DIR/triage.json"
+          # Before anything uses it, and before any of its text goes in the run summary (public on a
+          # public repository): scanned again, never printed. Labels still go on, as they come from
+          # a fixed list.
           leak=false
-          if printf '%s\n' "$TRIAGE" | "$bot" looks-secret; then
-            leak=true
-            echo "::error title=Claude's answer withheld::Part of Claude's answer looks like a credential, so none of its text is shown."
-            echo "Claude's notes were withheld (they looked like they held a credential)." >>"$GITHUB_STEP_SUMMARY"
-          fi
+          state="$("$bot" answer-state "$answer")"
+          echo "triage.json: $state"
+          case "$state" in
+            ok) t="$(jq -c . "$answer")" ;;
+            withheld)
+              leak=true
+              t='{}'
+              echo "::error title=Claude's answer withheld::Part of Claude's answer looks like a credential, so none of it is used or shown."
+              echo "Claude's answer was withheld (it looked like it held a credential)." >>"$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "No answer from Claude." >>"$GITHUB_STEP_SUMMARY"
+              exit 0
+              ;;
+          esac
           proposed="$(jq -c '.labels // [] | if type == "array" then . else [] end' <<<"$t")"
           extra='[]'
           if [[ "$(jq -r '.missing_info // false' <<<"$t")" == "true" ]]; then

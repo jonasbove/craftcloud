@@ -27,9 +27,12 @@ name: Claude pull request check
 #   behaviour: code.claude.com/docs/en/permissions ("//path" is absolute, "~/path" is home, "./path"
 #   is the working directory) and /settings-reference. "~/**" is not denied: the workspace itself
 #   is under the runner's home. --permission-mode dontAsk refuses anything that would need asking.
-# - The apply job scans Claude's answers for anything that looks like a credential before it posts
-#   (claude-bot.sh looks-secret); if one does, the review is replaced by a fixed notice and the job
-#   fails, without printing the match.
+# - Claude's answers never pass through env, step or job outputs, which GitHub prints in public
+#   logs: the Claude job takes them from the action's execution file, scans them for anything that
+#   looks like a credential (claude-bot.sh save-answer / looks-secret) and replaces such an answer
+#   with a placeholder, and hands them to the apply job as a one-day artifact. The apply job scans
+#   them again; if one is withheld, the review becomes a fixed notice and the job fails, without
+#   printing the match. Job outputs are only true/false.
 # - Untrusted text reaches scripts only through env and files, never through ${{ }} in `run:`.
 # - The OAuth token (CLAUDE_CODE_OAUTH_TOKEN, from `claude setup-token`) is passed only to the two
 #   Claude steps. Without it the workflow skips with a notice instead of failing.
@@ -55,6 +58,9 @@ env:
   TRIAGE_MODEL: haiku
   REVIEW_MODEL: sonnet
   INPUT_DIR: .untrusted-input
+  # Claude's answers and the workflow's findings, for the artifact (under RUNNER_TEMP, outside the
+  # workspace, so Claude can't read or plant them).
+  ANSWERS_DIR: claude-answers
 
 jobs:
   analyse:
@@ -72,10 +78,6 @@ jobs:
     outputs:
       enabled: ${{ steps.check.outputs.enabled }}
       review: ${{ steps.check.outputs.review }}
-      head_sha: ${{ steps.fetch.outputs.head_sha }}
-      facts: ${{ steps.fetch.outputs.facts }}
-      triage: ${{ steps.triage.outputs.structured_output }}
-      review_json: ${{ steps.review.outputs.structured_output }}
     steps:
       - name: Is Claude set up?
         id: check
@@ -114,8 +116,10 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           bot=.github/scripts/claude-bot.sh
+          answers="$RUNNER_TEMP/$ANSWERS_DIR"
+          mkdir -p "$answers"
           "$bot" fetch-pr "$REPO" "$PR" "$INPUT_DIR"
-          echo "head_sha=$(jq -r '.head_sha' "$INPUT_DIR/pr.json")" >>"$GITHUB_OUTPUT"
+          jq -r '.head_sha' "$INPUT_DIR/pr.json" >"$answers/head_sha"
           # The workflow's own findings, shown in the review whatever Claude says.
           {
             "$bot" scan-patches "$INPUT_DIR/files.json" | jq -c '.[]'
@@ -123,9 +127,8 @@ jobs:
             "$bot" hidden-chars "description" <"$INPUT_DIR/body.md"
             "$bot" hidden-chars "commit messages" <"$INPUT_DIR/commits.txt"
           } | jq -s -c '.' >"$RUNNER_TEMP/hidden.json"
-          facts="$(jq -n -c --slurpfile h "$RUNNER_TEMP/hidden.json" --argjson s "$("$bot" sensitive-paths "$INPUT_DIR/files.json")" \
-            '{sensitive: $s[:40], hidden: $h[0][:20], hidden_total: ($h[0] | length)}')"
-          echo "facts=$facts" >>"$GITHUB_OUTPUT"
+          jq -n -c --slurpfile h "$RUNNER_TEMP/hidden.json" --argjson s "$("$bot" sensitive-paths "$INPUT_DIR/files.json")" \
+            '{sensitive: $s[:40], hidden: $h[0][:20], hidden_total: ($h[0] | length)}' >"$answers/facts.json"
           ls -la "$INPUT_DIR"
 
       - name: Claude picks a gitmoji and labels
@@ -171,6 +174,16 @@ jobs:
             --allowedTools Read,Glob,Grep
             --disallowedTools Bash,Edit,MultiEdit,Write,NotebookEdit,WebFetch,WebSearch,Task,Agent
             --json-schema '{"type":"object","additionalProperties":false,"required":["gitmoji","labels"],"properties":{"gitmoji":{"type":"string","pattern":"^:[a-z0-9_]+:$"},"labels":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":40}}}}'
+
+      # Claude's answer goes from the action's execution file into the artifact, scanned first
+      # (claude-bot.sh save-answer); it never goes through env, step outputs or the log. The
+      # execution file (the whole session) is deleted so nothing later reads or uploads it.
+      - name: Keep the gitmoji and labels answer
+        if: ${{ !cancelled() && steps.check.outputs.enabled == 'true' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/$ANSWERS_DIR"
+          echo "triage.json: $(.github/scripts/claude-bot.sh save-answer "$RUNNER_TEMP/claude-execution-output.json" "$RUNNER_TEMP/$ANSWERS_DIR/triage.json")"
+          rm -f "$RUNNER_TEMP/claude-execution-output.json"
 
       - name: Claude reviews the pull request
         id: review
@@ -248,6 +261,28 @@ jobs:
             --disallowedTools Bash,Edit,MultiEdit,Write,NotebookEdit,WebFetch,WebSearch,Task,Agent
             --json-schema '{"type":"object","additionalProperties":false,"required":["summary","matches_description","matches_description_notes","must_fix","could_be_better","risks","house_rules","instructions_to_ai","instructions_to_ai_notes"],"properties":{"summary":{"type":"string","maxLength":800},"matches_description":{"type":"string","enum":["yes","partly","no","unclear"]},"matches_description_notes":{"type":"string","maxLength":800},"must_fix":{"type":"array","maxItems":15,"items":{"type":"string","maxLength":1200}},"could_be_better":{"type":"array","maxItems":15,"items":{"type":"string","maxLength":1200}},"risks":{"type":"array","maxItems":15,"items":{"type":"string","maxLength":1200}},"house_rules":{"type":"array","maxItems":15,"items":{"type":"string","maxLength":1200}},"instructions_to_ai":{"type":"boolean"},"instructions_to_ai_notes":{"type":"string","maxLength":600}}}'
 
+      # Claude's answer goes from the action's execution file into the artifact, scanned first
+      # (claude-bot.sh save-answer); it never goes through env, step outputs or the log. The
+      # execution file (the whole session) is deleted so nothing later reads or uploads it.
+      - name: Keep the review answer
+        if: ${{ !cancelled() && steps.check.outputs.enabled == 'true' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/$ANSWERS_DIR"
+          echo "review.json: $(.github/scripts/claude-bot.sh save-answer "$RUNNER_TEMP/claude-execution-output.json" "$RUNNER_TEMP/$ANSWERS_DIR/review.json")"
+          rm -f "$RUNNER_TEMP/claude-execution-output.json"
+
+      # Artifacts of a public repository can be downloaded by anyone while they exist, so only
+      # scanned answers (or the placeholder) go in, kept for a day.
+      - name: Hand the answers to the apply job
+        if: ${{ !cancelled() && steps.check.outputs.enabled == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: claude-answers
+          path: ${{ runner.temp }}/claude-answers/
+          retention-days: 1
+          if-no-files-found: warn
+
+
   apply:
     name: Gitmoji, labels and review comment
     needs: analyse
@@ -264,6 +299,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       PR: ${{ github.event.pull_request.number }}
+      ANSWERS_DIR: claude-answers
     steps:
       # main's .github/ only: the lists and scripts that check Claude's answer.
       - name: Check out main's .github
@@ -272,42 +308,48 @@ jobs:
           persist-credentials: false
           sparse-checkout: .github
 
-      # Before anything of Claude's is posted: does any of it look like a credential? (Its job had
-      # tokens in the environment.) Never prints the match. The gitmoji and labels still go on, as
-      # they are taken from fixed lists; the review is replaced by a fixed notice.
+      - name: Get the answers
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: claude-answers
+          path: ${{ runner.temp }}/claude-answers
+
+      # Before anything uses them: scanned again (never printed). The gitmoji and labels come from
+      # fixed lists, so they still go on; a withheld review becomes a fixed notice.
       - name: Check Claude's answers for credentials
         id: leak
-        env:
-          TRIAGE: ${{ needs.analyse.outputs.triage }}
-          REVIEW: ${{ needs.analyse.outputs.review_json }}
         run: |
-          if printf '%s\n%s\n' "$TRIAGE" "$REVIEW" | .github/scripts/claude-bot.sh looks-secret; then
-            echo "found=true" >>"$GITHUB_OUTPUT"
+          a="$RUNNER_TEMP/$ANSWERS_DIR"
+          found=false
+          for f in triage.json review.json; do
+            state="$(.github/scripts/claude-bot.sh answer-state "$a/$f")"
+            echo "$f: $state"
+            if [[ "$state" == "withheld" ]]; then
+              found=true
+              rm -f "$a/$f"
+            fi
+          done
+          echo "found=$found" >>"$GITHUB_OUTPUT"
+          if [[ "$found" == "true" ]]; then
             echo "::error title=Claude's answer withheld::Part of Claude's answer looks like a credential, so it is not posted. A maintainer should look at this run and the pull request."
-          else
-            echo "found=false" >>"$GITHUB_OUTPUT"
           fi
 
       - name: Add a gitmoji to the title
-        env:
-          TRIAGE: ${{ needs.analyse.outputs.triage }}
         run: |
-          code="$(jq -r '.gitmoji // "" | strings' <<<"$TRIAGE" 2>/dev/null || true)"
+          code="$(jq -r '.gitmoji // "" | strings' "$RUNNER_TEMP/$ANSWERS_DIR/triage.json" 2>/dev/null || true)"
           # The title as it is now, not as it was when the run started.
           title="$(gh api "repos/$REPO/pulls/$PR" --jq '.title')"
           new="$(.github/scripts/claude-bot.sh gitmoji-title "$title" "$code")"
           if [[ -n "$new" ]]; then
             jq -n --arg title "$new" '{title: $title}' | gh api -X PATCH "repos/$REPO/pulls/$PR" --input - >/dev/null
-            echo "Title: added $code" >>"$GITHUB_STEP_SUMMARY"
+            echo "Title: added a gitmoji" >>"$GITHUB_STEP_SUMMARY"
           else
             echo "Title: left alone" >>"$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Add labels
-        env:
-          TRIAGE: ${{ needs.analyse.outputs.triage }}
         run: |
-          proposed="$(jq -c '.labels // []' <<<"$TRIAGE" 2>/dev/null || echo '[]')"
+          proposed="$(jq -c '.labels // []' "$RUNNER_TEMP/$ANSWERS_DIR/triage.json" 2>/dev/null || echo '[]')"
           # Never re-add a label that is on it already or that a person took off before.
           current="$(gh api "repos/$REPO/issues/$PR/labels" --jq '[.[].name]')"
           removed="$(gh api --paginate "repos/$REPO/issues/$PR/events?per_page=100" \
@@ -320,18 +362,22 @@ jobs:
           echo "Labels added: $add" >>"$GITHUB_STEP_SUMMARY"
 
       - name: Post or update the review comment
-        if: needs.analyse.outputs.review == 'true' && needs.analyse.outputs.head_sha != ''
+        if: needs.analyse.outputs.review == 'true'
         env:
-          REVIEW: ${{ needs.analyse.outputs.review_json }}
-          FACTS: ${{ needs.analyse.outputs.facts }}
-          HEAD_SHA: ${{ needs.analyse.outputs.head_sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LEAK: ${{ steps.leak.outputs.found }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          a="$RUNNER_TEMP/$ANSWERS_DIR"
+          if [[ ! -s "$a/head_sha" ]]; then
+            echo "The pull request couldn't be read, so there is no review to post."
+            exit 0
+          fi
+          bot=.github/scripts/claude-bot.sh
           if [[ "$LEAK" == "false" ]]; then
-            .github/scripts/claude-bot.sh render-review "$REVIEW" "$FACTS" "$HEAD_SHA" "$RUN_URL" >"$RUNNER_TEMP/review.md"
+            "$bot" render-review "$(jq -c . "$a/review.json" 2>/dev/null || echo '{}')" \
+              "$(jq -c . "$a/facts.json" 2>/dev/null || echo '{}')" "$(head -c 40 "$a/head_sha")" "$RUN_URL" >"$RUNNER_TEMP/review.md"
           else
-            .github/scripts/claude-bot.sh withheld-review >"$RUNNER_TEMP/review.md"
+            "$bot" withheld-review >"$RUNNER_TEMP/review.md"
           fi
           # The sticky comment: the workflow's own, found by its marker.
           id="$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \

@@ -17,6 +17,9 @@
 #   sanitize < TEXT                      one line of text that is safe to post in a comment
 #   looks-secret < TEXT                  exit 0 when TEXT (or a string in it, if JSON) looks like a credential
 #   withheld-review                      print the fixed comment posted instead of a withheld review
+#   save-answer EXECUTION_FILE OUT       write Claude's JSON answer to OUT, or {"withheld":true} when
+#                                        it looks like a credential; prints only saved/withheld/none
+#   answer-state FILE                    print ok, withheld or none for a saved answer (scans it again)
 #   render-review REVIEW_JSON FACTS_JSON SHA RUN_URL
 #                                        print the review comment (Markdown)
 #   fetch-pr REPO NUMBER DIR             write a pull request's data into DIR (needs GH_TOKEN)
@@ -198,6 +201,41 @@ looks_secret() {
     exit 1;'
 }
 
+# Claude's answer (the structured output of the action's last successful result) from the
+# action's execution file, written to OUT for the artifact the apply job downloads. The answer never
+# goes through env, step outputs or the log, because GitHub prints those and anyone can read a
+# public repository's run logs and, while they exist, its artifacts. So it is scanned here first,
+# and one that looks like a credential is replaced by a fixed placeholder. Prints only a word.
+save_answer() {
+  local exec_file="$1" out="$2" answer
+  answer="$(jq -c '[.[]? | objects | select(.type == "result")] | last // {}
+    | select(.subtype == "success" and (.is_error | not)) | .structured_output // empty | objects' \
+    "$exec_file" 2>/dev/null || true)"
+  if [[ -z "$answer" ]]; then
+    rm -f "$out"
+    echo none
+  elif looks_secret <<<"$answer"; then
+    printf '{"withheld":true}\n' >"$out"
+    echo withheld
+  else
+    printf '%s\n' "$answer" >"$out"
+    echo saved
+  fi
+}
+
+# The state of a saved answer, checked again after download: ok, withheld (the placeholder, or a
+# file that now looks like a credential) or none (missing or not a JSON object). Prints only a word.
+answer_state() {
+  local file="$1"
+  if [[ ! -s "$file" ]] || ! jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
+    echo none
+  elif jq -e '.withheld == true' "$file" >/dev/null 2>&1 || looks_secret <"$file"; then
+    echo withheld
+  else
+    echo ok
+  fi
+}
+
 # The comment posted instead of a review that looked like it held a credential.
 withheld_review() {
   printf '%s\n' "$REVIEW_MARKER"
@@ -372,6 +410,8 @@ case "$cmd" in
   sanitize) sanitize ;;
   looks-secret) looks_secret ;;
   withheld-review) withheld_review ;;
+  save-answer) save_answer "${1:?EXECUTION_FILE}" "${2:?OUT}" ;;
+  answer-state) answer_state "${1:?FILE}" ;;
   render-review) render_review "${1-}" "${2-}" "${3-}" "${4-}" ;;
   fetch-pr) fetch_pr "${1:?REPO}" "${2:?NUMBER}" "${3:?DIR}" ;;
   fetch-issue) fetch_issue "${1:?REPO}" "${2:?NUMBER}" "${3:?DIR}" ;;
