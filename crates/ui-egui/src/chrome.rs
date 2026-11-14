@@ -368,6 +368,8 @@ pub struct HeaderInfo<'a> {
     pub nav: &'a [(&'a str, bool, bool, Option<&'a str>)],
     /// The signed-in person's name.
     pub user: Option<&'a str>,
+    /// The person's cell is drawn sunken (their account menu is open, or one of its pages).
+    pub user_selected: bool,
 }
 
 /// What was clicked in the header.
@@ -375,6 +377,10 @@ pub struct HeaderInfo<'a> {
 pub struct HeaderClicks {
     pub nav: Option<usize>,
     pub sign_out: bool,
+    /// The person's cell (name and initials) was clicked: it opens the account menu.
+    pub user: bool,
+    /// Where the person's cell is, for the menu to hang under.
+    pub user_rect: Option<Rect>,
 }
 
 /// The 48 px header: brand cell, "CRAFT APP SUITE", nav, and the person and SIGN OUT at the right.
@@ -438,9 +444,12 @@ pub fn header(ui: &mut Ui, rect: Rect, info: &HeaderInfo<'_>) -> HeaderClicks {
                 }
                 ui.add_space(pad);
                 vrule(ui, ui.cursor().right());
+                // The person's cell: name and initials, a button that opens the account menu.
+                let cell_right = ui.cursor().right();
+                let background = ui.painter().add(egui::Shape::Noop);
                 ui.add_space(pad);
                 if name {
-                    ui.label(egui::RichText::new(user).size(13.0).color(t.ink));
+                    ui.add(egui::Label::new(egui::RichText::new(user).size(13.0).color(t.ink)).selectable(false));
                     ui.add_space(10.0);
                 }
                 let (r, _) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::hover());
@@ -448,6 +457,16 @@ pub fn header(ui: &mut Ui, rect: Rect, info: &HeaderInfo<'_>) -> HeaderClicks {
                 let g = caps(ui, &initials(user), 10.0, egui::FontFamily::Monospace, 0.5, t.ink);
                 ui.painter().galley(r.center() - g.size() / 2.0, g, t.ink);
                 ui.add_space(pad);
+                let cell = Rect::from_x_y_ranges(ui.cursor().right()..=cell_right, rect.y_range());
+                let resp = ui.interact(cell, ui.scope_id().with("account"), Sense::click());
+                if info.user_selected || resp.hovered() {
+                    ui.painter().set(background, egui::Shape::rect_filled(cell, 0.0, t.sunken));
+                }
+                resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, info.user_selected, format!("Account: {user}")));
+                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    clicks.user = true;
+                }
+                clicks.user_rect = Some(cell);
                 vrule(ui, ui.cursor().right());
             }
         });

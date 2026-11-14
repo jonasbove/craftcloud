@@ -6,15 +6,15 @@
 //! except file bytes, which go over WebDAV by path; the browser's session cookie signs both.
 //! CraftCloud's own data (`.craftcloud/`, the file versions) never shows.
 
-mod apps;
-mod draw;
+pub(super) mod apps;
+pub(super) mod draw;
 mod history;
 mod model;
 mod restore;
-mod share;
+pub(super) mod share;
 mod sheets;
 mod table;
-mod time;
+pub(super) mod time;
 mod upload;
 
 use std::collections::HashMap;
@@ -193,6 +193,8 @@ pub struct Files {
     /// The trash's ids while searching (T-043); `None` until the trash has answered.
     search_trashed: Option<std::collections::HashSet<String>>,
     chain: restore::Chain,
+    /// The share sheet's "See all your share links" was clicked: the web app opens that page.
+    pub(crate) go_to_links: bool,
 }
 
 impl Files {
@@ -235,6 +237,7 @@ impl Files {
             search_bust: 0,
             search_trashed: None,
             chain: restore::Chain::default(),
+            go_to_links: false,
         }
     }
 

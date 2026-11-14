@@ -205,6 +205,28 @@ pub fn parse_item_path(share: &Share, resp: &HttpResponse) -> Option<String> {
     (!cloud.is_empty()).then_some(cloud)
 }
 
+/// Where a link's item is, as the web's list of links tells it apart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ItemPlace {
+    /// Its cloud path now.
+    At(String),
+    /// In the trash or deleted for good: OxiCloud's lookups by id leave trashed items out, so
+    /// both answer 404. Show [`Share::item_name`].
+    Gone,
+    /// The lookup failed some other way (signed out, a server error): where it is isn't known,
+    /// which is not the same as gone.
+    Unknown,
+}
+
+/// Reads the answer of [`item_info`] as an [`ItemPlace`].
+pub fn parse_item_place(share: &Share, resp: &HttpResponse) -> ItemPlace {
+    match parse_item_path(share, resp) {
+        Some(path) => ItemPlace::At(path),
+        None if matches!(resp.status, 404 | 410) => ItemPlace::Gone,
+        None => ItemPlace::Unknown,
+    }
+}
+
 /// The token of a link URL (`…/s/<token>`), or of a page path (`/s/<token>`).
 pub fn token_of(url_or_path: &str) -> Option<&str> {
     let (_, rest) = url_or_path.split_once("/s/")?;
@@ -324,6 +346,19 @@ mod tests {
         share.item_type = "folder".into();
         assert_eq!(item_info(&s, &share).url, "http://127.0.0.1:8095/api/folders/f1");
         assert_eq!(parse_item_path(&share, &HttpResponse::new(200, read("folder-get.json"))).as_deref(), Some("Documents"));
+    }
+
+    /// #19: the web's list says "No longer there" only when the server says so, not when the
+    /// lookup failed.
+    #[test]
+    fn a_failed_lookup_is_not_a_gone_item() {
+        use super::{ItemPlace, parse_item_place};
+        let share = parse_share(&HttpResponse::new(201, read("share-create.json"))).unwrap();
+        let file = br#"{"id":"f1","name":"q3.pdf","path":"/Personal/Reports/q3.pdf","size":3}"#.to_vec();
+        assert_eq!(parse_item_place(&share, &HttpResponse::new(200, file)), ItemPlace::At("Reports/q3.pdf".into()));
+        assert_eq!(parse_item_place(&share, &HttpResponse::new(404, Vec::new())), ItemPlace::Gone, "in the trash or deleted");
+        assert_eq!(parse_item_place(&share, &HttpResponse::new(500, Vec::new())), ItemPlace::Unknown);
+        assert_eq!(parse_item_place(&share, &HttpResponse::new(401, Vec::new())), ItemPlace::Unknown);
     }
 
     #[test]

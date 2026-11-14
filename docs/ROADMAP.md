@@ -26,7 +26,7 @@ backup of anything you sync with it.
 | Two-way sync folder, versions, conflict copies | done; hardening from testers' reports | [ARCHITECTURE.md › Sync](ARCHITECTURE.md#sync) |
 | Desktop client (tray, Activity, Folders, Settings, start at login) | done | [README](../README.md#downloads) |
 | Web file browser (upload, download, rename, move, delete, trash, versions, recent, starred, search) | done | [design-notes/pass-2.md](design-notes/pass-2.md) |
-| Share links | public share page, CLI and the web's "Share link" sheet done; no list of your links on the web yet (#19) | [CLI.md › Share links](CLI.md#share-links) |
+| Share links | done: public share page, CLI, the web's "Share link" sheet and "Your share links" page | [CLI.md › Share links](CLI.md#share-links) |
 | Admin (users, server settings, Craft web apps on or off) | done, on the web and in the CLI | [CLI.md](CLI.md#server-administration-owners-and-admins) |
 | Command line | done; no console output from Windows release builds | [CLI.md](CLI.md) |
 | Craft apps through the sync folder | done (every app) | [CRAFT-INTEGRATION.md § 1](CRAFT-INTEGRATION.md#1-the-sync-folder-works-today-every-app) |
@@ -64,20 +64,26 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 1. **A first release:** a published image (slim and `-apps`), a first run of the **Release** workflow
    (`release.yml`) on a tag, a release signing key (`RELEASE_SIGNING_KEY`), and the AUR recipes in
    `packaging/arch/`, with [RELEASE-NOTES.md](RELEASE-NOTES.md).
-2. **Share links on the web:** the "Your share links" page, to list, copy and remove links (#19); the sheet that
-   makes one is done.
-3. **Craft web apps in the browser:** the page that frames an app and talks `craft-web-host`, and the shim for the
+2. **Craft web apps in the browser:** the page that frames an app and talks `craft-web-host`, and the shim for the
    apps without it ([CRAFT-INTEGRATION.md § 6](CRAFT-INTEGRATION.md#6-the-craft-web-apps-in-the-browser)).
-4. **macOS deep links:** an Apple Event (`kAEGetURL`) handler, so a `craftcloud://` click opens the file.
-5. **The command line on Windows:** a console build, so release builds print to the terminal.
-6. **Files on demand,** in the stages of [FILES-ON-DEMAND.md § 6](FILES-ON-DEMAND.md#6-staged-plan).
-7. **Upstream:** the drafts in [UPSTREAM.md](UPSTREAM.md) and server-side versioning for OxiCloud, filed only after
+3. **macOS deep links:** an Apple Event (`kAEGetURL`) handler, so a `craftcloud://` click opens the file.
+4. **The command line on Windows:** a console build, so release builds print to the terminal.
+5. **Files on demand,** in the stages of [FILES-ON-DEMAND.md § 6](FILES-ON-DEMAND.md#6-staged-plan).
+6. **Upstream:** the drafts in [UPSTREAM.md](UPSTREAM.md) and server-side versioning for OxiCloud, filed only after
    they are agreed.
-8. **Unmaintained D-Bus crates:** drop the `deny.toml` ignores for zvariant, zvariant_derive and zbus_names
+7. **Unmaintained D-Bus crates:** drop the `deny.toml` ignores for zvariant, zvariant_derive and zbus_names
    (RUSTSEC-2026-0370 to 0372) once egui (accesskit) and keyring move to zbus 6.
 
 ## Progress log
 
+- 2026-11-14: Web: "Your share links" (`/links`, #19), opened from a new account menu under the person's name in
+  the header (with the number of links) and from the share sheet's "See all your share links": every link with
+  where its item is now (looked up by its id, as `craftcloud share ls`), when it expires, whether it has a
+  password, how often it was opened and when it was made; filters All, Active, Expired and No longer there with
+  counts, search, sort, COPY, and REVOKE after a confirmation (`DELETE /api/shares/{id}`; the item is never
+  touched). A link whose item is in the trash or deleted shows the name it was shared with; a lookup that fails
+  some other way says so and is not counted as gone. Built to the v2 Sharing frames; checked with egui_kittest
+  tests and screenshots, not yet against a live server.
 - 2026-11-14: Web: a "Share link" sheet in the file browser (#18), opened from a file's or folder's "…" menu
   ("Share link…") or the selection's SHARE: the link expires never, in 1, 7 or 30 days, or at the end of a day
   picked in a calendar (past days can't be picked), with an optional password (hidden unless SHOW, sent only in the
