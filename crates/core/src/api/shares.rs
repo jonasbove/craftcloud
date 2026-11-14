@@ -110,6 +110,52 @@ pub fn create(server: &ServerUrl, new: &NewShare) -> HttpRequest {
     HttpRequest::new(Method::Post, server.join("api/shares")).json(&body)
 }
 
+/// Why an expiry can't be used.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExpiryError {
+    /// Not a date, a time or a duration.
+    Unreadable,
+    /// It is not in the future.
+    Past,
+}
+
+/// When a link given as `7d`, `12h`, `2w`, a date (`2027-01-31`: to the end of that day, in
+/// `offset`'s time) or an RFC 3339 time stops working; it must be after `now`. The command line's
+/// `--expires` (dates in UTC) and the web's share sheet (presets and the date picker, in the
+/// browser's time) both go through this.
+pub fn expiry_at(text: &str, now: jiff::Timestamp, offset: jiff::tz::Offset) -> Result<jiff::Timestamp, ExpiryError> {
+    let text = text.trim();
+    let when = if let Some(unit) = text.chars().last().filter(|c| matches!(c, 'h' | 'd' | 'w')) {
+        let n: i64 = text[..text.len() - 1].parse().map_err(|_| ExpiryError::Unreadable)?;
+        let hours = match unit {
+            'h' => Some(n),
+            'd' => n.checked_mul(24),
+            _ => n.checked_mul(24 * 7),
+        }
+        .ok_or(ExpiryError::Unreadable)?;
+        let span = hours.checked_mul(3600).map(jiff::SignedDuration::from_secs).ok_or(ExpiryError::Unreadable)?;
+        now.checked_add(span).map_err(|_| ExpiryError::Unreadable)?
+    } else if let Ok(date) = text.parse::<jiff::civil::Date>() {
+        end_of_day(date, offset).ok_or(ExpiryError::Unreadable)?
+    } else {
+        text.parse::<jiff::Timestamp>().map_err(|_| ExpiryError::Unreadable)?
+    };
+    if when <= now {
+        return Err(ExpiryError::Past);
+    }
+    Ok(when)
+}
+
+/// The moment `date` ends (the next day's midnight) in `offset`'s time.
+pub fn end_of_day(date: jiff::civil::Date, offset: jiff::tz::Offset) -> Option<jiff::Timestamp> {
+    date.tomorrow().ok()?.to_zoned(jiff::tz::TimeZone::fixed(offset)).ok().map(|z| z.timestamp())
+}
+
+/// An expiry as OxiCloud takes it: `2027-01-31T18:00:00Z`.
+pub fn expiry_text(when: jiff::Timestamp) -> String {
+    when.strftime("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
 /// What to change on a link; `None` leaves a field as it is.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ShareChange {
@@ -278,6 +324,25 @@ mod tests {
         share.item_type = "folder".into();
         assert_eq!(item_info(&s, &share).url, "http://127.0.0.1:8095/api/folders/f1");
         assert_eq!(parse_item_path(&share, &HttpResponse::new(200, read("folder-get.json"))).as_deref(), Some("Documents"));
+    }
+
+    #[test]
+    fn expiry_takes_presets_dates_and_times() {
+        use super::{ExpiryError, expiry_at, expiry_text};
+        use jiff::tz::Offset;
+        let now: jiff::Timestamp = "2026-11-14T13:32:00Z".parse().unwrap();
+        let at = |text: &str, offset: Offset| expiry_at(text, now, offset).map(expiry_text);
+        assert_eq!(at("1d", Offset::UTC).as_deref(), Ok("2026-11-15T13:32:00Z"));
+        assert_eq!(at("7d", Offset::UTC).as_deref(), Ok("2026-11-21T13:32:00Z"));
+        assert_eq!(at("30d", Offset::UTC).as_deref(), Ok("2026-12-14T13:32:00Z"));
+        assert_eq!(at("2026-11-28", Offset::UTC).as_deref(), Ok("2026-11-29T00:00:00Z"), "to the end of that day");
+        let cet = Offset::from_hours(1).unwrap();
+        assert_eq!(at("2026-11-28", cet).as_deref(), Ok("2026-11-28T23:00:00Z"), "the end of the day where the person is");
+        assert_eq!(at("2026-11-14", cet).as_deref(), Ok("2026-11-14T23:00:00Z"), "today still has time left");
+        assert_eq!(at("2026-11-13", Offset::UTC), Err(ExpiryError::Past));
+        assert_eq!(at("0d", Offset::UTC), Err(ExpiryError::Past));
+        assert_eq!(at("soon", Offset::UTC), Err(ExpiryError::Unreadable));
+        assert_eq!(at("99999999999999w", Offset::UTC), Err(ExpiryError::Unreadable), "too far to add, not a crash");
     }
 
     #[test]

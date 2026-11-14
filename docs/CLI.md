@@ -134,7 +134,9 @@ What the ArtCraft Launcher and the Craft apps call to list and save CraftCloud f
 | `share ls [PATH]` | Your links, or the links to one file or folder, each with where its file or folder is now (looked up by its id, one request per link; a link whose item is gone shows the name it was shared with) |
 | `share rm LINK` | Removes a link, by its id, its URL, or every link to a path |
 
-OxiCloud can't remove a link's expiry once it has one; make a new link instead.
+OxiCloud can't remove a link's expiry once it has one; make a new link instead. The web's "Share link" sheet
+reads expiries by the same rules (its 1, 7 and 30 days are `1d`, `7d` and `30d`), except that a day picked there
+lasts to the end of that day in the browser's time zone rather than in UTC.
 
 ### Versions
 

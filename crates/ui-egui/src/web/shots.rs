@@ -143,6 +143,35 @@ fn files_with_selection(s: egui::Vec2, t: egui::Theme) -> H {
     h
 }
 
+/// The share sheet for "Q3 report.docx", opened from its menu.
+fn share_sheet(s: egui::Vec2, t: egui::Theme) -> H {
+    let mut h = files(s, t, &sample());
+    click(&mut h, "More for Q3 report.docx");
+    click(&mut h, "Share link…");
+    h
+}
+
+/// The share sheet with a password typed (hidden: screenshots never show one).
+fn share_with_password(s: egui::Vec2, t: egui::Theme) -> H {
+    let mut h = share_sheet(s, t);
+    if let Some(super::files::Sheet::Share(sheet)) = &mut h.state_mut().files.sheet {
+        sheet.password.0 = "x".repeat(16);
+    }
+    h.run();
+    h
+}
+
+/// "Link ready" for "Q3 report.docx", seven days, with a password.
+fn share_ready(s: egui::Vec2, t: egui::Theme) -> H {
+    let mut h = share_with_password(s, t);
+    click(&mut h, "CREATE LINK");
+    let made = json!({"id": "s1", "item_id": "f4", "item_name": "Q3 report.docx", "item_type": "file", "token": "aeddf06a-4200-4b05-ad1c-272cf305e350",
+        "url": "https://cloud.example.org/s/aeddf06a-4200-4b05-ad1c-272cf305e350", "has_password": true, "expires_at": "2026-11-21T10:00:00Z",
+        "created_at": "2026-11-14T10:00:00Z", "access_count": 0});
+    soft(&mut h, "/api/shares", Ok(HttpResponse::new(201, made.to_string().into_bytes())));
+    h
+}
+
 /// The device approval page, after `button` and the server's `status` answer.
 fn device_answered(s: egui::Vec2, t: egui::Theme, button: &str, status: &str) -> H {
     let mut h = visit("/device", Some("7KQ-4XM"), s, t);
@@ -285,6 +314,26 @@ fn scenes() -> Vec<Scene> {
         ("files-menu", |s, t| {
             let mut h = files(s, t, &sample());
             click(&mut h, "More for Q3 report.docx");
+            h
+        }),
+        ("files-share-create", share_with_password),
+        ("files-share-create-date", |s, t| {
+            let mut h = share_sheet(s, t);
+            click(&mut h, "ON A DATE…");
+            click(&mut h, "28 Nov 2026");
+            click(&mut h, "Pick a day");
+            h
+        }),
+        ("files-share-create-error", |s, t| {
+            let mut h = share_with_password(s, t);
+            click(&mut h, "CREATE LINK");
+            soft(&mut h, "/api/shares", Ok(HttpResponse::new(403, br#"{"error":"Access denied"}"#.to_vec())));
+            h
+        }),
+        ("files-share-created", share_ready),
+        ("files-share-created-copied", |s, t| {
+            let mut h = share_ready(s, t);
+            click(&mut h, "COPY");
             h
         }),
         ("home", |s, t| {
