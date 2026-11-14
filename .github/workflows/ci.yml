@@ -1,0 +1,101 @@
+name: CI
+
+# The same gate as craft-launcher's CI (`cargo xtask ci`: fmt, clippy, tests, wasm clippy, plus the
+# Trunk web build), written out here instead of calling storytold/craft-common-actions gate.yml:
+# that workflow uses StepSecurity-maintained actions, which need a paid StepSecurity subscription in
+# private repositories. Upstream actions, pinned by commit.
+#
+# Linux only: private-repo minutes cost 2x on Windows and 10x on macOS; release.yml builds those on
+# tags and by hand.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to a PR branch cancels its older run; every push to main runs to the end.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUST_BACKTRACE: 1
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
+jobs:
+  gate:
+    name: gate (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Linux build packages (egui/winit/wgpu headers, as craft-launcher)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: gate
+          save-if: ${{ github.event_name != 'pull_request' }}
+      - name: cargo xtask ci
+        run: cargo xtask ci
+      - name: Lockfile unchanged
+        run: git diff --exit-code Cargo.lock
+
+  web:
+    name: web (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          tool: trunk@0.21.14
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: web
+          save-if: ${{ github.event_name != 'pull_request' }}
+      - name: Build the web frontend
+        run: |
+          cargo xtask web
+          test -f dist/web/index.html
+          ls -la dist/web
+
+  # Licences, RustSec advisories, bans and sources (deny.toml), as the Craft apps check them. The
+  # sources check also stands in for their git-sources job: git dependencies only from storytold.
+  # A new advisory can turn this red on an unrelated change: update the crate, or add an `ignore`
+  # with its reason to deny.toml.
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          tool: cargo-deny@0.20.2
+      - name: cargo deny check
+        run: cargo deny check

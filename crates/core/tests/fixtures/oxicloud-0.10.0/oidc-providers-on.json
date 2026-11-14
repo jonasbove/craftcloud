@@ -1,0 +1,10 @@
+{
+  "enabled": true,
+  "issuer": "https://id.example.org",
+  "provider_name": "Example ID",
+  "authorize_endpoint": "/api/auth/oidc/authorize",
+  "password_login_enabled": true,
+  "magic_link_login_enabled": false,
+  "require_verified_email": false,
+  "auto_redirect_to_oidc": false
+}

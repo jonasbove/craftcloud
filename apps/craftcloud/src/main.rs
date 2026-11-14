@@ -1,0 +1,665 @@
+//! CraftCloud's desktop client: signs in through the browser, then keeps a local folder in sync
+//! with the cloud, from the tray. `--hidden` (a start at login) starts without the window.
+//! `craftcloud <command>` is the command line instead (`cli`, docs/CLI.md).
+
+// A GUI program on Windows: no console window in release builds.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
+mod cli;
+mod tray;
+
+use std::process::ExitCode;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
+
+use craftcloud_core::ServerUrl;
+use craftcloud_core::api::auth::Tokens;
+use craftcloud_core::http::HttpRequest;
+use craftcloud_core::sync::{ClientSettings, ConflictCopy, Keep, SyncPlan, SyncProgress, SyncState};
+use craftcloud_native::control;
+use craftcloud_native::http::{ThreadBackend, Waker};
+use craftcloud_native::secrets::TokenStore;
+use craftcloud_native::session::Session;
+use craftcloud_native::settings::{self, Prefs, Store};
+use craftcloud_native::sync::{self as transfers, Command, Handle};
+use craftcloud_ui_egui::backend::{Backend, NetResult};
+use craftcloud_ui_egui::desktop::{DesktopApp, DesktopHost, FileFacts, WallClock, status_text};
+
+use crate::tray::{RECENT, TrayAction, TrayHandle, TrayView};
+
+struct NativeHost {
+    net: ThreadBackend,
+    store: Store,
+    waker: Waker,
+    started: Instant,
+    sync: Option<Handle>,
+    /// The newest tokens: the sync refreshes them and the UI's own requests need them too.
+    fresh: Arc<Mutex<Option<Tokens>>>,
+    /// Quit was picked in the window.
+    quit: bool,
+    /// What the command line's `status|sync|pause|resume` reach (craftcloud_native::control).
+    control: control::Slot,
+    /// This client's claim on the sync folder while it syncs it (one engine per folder).
+    folder: Option<control::FolderLock>,
+    /// Why syncing couldn't start (another engine has the folder), shown as the sync state.
+    blocked: Option<String>,
+}
+
+impl NativeHost {
+    fn tokens(&self, server: &str) -> TokenStore {
+        TokenStore::new(server, self.store.dir())
+    }
+
+    fn command(&self, command: Command) {
+        if let Some(h) = &self.sync {
+            h.send(command);
+        }
+    }
+
+    /// Claims the sync folder again when it was missing at the start and is back now.
+    fn claim_again(&mut self) {
+        if self.sync.is_none() || !self.folder.as_ref().is_some_and(control::FolderLock::is_empty) {
+            return;
+        }
+        match control::claim_folder(std::path::Path::new(&self.store.get().0.local_folder)) {
+            Ok(lock) => self.folder = Some(lock),
+            Err(e) => {
+                log::error!("{e}");
+                self.blocked = Some(e);
+                self.sync = None;
+            }
+        }
+    }
+}
+
+impl Backend for NativeHost {
+    fn send(&mut self, id: u64, request: HttpRequest) {
+        self.net.send(id, request);
+    }
+
+    fn poll(&mut self) -> Vec<(u64, NetResult)> {
+        self.net.poll()
+    }
+
+    fn open_url(&mut self, url: &str) {
+        if let Err(e) = craftcloud_native::open_url(url) {
+            log::warn!("couldn't open the browser: {e}");
+        }
+    }
+
+    fn now(&self) -> f64 {
+        self.started.elapsed().as_secs_f64()
+    }
+}
+
+impl DesktopHost for NativeHost {
+    fn client_name(&self) -> String {
+        craftcloud_native::client_name()
+    }
+
+    fn default_folder(&self) -> String {
+        craftcloud_native::default_sync_folder().map(|p| p.display().to_string()).unwrap_or_default()
+    }
+
+    fn save_session(&mut self, settings: &ClientSettings, tokens: &Tokens) -> Result<(), String> {
+        // Chosen just now (setup, or signing in again): the one time the folder is made. The sync
+        // never makes it on its own (a folder that vanished may be on an unplugged drive).
+        if !settings.local_folder.is_empty() {
+            std::fs::create_dir_all(&settings.local_folder).map_err(|e| format!("can't make {}: {e}", settings.local_folder))?;
+        }
+        self.store.set(Prefs(settings.clone()));
+        self.store.flush().map_err(|e| e.to_string())?;
+        self.tokens(&settings.server).save(tokens)
+    }
+
+    fn start_sync(&mut self, plan: SyncPlan, tokens: Tokens) {
+        let Ok(server) = ServerUrl::parse(&plan.server) else {
+            log::error!("not a server address: {}", plan.server);
+            return;
+        };
+        // One engine per folder: let go of the old claim before making the new one.
+        self.sync = None;
+        self.folder = None;
+        match control::claim_folder(std::path::Path::new(&plan.local_folder)) {
+            Ok(lock) => {
+                self.folder = Some(lock);
+                self.blocked = None;
+            }
+            Err(e) => {
+                log::error!("{e}");
+                self.blocked = Some(e);
+                return;
+            }
+        }
+        *self.fresh.lock().unwrap_or_else(PoisonError::into_inner) = Some(tokens.clone());
+        let fresh = Arc::clone(&self.fresh);
+        let notify = Box::new(move |t: &Tokens| *fresh.lock().unwrap_or_else(PoisonError::into_inner) = Some(t.clone()));
+        // Shared with the command line: refreshes are locked and taken over (session.rs).
+        let session = Session::shared(server, tokens, TokenStore::new(&plan.server, self.store.dir()), self.store.dir()).on_new_tokens(notify);
+        let device = Some(self.store.get().0.device_name.trim().to_owned()).filter(|d| !d.is_empty()).unwrap_or_else(craftcloud_native::device_name);
+        let (server, local_folder, links) = (plan.server.clone(), plan.local_folder.clone(), plan.clone());
+        let handle = transfers::start_with(plan, session, device, Arc::clone(&self.waker));
+        *self.control.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(control::Attached { progress: Arc::clone(&handle.progress), commands: handle.sender(), server, local_folder, plan: links });
+        self.sync = Some(handle);
+    }
+
+    fn progress(&self) -> SyncProgress {
+        if let Some(why) = &self.blocked {
+            return SyncProgress { state: SyncState::Failed(why.clone()), ..SyncProgress::default() };
+        }
+        self.sync.as_ref().map(|h| h.progress.lock().unwrap_or_else(PoisonError::into_inner).clone()).unwrap_or_default()
+    }
+
+    fn fresh_tokens(&self) -> Option<Tokens> {
+        self.fresh.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    fn sync_now(&mut self) {
+        self.claim_again();
+        self.command(Command::SyncNow);
+    }
+
+    fn confirm_deletes(&mut self) {
+        self.command(Command::ConfirmDeletes);
+    }
+
+    fn discard_deletes(&mut self) {
+        self.command(Command::DiscardDeletes);
+    }
+
+    fn recreate_folder(&mut self) {
+        let folder = self.store.get().0.local_folder.clone();
+        if let Err(e) = std::fs::create_dir_all(&folder) {
+            // The sync stays held as "folder missing"; the log says why.
+            log::error!("can't make {folder}: {e}");
+            return;
+        }
+        self.claim_again();
+        self.command(Command::SyncNow);
+    }
+
+    fn pause(&mut self, paused: bool) {
+        self.command(Command::Pause(paused));
+        self.command(Command::SyncNow);
+    }
+
+    fn change_folders(&mut self, settings: &ClientSettings) -> Result<(), String> {
+        self.store.set(Prefs(settings.clone()));
+        self.store.flush().map_err(|e| e.to_string())?;
+        self.command(Command::Replan(SyncPlan::from(settings)));
+        if let Some(a) = self.control.lock().unwrap_or_else(PoisonError::into_inner).as_mut() {
+            a.local_folder.clone_from(&settings.local_folder);
+        }
+        Ok(())
+    }
+
+    fn save_prefs(&mut self, settings: &ClientSettings) -> Result<(), String> {
+        let before = self.store.get().0.device_name.clone();
+        self.store.set(Prefs(settings.clone()));
+        self.store.flush().map_err(|e| e.to_string())?;
+        if before != settings.device_name {
+            let device = Some(settings.device_name.trim().to_owned()).filter(|d| !d.is_empty()).unwrap_or_else(craftcloud_native::device_name);
+            self.command(Command::Rename(device));
+        }
+        Ok(())
+    }
+
+    fn local_file(&self, path: &str) -> Option<FileFacts> {
+        let root = std::path::PathBuf::from(&self.store.get().0.local_folder);
+        craftcloud_native::file_facts(&root, path).map(|(size, modified)| FileFacts { size, modified })
+    }
+
+    fn computer_name(&self) -> String {
+        craftcloud_native::device_name()
+    }
+
+    fn clock(&self) -> WallClock {
+        let (unix, date) = craftcloud_native::wall_clock();
+        WallClock { unix, date }
+    }
+
+    fn quit(&mut self) {
+        self.quit = true;
+    }
+
+    fn resolve(&mut self, conflict: &ConflictCopy, keep: Keep) {
+        self.command(Command::Resolve(conflict.clone(), keep));
+    }
+
+    fn starts_at_login(&self) -> bool {
+        craftcloud_native::login::is_enabled()
+    }
+
+    fn set_start_at_login(&mut self, on: bool) -> Result<(), String> {
+        craftcloud_native::login::set_enabled(on)
+    }
+
+    fn open_browser(&mut self, url: &str) -> bool {
+        craftcloud_native::open_url(url).map_err(|e| log::warn!("couldn't open the browser: {e}")).is_ok()
+    }
+
+    fn open_folder(&mut self, path: &str) {
+        let opener = if cfg!(target_os = "macos") {
+            "open"
+        } else if cfg!(windows) {
+            "explorer"
+        } else {
+            "xdg-open"
+        };
+        if let Err(e) = std::process::Command::new(opener).arg(path).spawn() {
+            log::warn!("couldn't open {path}: {e}");
+        }
+    }
+
+    fn open_file(&mut self, path: &str) {
+        let root = std::path::PathBuf::from(&self.store.get().0.local_folder);
+        if let Err(e) = craftcloud_native::open::resolve(&root, path).map_err(|e| e.to_string()).and_then(|p| craftcloud_native::open::open(&p)) {
+            log::warn!("couldn't open {path}: {e}");
+        }
+    }
+
+    fn sign_out(&mut self) {
+        let server = self.store.get().0.server.clone();
+        self.tokens(&server).delete();
+        let old = self.store.get().0.clone();
+        self.store.set(Prefs(ClientSettings { server, device_name: old.device_name, appearance: old.appearance, ..ClientSettings::default() }));
+        if let Err(e) = self.store.flush() {
+            log::warn!("couldn't save the settings: {e}");
+        }
+        *self.control.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        self.sync = None;
+        *self.fresh.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        self.folder = None;
+        self.blocked = None;
+    }
+}
+
+/// Wakes whichever is running: the window's frames, or the loop that waits in the tray without one.
+struct Wake {
+    window: Mutex<Option<egui::Context>>,
+    nudge: SyncSender<()>,
+}
+
+impl Wake {
+    fn wake(&self) {
+        if let Some(ctx) = self.window.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+            ctx.request_repaint();
+        }
+        let _ = self.nudge.try_send(());
+    }
+
+    fn set_window(&self, ctx: Option<egui::Context>) {
+        *self.window.lock().unwrap_or_else(PoisonError::into_inner) = ctx;
+    }
+}
+
+/// The files that most recently went up, came down or moved, newest first (for the tray).
+fn recent_files(p: &SyncProgress) -> Vec<String> {
+    use craftcloud_core::sync::ActivityKind;
+    let mut out: Vec<String> = Vec::new();
+    for e in p.activity.iter().rev().filter(|e| matches!(e.kind, ActivityKind::Up | ActivityKind::Down | ActivityKind::Moved)) {
+        if !out.contains(&e.path) {
+            out.push(e.path.clone());
+        }
+        if out.len() == RECENT {
+            break;
+        }
+    }
+    out
+}
+
+/// What the tray asked of the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Request {
+    Show,
+    Quit,
+}
+
+/// The client, which outlives its windows: the sync, its settings and the tray.
+struct Client {
+    desktop: DesktopApp<NativeHost>,
+    /// `None` where the desktop has no tray: then closing the window quits.
+    tray: Option<TrayHandle>,
+    /// The sign-in, read from the keychain on a thread of its own (it can wait on an unlock).
+    keychain: Option<Receiver<Option<Tokens>>>,
+    /// Whether the window system can hide a window and show it again (Wayland can't).
+    can_hide: bool,
+    /// The window closed into the tray (where it can't hide): carry on without one.
+    closed_to_tray: bool,
+}
+
+impl Client {
+    /// Shows the sync state in the tray and carries out its picks; returns what needs a window.
+    fn tray_tick(&mut self) -> Vec<Request> {
+        if let Some(answer) = self.keychain.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.keychain = None;
+            self.desktop.keychain_answered(answer);
+        }
+        let Some(tray) = &mut self.tray else { return Vec::new() };
+        let progress = self.desktop.host.progress();
+        tray.show(TrayView { state: progress.state.clone(), line: status_text(&progress), recent: recent_files(&progress) });
+        let mut requests = Vec::new();
+        for action in tray.actions() {
+            let settings = self.desktop.settings().clone();
+            match action {
+                TrayAction::OpenFolder => self.desktop.host.open_folder(&settings.local_folder),
+                TrayAction::OpenWeb => self.desktop.host.open_url(&settings.server),
+                TrayAction::SyncNow => self.desktop.host.sync_now(),
+                TrayAction::TogglePause => {
+                    let paused = matches!(progress.state, SyncState::Paused);
+                    self.desktop.host.pause(!paused);
+                }
+                TrayAction::Show => requests.push(Request::Show),
+                TrayAction::Settings => {
+                    self.desktop.show_settings();
+                    requests.push(Request::Show);
+                }
+                TrayAction::OpenRecent(path) => self.desktop.host.open_file(&path),
+                TrayAction::Quit => requests.push(Request::Quit),
+            }
+        }
+        requests
+    }
+
+    /// Carries on with no window until the tray asks for one (`true`) or for Quit (`false`).
+    /// Whether closing the window can leave the client running in the tray.
+    fn has_tray(&self) -> bool {
+        self.tray.as_ref().is_some_and(TrayHandle::is_ready)
+    }
+
+    fn wait_in_tray(&mut self, woken: &Receiver<()>) -> bool {
+        log::debug!("no window: carrying on in the tray");
+        loop {
+            let requests = self.tray_tick();
+            if requests.contains(&Request::Quit) {
+                return false;
+            }
+            if requests.contains(&Request::Show) {
+                return true;
+            }
+            // The tray's status line follows the sync, so look again now and then.
+            if woken.recv_timeout(Duration::from_secs(1)) == Err(RecvTimeoutError::Disconnected) {
+                return false;
+            }
+        }
+    }
+}
+
+/// One window onto the client.
+struct Window<'a> {
+    client: &'a mut Client,
+    quitting: bool,
+    /// A system CJK font, read on a thread of its own (the bundled faces have no CJK glyphs).
+    cjk: Option<Receiver<Option<FontFile>>>,
+}
+
+/// A font file's bytes and the face's index in it.
+type FontFile = (Vec<u8>, u32);
+
+/// Reads the system's CJK font for the window's fallback, off the UI thread.
+fn read_cjk_font(ctx: &egui::Context) -> Option<Receiver<Option<FontFile>>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let ctx = ctx.clone();
+    let spawned = std::thread::Builder::new().name("craftcloud-fonts".into()).spawn(move || {
+        let _ = tx.send(craftcloud_native::cjk_font());
+        ctx.request_repaint();
+    });
+    spawned.ok().map(|_| rx)
+}
+
+impl Window<'_> {
+    fn show(ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+}
+
+impl eframe::App for Window<'_> {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        for request in self.client.tray_tick() {
+            match request {
+                Request::Show => Self::show(&ctx),
+                Request::Quit => {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+        // With a tray, closing the window keeps syncing in the background: the window hides where
+        // it can, and otherwise (Wayland) really closes while the client carries on in the tray.
+        if self.client.has_tray() && !self.quitting && ctx.input(|i| i.viewport().close_requested()) {
+            match on_close(self.client.can_hide, cfg!(target_os = "macos")) {
+                OnClose::Minimize => {
+                    // A proper hide on macOS needs AppKit calls (unsafe); minimising keeps it in the Dock.
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                }
+                OnClose::Hide => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                }
+                OnClose::ToTray => self.client.closed_to_tray = true,
+            }
+        }
+        self.client.desktop.ui(ui);
+        if let Some(found) = self.cjk.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.cjk = None;
+            match found {
+                Some((bytes, index)) => {
+                    let mut data = egui::FontData::from_owned(bytes);
+                    data.index = index;
+                    craftcloud_ui_egui::theme::add_fallback_font(&ctx, "system-cjk", data);
+                }
+                None => log::info!("no CJK font found; Chinese, Japanese and Korean names show as boxes"),
+            }
+        }
+        if std::mem::take(&mut self.client.desktop.host.quit) {
+            self.quitting = true;
+            self.client.closed_to_tray = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        // The tray and the sync status need frames even while the window is hidden.
+        ctx.request_repaint_after(Duration::from_secs(1));
+    }
+}
+
+/// What closing the window does when there is a tray.
+#[derive(Debug, PartialEq, Eq)]
+enum OnClose {
+    Minimize,
+    Hide,
+    /// Let the window close; the client carries on in the tray without one.
+    ToTray,
+}
+
+fn on_close(can_hide: bool, macos: bool) -> OnClose {
+    if macos {
+        OnClose::Minimize
+    } else if can_hide {
+        OnClose::Hide
+    } else {
+        OnClose::ToTray
+    }
+}
+
+/// Whether a window opened here can hide and come back: not under Wayland, where winit ignores
+/// `set_visible(false)`. winit opens a Wayland window wherever `WAYLAND_DISPLAY` or
+/// `WAYLAND_SOCKET` is set (Linux and the BSDs).
+fn window_can_hide_here(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> bool {
+    let wayland = || ["WAYLAND_DISPLAY", "WAYLAND_SOCKET"].iter().any(|name| env(name).is_some_and(|v| !v.is_empty()));
+    !(cfg!(all(unix, not(target_os = "macos"))) && wayland())
+}
+
+/// The tray works without a window event loop only with the StatusNotifierItem backend.
+const TRAY_WITHOUT_WINDOW: bool = cfg!(all(unix, not(target_os = "macos")));
+
+fn options(visible: bool) -> eframe::NativeOptions {
+    let viewport = egui::ViewportBuilder::default()
+        .with_title("CraftCloud")
+        // The Wayland app id and the X11 window class: the desktop entry's name and StartupWMClass
+        // (packaging/linux/io.github.jonasbove.craftcloud.desktop), so the dock finds its icon.
+        .with_app_id("io.github.jonasbove.craftcloud")
+        .with_inner_size([960.0, 640.0])
+        .with_min_inner_size([640.0, 480.0])
+        .with_visible(visible);
+    let viewport = match eframe::icon_data::from_png_bytes(include_bytes!("../assets/craftcloud-logo-256.png")) {
+        Ok(icon) => viewport.with_icon(Arc::new(icon)),
+        Err(e) => {
+            log::warn!("no window icon: {e}");
+            viewport
+        }
+    };
+    eframe::NativeOptions { viewport, ..Default::default() }
+}
+
+/// How long the keychain may take before the client says so in its log (the window is up meanwhile).
+const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Reads the saved sign-in on a thread of its own: the keychain answers over D-Bus and may first
+/// ask to be unlocked, which must never keep the window from opening.
+fn read_keychain(server: String, dir: Option<std::path::PathBuf>, wake: &Arc<Wake>) -> Receiver<Option<Tokens>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (done_t, wake) = (Arc::clone(&done), Arc::clone(wake));
+    let reader = std::thread::Builder::new().name("craftcloud-keychain".into()).spawn(move || {
+        let tokens = TokenStore::new(&server, dir.as_deref()).load();
+        done_t.store(true, std::sync::atomic::Ordering::Release);
+        let _ = tx.send(tokens);
+        wake.wake();
+    });
+    if reader.is_ok() {
+        let _ = std::thread::Builder::new().name("craftcloud-keychain-watch".into()).spawn(move || {
+            std::thread::sleep(KEYCHAIN_TIMEOUT);
+            if !done.load(std::sync::atomic::Ordering::Acquire) {
+                log::warn!("the keychain hasn't answered after {} s (locked?); waiting for it", KEYCHAIN_TIMEOUT.as_secs());
+            }
+        });
+    }
+    rx
+}
+
+fn main() -> ExitCode {
+    // A command (`craftcloud ls`, …) runs and exits; it never opens a window.
+    let quiet = std::env::args().len() > 1 && !std::env::args().skip(1).all(|a| a == craftcloud_native::login::HIDDEN_FLAG);
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(if quiet { "error" } else { "warn" })).init();
+    if let Some(code) = cli::run_if_command() {
+        return code;
+    }
+    // Windows: `craftcloud://` links start this executable (HKCU, refreshed on every start).
+    if let Err(e) = craftcloud_native::url_scheme::register() {
+        log::warn!("couldn't register craftcloud:// links: {e}");
+    }
+    let mut hidden = std::env::args().any(|a| a == craftcloud_native::login::HIDDEN_FLAG);
+    let (nudge, woken) = sync_channel(1);
+    let wake = Arc::new(Wake { window: Mutex::new(None), nudge });
+    let waker: Waker = {
+        let wake = Arc::clone(&wake);
+        Arc::new(move || wake.wake())
+    };
+    let store = settings::open();
+    let saved = store.get().0.clone();
+    let keychain = (!saved.server.is_empty()).then(|| read_keychain(saved.server.clone(), store.dir().map(Into::into), &wake));
+    let control: control::Slot = Arc::default();
+    // The command line's way in; a `craftcloud daemon` already answering keeps it.
+    let _control_server = store
+        .dir()
+        .filter(|dir| !control::is_running(dir))
+        .and_then(|dir| control::serve(dir, Arc::clone(&control)).map_err(|e| log::warn!("no control channel: {e}")).ok());
+    let host = NativeHost {
+        net: ThreadBackend::new(Arc::clone(&waker)),
+        store,
+        waker,
+        started: Instant::now(),
+        sync: None,
+        fresh: Arc::default(),
+        quit: false,
+        control,
+        folder: None,
+        blocked: None,
+    };
+    // The desktop UI themes whichever window draws it; this context only stands in until then.
+    let desktop = DesktopApp::waiting_for_keychain(&egui::Context::default(), host, saved);
+    let tray = TRAY_WITHOUT_WINDOW.then(|| {
+        let wake = Arc::clone(&wake);
+        TrayHandle::spawn(move || wake.wake())
+    });
+    let can_hide = window_can_hide_here(|name| std::env::var_os(name));
+    let mut client = Client { desktop, tray, keychain, can_hide, closed_to_tray: false };
+
+    // Started hidden at login where a window can't hide: stay in the tray without mapping one, so
+    // no window flashes up. The tray gets a moment to come up; without it the window opens after all.
+    let tray_up = hidden && !can_hide && client.tray.as_ref().is_some_and(|t| wait_until(Duration::from_secs(3), || t.is_ready()));
+    let mut window = !tray_up;
+    // One pass per window: where a window can't hide, closing it ends the pass and the client
+    // carries on in the tray until the window is asked for again.
+    loop {
+        if window {
+            let result = {
+                let (wake, client) = (Arc::clone(&wake), &mut client);
+                eframe::run_native(
+                    "CraftCloud",
+                    options(!hidden),
+                    Box::new(move |cc| {
+                        wake.set_window(Some(cc.egui_ctx.clone()));
+                        if client.tray.is_none() && !TRAY_WITHOUT_WINDOW {
+                            let wake = Arc::clone(&wake);
+                            client.tray = TrayHandle::local(move || wake.wake());
+                        }
+                        let cjk = read_cjk_font(&cc.egui_ctx);
+                        Ok(Box::new(Window { client, quitting: false, cjk }))
+                    }),
+                )
+            };
+            wake.set_window(None);
+            if let Err(e) = result {
+                eprintln!("craftcloud: couldn't open the window: {e}");
+                return ExitCode::FAILURE;
+            }
+            if !std::mem::take(&mut client.closed_to_tray) {
+                return ExitCode::SUCCESS;
+            }
+        }
+        if !client.wait_in_tray(&woken) {
+            return ExitCode::SUCCESS;
+        }
+        hidden = false;
+        window = true;
+    }
+}
+
+/// Polls `ready` until it holds or `limit` passes.
+fn wait_until(limit: Duration, ready: impl Fn() -> bool) -> bool {
+    let end = Instant::now() + limit;
+    while Instant::now() < end {
+        if ready() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    ready()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OnClose, on_close, window_can_hide_here};
+
+    fn env(vars: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<std::ffi::OsString> {
+        move |name| vars.iter().find(|(k, _)| *k == name).map(|(_, v)| (*v).into())
+    }
+
+    #[test]
+    fn a_wayland_window_closes_into_the_tray() {
+        let linux = cfg!(all(unix, not(target_os = "macos")));
+        assert_eq!(window_can_hide_here(env(&[("WAYLAND_DISPLAY", "wayland-1"), ("DISPLAY", ":0")])), !linux);
+        assert_eq!(window_can_hide_here(env(&[("WAYLAND_SOCKET", "3")])), !linux);
+        assert!(window_can_hide_here(env(&[("WAYLAND_DISPLAY", ""), ("DISPLAY", ":0")])));
+        assert_eq!(on_close(false, false), OnClose::ToTray);
+        assert_eq!(on_close(true, false), OnClose::Hide);
+        assert_eq!(on_close(true, true), OnClose::Minimize);
+    }
+}

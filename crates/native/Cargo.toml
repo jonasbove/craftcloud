@@ -1,0 +1,39 @@
+[package]
+name = "craftcloud-native"
+description = "CraftCloud's desktop platform layer: HTTP, keychain, settings, folders and the sync transfers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+craftcloud-core = { workspace = true }
+craft-settings = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+# Blocking HTTP on worker threads, like craft-launcher's native crate (rustls, no OpenSSL).
+ureq = { version = "3.5", default-features = false, features = ["rustls", "gzip"] }
+gethostname = "1"
+sha2 = "0.10"
+# Dates the way the Craft apps do them (craft-launcher's house rule).
+jiff = "0.2"
+webbrowser = "1"
+# Folder watching (inotify, FSEvents, ReadDirectoryChangesW); pure Rust.
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+# Tokens in the OS keychain. On Linux the pure-Rust zbus Secret Service client (no libdbus).
+keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native", "async-secret-service", "async-io", "crypto-rust"] }
+# Checks a system font parses before the UI gets it (egui panics on a bad face); already in the tree through egui.
+skrifa = "0.44"
+
+[target.'cfg(windows)'.dependencies]
+# Start at login (HKCU Run key), as craft-launcher.
+winreg = "0.55"
+
+[dev-dependencies]
+tempfile = "3"

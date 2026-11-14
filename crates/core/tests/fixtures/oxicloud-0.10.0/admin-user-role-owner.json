@@ -1,0 +1,6 @@
+{
+  "status": "400 Bad Request",
+  "error": "Owner cannot be assigned through this endpoint. Use transfer-ownership instead.",
+  "message": "Owner cannot be assigned through this endpoint. Use transfer-ownership instead.",
+  "error_type": "Invalid Input"
+}

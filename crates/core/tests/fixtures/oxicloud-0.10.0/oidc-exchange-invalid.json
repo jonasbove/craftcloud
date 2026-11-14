@@ -1,0 +1,6 @@
+{
+  "status": "403 Forbidden",
+  "error": "Invalid or expired exchange code. Please try logging in again.",
+  "message": "Invalid or expired exchange code. Please try logging in again.",
+  "error_type": "Access Denied"
+}

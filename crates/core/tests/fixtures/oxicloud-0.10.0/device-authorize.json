@@ -1,0 +1,8 @@
+{
+  "device_code": "<redacted device_code>",
+  "user_code": "KOQY-2239",
+  "verification_uri": "http://127.0.0.1:8093/device",
+  "verification_uri_complete": "http://127.0.0.1:8093/device?code=KOQY-2239",
+  "expires_in": 899,
+  "interval": 5
+}

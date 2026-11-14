@@ -1,0 +1,44 @@
+# Maintainer: CraftCloud contributors <https://github.com/jonasbove/craftcloud>
+#
+# AUR recipe for the prebuilt release: downloads craftcloud-<ver>-linux-<arch>.tar.gz from the
+# GitHub release and checks its SHA-256 and its GPG signature (.asc). See ../README.md for
+# publishing it (updpkgsums, .SRCINFO).
+pkgname=craftcloud-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Desktop sync client and command line for a CraftCloud server (prebuilt release)'
+arch=('x86_64' 'aarch64')
+url='https://github.com/jonasbove/craftcloud'
+license=('MIT OR Apache-2.0')
+depends=('glibc' 'gcc-libs' 'hicolor-icon-theme' 'libxkbcommon' 'libxkbcommon-x11' 'xdg-utils')
+optdepends=(
+  'org.freedesktop.secrets: keep the sign-in in the keychain (gnome-keyring, kwallet, keepassxc)'
+  'wayland: native Wayland windows'
+  'libx11: X11 and XWayland windows'
+  'libxcursor: X11 cursors'
+  'libxi: X11 input'
+  'vulkan-icd-loader: GPU drawing through Vulkan'
+  'libglvnd: GPU drawing through EGL'
+)
+provides=('craftcloud')
+conflicts=('craftcloud' 'craftcloud-git')
+options=('!strip' '!debug')
+
+_release="https://github.com/jonasbove/craftcloud/releases/download/v${pkgver}"
+source_x86_64=("${_release}/craftcloud-${pkgver}-linux-x86_64.tar.gz"{,.asc})
+source_aarch64=("${_release}/craftcloud-${pkgver}-linux-aarch64.tar.gz"{,.asc})
+# The release signing key ("CraftCloud releases", release-signing-key.asc on every release and in
+# the repository root); makepkg checks each tarball's .asc against it.
+_fingerprint=97062AFE35FFD84487658C6DD11DD5C65CF191CE
+validpgpkeys=("${_fingerprint}")
+# Filled in by updpkgsums for each release (the .asc files are checked by their signature).
+sha256sums_x86_64=('TODO' 'SKIP')
+sha256sums_aarch64=('TODO' 'SKIP')
+
+package() {
+  local dir="craftcloud-${pkgver}-linux-${CARCH}"
+  install -Dm755 "${dir}/bin/craftcloud" "${pkgdir}/usr/bin/craftcloud"
+  cp -dr --no-preserve=ownership "${dir}/share" "${pkgdir}/usr/"
+  install -Dm644 "${dir}/share/doc/craftcloud/LICENSE-MIT" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-MIT"
+  install -Dm644 "${dir}/share/doc/craftcloud/LICENSE-APACHE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE"
+}

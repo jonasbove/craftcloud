@@ -1,0 +1,29 @@
+[package]
+name = "craftcloud-ui-egui"
+description = "CraftCloud's egui interface, shared by the desktop client and the web frontend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+craftcloud-core = { workspace = true }
+egui = { workspace = true }
+serde_json = { workspace = true }
+# Decoding the logo PNG (as craft-launcher does for its icons) and the server's JPEG/WebP thumbnails.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+
+[features]
+# `cargo test -p craftcloud-ui-egui --features shots -- --ignored shots` renders every desktop
+# screen to PNGs in $CRAFTCLOUD_SHOTS (needs a GPU or a software Vulkan driver).
+shots = ["egui_kittest/wgpu"]
+
+[dev-dependencies]
+# egui 0.37 no longer bundles its fallback faces by default; the tests install them.
+egui = { workspace = true, features = ["default_fonts"] }
+egui_kittest = { workspace = true }

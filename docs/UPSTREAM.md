@@ -1,0 +1,397 @@
+# What CraftCloud needs from upstream
+
+These are draft issues, ready to file. CraftCloud does not patch upstream code; it works around each gap in its own
+code until a fix ships. When one ships, the fix in CraftCloud is usually a change to `apps.toml` (for example
+`bridge = "native"`), and the workaround can then be removed.
+
+The version numbers are the pins of 2026-11-12. Source references are to the upstream repositories at those pins.
+
+## A. Craft apps (github.com/storytold)
+
+### A1. Adopt `craft-web-host` in the web build
+
+**Repos:** photocraft, designcraft, soundcraft, texturecraft, materialcraft (no bridge at all); vectorcraft and
+effectcraft (they have an open API but no save event).
+
+> **Support `?host=parent` (craft-web-host) in the web build**
+>
+> WordCraft, GridCraft, DeckCraft, PdfCraft, FigCraft, CADCraft and FilmCraft already embed `craft-web-host`
+> (craft-libs `crates/web-host`). A same-origin page can then frame the app with `?host=parent`, send
+> `<app>:open {name, bytes}`, and receive `<app>:save`, `<app>:dirty`, `<app>:ready` and `<app>:failed`.
+> `<app>` web builds don't do this yet. File › Open uses the rfd picker, and Save builds an `<a download>`
+> link. So a host such as a self-hosted cloud or a CMS can't hand the app a file or get the saved bytes
+> back without injecting scripts that fake a drop event and intercept the downloads.
+>
+> Ask: depend on `craft-web-host` at the shared tag, then:
+> - route the app's write and download service through `Host::post_save` when a host is connected;
+> - feed `open` messages into the same path as File › Open;
+> - report dirty-state changes.
+>
+> Builds with no host keep working unchanged.
+
+Notes per app:
+
+- **photocraft:** when a document is already open, a dropped file is *placed* in it. An `open` message should open it
+  as a new document.
+- **soundcraft:** an `open` of an audio file should create a new session that contains the file, not import it into
+  the demo session.
+- **vectorcraft:** `vectorcraft.openFile` already exists. Only `vectorcraft:save` is missing, so the host doesn't
+  have to poll `captureDownloads` / `files()`.
+- **effectcraft:** `effectcraft.addFile` already exists. Only `effectcraft:save` is missing.
+- **designcraft:** opening a `.designcraft` or `.idml` file through the bridge must open it as a document, not place
+  it as an image.
+
+### A2. Wait for the host to confirm a save before clearing dirty
+
+**Repos:** craft-libs (web-host), plus every app that embeds it.
+
+> **Send `id` with `<app>:save` and clear dirty only after `<app>:saved`**
+>
+> In current releases no app sends an `id` with `save` (e.g. wordcraft `apps/wordcraft-web/src/host.rs:98`,
+> filmcraft `host.rs:144`). Each app marks the document clean as soon as it posts the bytes. If the host's
+> upload then fails (offline, quota, permission), the user sees a clean document while the change exists
+> nowhere.
+>
+> Ask:
+> - attach an `id` to every save;
+> - keep the document dirty until the host replies `{type:"<app>:saved", id, ok:true}`;
+> - show the host's error when it replies `ok:false`.
+
+### A3. Report `saveAs` correctly
+
+**Repos:** gridcraft, cadcraft.
+
+> **`<app>:save` always reports `saveAs:false`**
+>
+> GridCraft (`apps/gridcraft-web/src/host.rs:15-18, 66`) and CADCraft (`host.rs:10-22`) send `saveAs:false`
+> for Save, Save As and exports alike. A host therefore can't tell "overwrite the open file" from "this is
+> a new file", and has to guess from the file name.
+>
+> Ask: set `saveAs:true` for Save As and for exports, as DeckCraft and FigCraft do.
+
+### A4. Route exports through the host
+
+**Repo:** pdfcraft.
+
+> **Exports download even in host mode**
+>
+> When the app is hosted, Save and Save As go to `pdfcraft:save`. But exports, print-to-PDF, OCR output and
+> CSV still trigger a browser download (`crates/ui-egui/src/editing/save.rs:461-476` and its callers).
+>
+> Ask: when a host is connected, send these to the host with `saveAs:true`, as the other bridged apps do.
+
+### A5. Keep the service worker out of the host's URLs
+
+**Repo:** effectcraft.
+
+> **`sw.js` caches every same-origin GET from its controlled pages**
+>
+> `web/sw.js:30-48` serves every same-origin GET cache-first. When EffectCraft runs inside a larger site,
+> files fetched from that site (for example a cloud file the user just changed) are served stale from the
+> cache.
+>
+> Ask: cache only URLs under the app's own scope. CraftCloud loads the app with `?nosw` until this is fixed.
+
+### A6. LightCraft: align with `craft-web-host`
+
+**Repo:** lightcraft.
+
+> **Use the shared bridge messages (`saved`, `handoff`, `id`)**
+>
+> LightCraft has its own `lightcraft:open` / `lightcraft:save` / `lightcraft:cmd` bridge
+> (`apps/lightcraft-web/src/host.rs`). Using the shared `craft-web-host` messages, including A2, would let
+> hosts treat it like the other apps.
+>
+> Also useful for cloud hosts: a way to write a developed photo back next to its original. Today edits stay
+> in the browser's storage (OPFS / IndexedDB) and only exports leave the app.
+
+### A7. Publish a web build
+
+**Repo:** anicraft.
+
+> **No `anicraft-web-<ver>.zip` release asset**
+>
+> `docs/web.md` says "Nothing is hosted yet". Releases v0.1.0–v0.2.1 have no web asset, unlike every other
+> Craft app.
+>
+> Ask: attach the web zip produced by `scripts/build-web.sh` to releases.
+
+### A8. Optional: open a file from a URL
+
+**Repos:** all apps except pdfcraft (which already supports `?file=<url>`).
+
+> **Support `?file=<url>` in the web build, as PdfCraft does**
+>
+> A same-origin or CORS URL would be fetched and opened at startup. A link could then open a file in the
+> app with no host script at all.
+
+### A9. Projects that reference media by path
+
+**Repos:** filmcraft, effectcraft.
+
+> **Media in projects is referenced by absolute path**
+>
+> `.fcproj` (`docs/project-files.md:21`) and `.ecproj` store media paths, so a project opened in the browser
+> from a cloud folder can't find its media.
+>
+> Ask: either
+> - store paths relative to the project file and let a host resolve them (e.g. `<app>:need {path}` →
+>   `<app>:open`), or
+> - offer a "packaged project" format that embeds the media, like soundcraft's `.scraftz`.
+
+### A10. Later: live co-editing
+
+**Repos:** craft-libs plus the document apps.
+
+> **Expose an operation stream for collaborative editing**
+>
+> The host bridge moves whole files. Real-time co-editing would need each app to emit and apply document
+> operations, for example a Yjs/yrs-compatible update stream over `craft-web-host`. That would let a host
+> relay them between users the way OxiCloud already relays its Markdown editor. This is a long-term request
+> and CraftCloud does not depend on it.
+
+### A11. PhotoCraft 0.23.1 web zip is missing `app/snippets/`
+
+**Repo:** photocraft.
+
+> **Web build hangs on "Loading PhotoCraft…": `app/snippets/…/inline0.js` is 404**
+>
+> `app/photocraft-web.js` imports `./snippets/eframe-d31a8450ea12dfc1/inline0.js`, which resolves to
+> `app/snippets/…`. `photocraft-web-0.23.1.zip` only ships `snippets/` at the top level, so the import
+> fails and the page reaches its "stalled" state on any host. Copying `snippets/` into `app/` fixes it.
+> The page also requests `fonts/manifest.txt`, which the zip doesn't contain (404, not fatal).
+> `HOSTING.md` gives the part size as 10.9 MiB; the 0.23.1 part is 15.96 MB.
+>
+> Ask: package the snippets next to the module that imports them (or import them from `../snippets/`),
+> and add a smoke test that loads the zip as released. CraftCloud copies the folder at build time
+> (`fixups` in `apps.toml`) until this ships.
+
+## B. craft-launcher (github.com/storytold/craft-launcher)
+
+### B1. Machine-readable file associations in the catalogue
+
+> **Add `extensions` / `mime` fields to `catalog.toml`**
+>
+> Formats appear only in prose under `features`. A list per app of the formats it opens, saves and imports
+> would let the launcher, desktop packaging (MIME types in `.desktop` files, `CFBundleDocumentTypes`) and
+> hosts such as CraftCloud share one source of truth.
+
+### B2. Brand licence: clarify "Craft App Suite" and the app names
+
+> **Brand licence: is "Craft App Suite" covered, and may third parties use app names factually?**
+>
+> `docs/brand/LICENSE-brand.txt` covers the ArtCraft name, wordmark and mark. It does not say whether
+> "Craft App Suite" or the app names (PhotoCraft, …) are marks. Third-party hosts that bundle the
+> MIT/Apache apps want to name them factually, e.g. "Open in WordCraft".
+
+## C. OxiCloud (github.com/AtalayaLabs/OxiCloud)
+
+CraftCloud runs the upstream binary unmodified and fixes these itself, using its front proxy and frontend patches. Each
+fix below would remove some of that glue.
+
+### C1. Configurable framing headers per path
+
+> **Allow same-origin framing for static sub-apps**
+>
+> `security_headers.rs` sets `X-Frame-Options: DENY` and `frame-ancestors 'none'` on every response. Static
+> apps served from the static directory therefore can't be put in an iframe by OxiCloud's own SPA.
+>
+> Ask: one of
+> - an env var such as `OXICLOUD_FRAMEABLE_PATHS=/apps/` that sends `SAMEORIGIN` / `'self'` for those paths;
+> - honour a `_headers` file in the static directory.
+
+### C2. Directory index for static sub-apps
+
+> **`/apps/x/` returns the SPA shell instead of `/apps/x/index.html`**
+>
+> Static sub-directories need an explicit `index.html` in their URLs, because `append_index_html_on_directories`
+> is `false`. A missing asset also returns the SPA shell with HTTP 200 rather than a 404.
+
+### C3. File versioning
+
+> **Keep previous versions on overwrite**
+>
+> An overwrite through WOPI PutFile, WebDAV PUT or delta commit replaces the content with no history
+> (`docs/compare.md`: "Versioning ❌"). With content-addressed storage, keeping the last N versions should
+> be cheap. Until this exists, CraftCloud keeps its own snapshots in `.craftcloud/versions/`.
+
+### C4. Version check on WOPI PutFile
+
+> **PutFile has no version precondition**
+>
+> PutFile checks only the lock (`wopi_handler.rs:293-316`). A write made in the meantime through WebDAV or
+> REST is silently overwritten.
+>
+> Ask: honour `X-WOPI-ItemVersion` or `If-Match`, and return 409 with the current version.
+
+### C5. Replace a file by id over REST
+
+> **REST has no simple "replace content of file {id}"**
+>
+> `POST /api/files/upload` only creates files, and replacing one needs the FastCDC + BLAKE3 delta protocol.
+> A plain `PUT /api/files/{id}/content` with `If-Match` would serve simple editors.
+
+### C6. An "open with" registry in the frontend
+
+> **Pluggable viewers and editors**
+>
+> `FileViewer.svelte` chooses the viewer with a hard-coded `kindOf()` plus the WOPI extension list. A small
+> registry (extension or MIME → handler, with a default and alternatives) would let deployments add or
+> replace editors without patching the SPA.
+
+### C7. Enforce scopes on device-flow tokens
+
+> **`scope` in `POST /api/auth/device/authorize` is stored but not enforced**
+>
+> A client asks for e.g. `webdav` and the device list shows that scope, but the token it receives
+> (`DeviceAuthService`, `generate_access_token`) is an ordinary user JWT: the auth middleware never checks
+> scopes, so a sync client or a DAV app gets the user's full rights, admin included.
+>
+> Ask: honour the scopes (e.g. `files` = REST files + WebDAV only, no `/api/admin/*`, no account changes),
+> and show them on the approval page. CraftCloud's desktop client would request the narrowest one.
+
+### C8. A folder's ETag doesn't always change when a file is added to it
+
+> **WebDAV folder ETag / `getlastmodified` stay the same after a new child file**
+>
+> Seen on 2026-11-13 with v0.10.0: a `PUT` that created `Shared/notes (conflict ….md` at 17:05:30 left
+> `Shared`'s `getlastmodified` at 17:05:29 and its ETag unchanged, in a listing made after that `PUT`. In an
+> earlier test (with a second between the steps) the ETags did change. Clients therefore can't use folder
+> ETags to skip unchanged subtrees, and must list every folder each time.
+>
+> Ask: update a folder's modification time (and so its ETag) whenever anything below it is created,
+> changed or deleted, the way `getetag` on collections is commonly relied on by sync clients.
+
+
+### C9. A share link's expiry can't be removed
+
+> **`PUT /api/shares/{id}` can set `expires_at` but not clear it**
+>
+> `null` means "leave as it is" and `""` is refused (422, not RFC 3339), so once a link has an expiry it keeps
+> one; the only way back to "never" is a new link (and a new URL). The password can be removed with `""`.
+>
+> Ask: accept an explicit way to clear it, e.g. `"expires_at": ""` or a `clear_expiry: true` flag.
+
+### C10. Small inconsistencies in the REST answers (v0.10.0)
+
+> - `GET /api/shares` answers `{items, pagination}`, but a bare array when `item_id`/`item_type` are given.
+> - `POST /api/trash/{id}/restore` answers 200 "Item restored successfully" for an id that is not in the trash.
+> - Rename and move answers (`PUT /api/files/{id}/rename|move`, batch move) carry an empty `content_hash` and an
+>   `etag` like `-1794606853`, while a fresh `GET` has both.
+> - `path` is `/Personal/…` in file records and search, `Personal/…` in favourites, recent and trash, and `""`
+>   in `GET /api/folders/{id}/resources`.
+> - WebDAV `DELETE` deletes for good while the REST deletes move to the trash; a sync client that deletes over
+>   WebDAV bypasses the trash. A WebDAV client has no way to ask for the trash.
+>
+> Ask: one shape per answer, a 404 for an unknown trash id, complete records after rename/move, one path
+> convention, and WebDAV deletes that go to the trash (as Nextcloud's do) or a header to choose.
+
+### C11. Storage use doesn't drop when the trash is emptied
+
+> **Uploads are refused for the quota for up to 10 minutes after emptying the trash**
+>
+> Seen on 2026-11-14 with v0.10.0: deleting a file, emptying the trash and uploading another of the same size
+> answers 507 (quota), because `users.storage_used_bytes` / `drives.used_bytes` are only recounted by the
+> `usage_reconcile` job (every `OXICLOUD_STORAGE_USAGE_RECONCILE_SECS`, 600 by default). An admin can run it at
+> once (`POST /api/admin/jobs/usage_reconcile/trigger`), and CraftCloud's desktop client does so for an admin;
+> other people's clients try again after a few minutes.
+>
+> Ask: subtract the purged bytes when the trash is emptied (or an item is deleted for good), the way an upload
+> adds them, or let a user recount their own use.
+
+### C12. A backslash in a WebDAV `PUT` name answers 500 but creates the file, which then breaks listings
+
+> **`PUT /webdav/back%5Cslash.txt` → 500, yet the file exists, and every `PROPFIND` of its folder is cut off**
+>
+> Seen on 2026-11-14 with v0.10.0: the `PUT` answers 500 "An internal error occurred", but the file is created
+> (`GET /api/folders/{id}/resources` lists `back\slash.txt`). From then on a `PROPFIND` (depth 1) of that folder
+> stops mid-stream (no closing `</D:multistatus>`; through Caddy's gzip a client sees "Peer disconnected"), so
+> every sync client of that account is stuck offline until the file is removed over REST. `MKCOL` with a
+> backslash answers 400 "name must not contain '/' or '\\'", as it should. CraftCloud never uploads such names.
+>
+> Ask: refuse the name on `PUT` the way `MKCOL` does (400, nothing created), and never let one bad entry end a
+> listing.
+
+### C13. `If-Range` is ignored on WebDAV `GET`
+
+> **`Range` gets a 206, but `If-Range` with a stale ETag still gets a 206 of the new bytes**
+>
+> Seen on 2026-11-14 with v0.10.0: `GET` with `Range: bytes=50000-` answers 206 with `Content-Range` and the ETag,
+> and so does the same request with `If-Range: "nope"` (it should answer 200 with the whole file). A client that
+> resumes a download must compare the 206's ETag with the one it started from itself (CraftCloud's does).
+>
+> Ask: honour `If-Range` (RFC 9110 13.1.5).
+
+### C14. Single sign-on failures that end on a raw error page
+
+> **The OIDC callback answers 400 in plain text when the provider sends `?error=…`, and `authorize` answers a
+> JSON 500 when the provider can't be reached**
+>
+> Seen on 2026-11-14 with v0.10.0 and a Keycloak test realm:
+> - When the person cancels or the provider refuses them, the provider redirects to
+>   `/api/auth/oidc/callback?error=access_denied&state=…` without `code`. `OidcCallbackQueryDto` requires `code`,
+>   so axum answers 400 "Failed to deserialize query string" as `text/plain`, mid-navigation.
+> - `GET /api/auth/oidc/authorize` with an issuer URL the server can't reach answers 500
+>   `{"error":"An internal error occurred…"}`. Saving that issuer through `PUT /api/admin/settings/oidc` was accepted
+>   without a check.
+>
+> CraftCloud's Caddyfile turns both into redirects to `/login?login_error=provider_denied|provider_error|
+> provider_unreachable|callback_failed`. Ask: redirect to `<frontend>/login?login_error=<key>` from these paths
+> too (the callback already does for its own failures), and keep the provider's `error` for the log.
+
+### C15. Several different sign-in refusals share `callback_denied`
+
+> **A wrong client secret, a replayed state and "no account, and accounts aren't created at sign-in" all come
+> back as `login_error=callback_denied`**
+>
+> Seen on 2026-11-14 with v0.10.0: the token endpoint's 401 ("Token exchange failed with status 401") and
+> `auto_provision=false` for an unknown person ("Auto-provisioning is disabled") are both `AccessDenied`, so the
+> sign-in page can't tell the person "ask an admin for an account" apart from "try again". The reasons are only in
+> the container log.
+>
+> Ask: distinct keys, e.g. `account_not_provisioned` and `client_auth_failed` (the latter is an admin problem,
+> the former a user one).
+
+### C16. Admin by group is only decided when the account is created
+
+> **Joining or leaving the admin group at the provider changes nothing for an existing account**
+>
+> Seen on 2026-11-14 with v0.10.0: `OXICLOUD_OIDC_ADMIN_GROUPS` maps the `groups` claim to the admin role only
+> when the account is created at first sign-in (`map_oidc_role` is called on the JIT path only). A person added
+> to the group later stays a user; one removed stays an admin. An account joined by email (auto-link) keeps its
+> role too. The claim name is fixed to `groups`, and `auto_link_email_match` is not in the admin settings DTOs
+> (environment only).
+>
+> Ask: re-evaluate the role from the groups on each sign-in (at least upgrade and downgrade between user and
+> admin, never touching the owner), a configurable groups claim name, and `auto_link_email_match` in the admin
+> settings.
+
+## D. craft-common-actions (github.com/storytold/craft-common-actions)
+
+CraftCloud builds its desktop releases with its own `.github/workflows/release.yml`, which makes the same files
+as the Craft apps' releases. These would let it call the shared workflow instead.
+
+### D1. The release workflow can't run from a repository on a personal account
+
+> **`release.yml`: a macOS runner input, GPG signing independent of platform signing, per-target switches**
+>
+> Read on 2026-11-14 from `main` (no run made):
+>
+> - The `macos` job always runs on `macos-15-xlarge`; only `dry-run: true` skips it, and a dry run makes no
+>   release. Larger runners are only for organisations on the GitHub Team or Enterprise Cloud plans, so from a
+>   personal account's repository that job never gets a runner, and the `release` job, which needs it, never runs.
+> - The Linux signing key (`LINUX_SIGNING_KEY`) is imported only on the `release` branch, and on that branch the
+>   macOS and Windows jobs fail without all the Apple secrets and a Windows certificate. A project without Apple
+>   and Windows code signing therefore can't publish GPG-signed Linux files or a signed `SHA256SUMS.txt`.
+> - The `flatpak` job and the Windows arm64 build have no switch (`has-arch`, `has-freebsd` and `has-riscv64`
+>   exist), and Linux aarch64 can't be left out either.
+> - The release notes are GitHub's generated notes; there is no way to use the project's own release notes as the
+>   body, and no build-provenance attestation.
+>
+> Ask:
+> - a `macos-runner` input (default `macos-15-xlarge`), so `macos-15` or `macos-latest` can be passed;
+> - GPG signing whenever `LINUX_SIGNING_KEY` is set, on any ref, independent of Apple and Windows signing (with a
+>   `require-platform-signing` input for the projects that want the current strictness);
+> - per-target switches (`has-flatpak`, `has-windows-arm64`, `has-linux-aarch64`), as `has-arch` already is;
+> - optionally, a `notes-file` input and an attestation step.
+

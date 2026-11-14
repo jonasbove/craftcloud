@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata (software centres, Flathub). Template: package.sh and the other packaging
+     scripts substitute @VERSION@ and @DATE@ from Cargo.toml and the build date. -->
+<component type="desktop-application">
+  <id>io.github.jonasbove.craftcloud</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+  <name>CraftCloud</name>
+  <summary>Keep a folder in sync with your own CraftCloud server</summary>
+  <developer id="io.github.jonasbove">
+    <name>CraftCloud contributors</name>
+  </developer>
+  <description>
+    <p>
+      CraftCloud is a self-hosted cloud for the Craft apps. This desktop client keeps a folder on
+      your computer in sync with your CraftCloud server, so your files are the same on every
+      computer and the Craft apps open them from it and save them back.
+    </p>
+    <ul>
+      <li>Signs in through your browser; the client never sees your password</li>
+      <li>Two-way sync of the folders you choose, from the system tray</li>
+      <li>Changes made in two places become a conflict copy, never a silent overwrite</li>
+      <li>Keeps earlier versions of a file before it is overwritten</li>
+      <li>Also the craftcloud command line, for scripts and servers</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.jonasbove.craftcloud.desktop</launchable>
+  <icon type="stock">io.github.jonasbove.craftcloud</icon>
+  <!-- Only url types known to appstream 0.15 (Ubuntu 22.04, where CI builds): no vcs-browser. -->
+  <url type="homepage">https://github.com/jonasbove/craftcloud</url>
+  <url type="bugtracker">https://github.com/jonasbove/craftcloud/issues</url>
+  <url type="help">https://github.com/jonasbove/craftcloud#readme</url>
+  <categories>
+    <category>Network</category>
+    <category>FileTransfer</category>
+  </categories>
+  <keywords>
+    <keyword>sync</keyword>
+    <keyword>cloud</keyword>
+    <keyword>files</keyword>
+    <keyword>craft</keyword>
+  </keywords>
+  <branding>
+    <color type="primary" scheme_preference="light">#c9d8bd</color>
+    <color type="primary" scheme_preference="dark">#34452a</color>
+  </branding>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+  <provides>
+    <binary>craftcloud</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>

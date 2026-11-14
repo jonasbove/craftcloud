@@ -1,0 +1,29 @@
+CraftCloud
+Copyright (c) 2026 the CraftCloud contributors
+Licensed under MIT OR Apache-2.0 (LICENSE-MIT, LICENSE-APACHE).
+
+This project includes or adapts work from:
+
+- ArtCraft Launcher (https://github.com/storytold/craft-launcher)
+  Copyright (c) 2026 ArtCraft Team and the ArtCraft Launcher contributors, MIT OR Apache-2.0.
+  The workspace layout, the egui theme tokens, the look of the header, sheets, buttons and app cards,
+  the start-at-login code and the Nix flake are modelled on it. The release packaging in packaging/
+  (env.sh; the Linux package.sh, nfpm.yaml, postinst.sh, AppRun and Flatpak bundle script; the macOS
+  package.sh, verify.sh and import-cert.sh; the Windows package.ps1, sign.ps1 and WiX sources; the
+  FreeBSD package.sh) is adapted from its packaging/ scripts, and the Arch package and FreeBSD cross
+  build from storytold/craft-common-actions (MIT OR Apache-2.0). No ArtCraft logo, mark, name, icon
+  or installer art is used in CraftCloud's branding or packaging.
+
+- The CraftCloud mark (the mackerel; design/assets/logo/) is CraftCloud's own. The packaging icons
+  (packaging/linux/icons/, packaging/macos/craftcloud.icns, apps/craftcloud/assets/craftcloud.ico)
+  are rendered from it by packaging/icons.sh.
+
+- The Craft apps' names, taglines, colours and icons (https://github.com/storytold), MIT OR Apache-2.0,
+  shown in the app catalog of the -apps image. The icons in crates/ui-egui/assets/app-icons/ (built
+  into the web frontend's app cards) come from ArtCraft Launcher's assets/app-icons/.
+
+- OxiCloud (https://github.com/AtalayaLabs/OxiCloud), Copyright (c) 2025 OxiCloud Contributors, MIT.
+  The server image runs the upstream OxiCloud image unmodified.
+
+- Inter, Archivo and Geist Mono, SIL Open Font License 1.1; the licences are next to the font files
+  in crates/ui-egui/assets/fonts/.

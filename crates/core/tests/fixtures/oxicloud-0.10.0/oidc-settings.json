@@ -1,0 +1,13 @@
+{
+  "enabled": false,
+  "issuer_url": "",
+  "client_id": "",
+  "client_secret_set": false,
+  "scopes": "openid profile email",
+  "auto_provision": true,
+  "admin_groups": "",
+  "disable_password_login": false,
+  "provider_name": "SSO",
+  "callback_url": "http://127.0.0.1:8097/api/auth/oidc/callback",
+  "env_overrides": []
+}

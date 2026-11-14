@@ -1,0 +1,10 @@
+{
+  "enabled": false,
+  "issuer": "",
+  "provider_name": "",
+  "authorize_endpoint": "",
+  "password_login_enabled": true,
+  "magic_link_login_enabled": true,
+  "require_verified_email": false,
+  "auto_redirect_to_oidc": false
+}

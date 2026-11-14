@@ -1,0 +1,48 @@
+[package]
+name = "craftcloud"
+description = "CraftCloud's desktop client: keeps a local folder in sync with your CraftCloud server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "craftcloud"
+path = "src/main.rs"
+
+[dependencies]
+craftcloud-core = { workspace = true }
+craftcloud-native = { workspace = true }
+craftcloud-ui-egui = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "clipboard", "wgpu", "accesskit", "wayland", "x11", "persistence"] }
+egui = { workspace = true }
+log = { workspace = true }
+# The logo PNG for the tray icon.
+image = { version = "0.25", default-features = false, features = ["png"] }
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+# The command line (`craftcloud ls`, `craftcloud sync`, …).
+clap = { version = "4.6", features = ["derive", "env"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+jiff = "0.2"
+ureq = { version = "3.5", default-features = false }
+
+# The tray (menu bar) icon, as craft-launcher: on Linux and the BSDs the StatusNotifierItem
+# backend talks D-Bus directly, so no GTK or libappindicator is needed.
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+tray-icon = "0.26"
+
+[target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
+tray-icon = { version = "0.26", default-features = false, features = ["ksni"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[build-dependencies]
+# The logo as craftcloud.exe's icon; build.rs only uses it when targeting Windows (as craft-launcher).
+winresource = "0.1"

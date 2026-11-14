@@ -1,0 +1,10 @@
+[alias]
+xtask = "run --package xtask --"
+
+# Windows: link the C runtime into the exe. Without it craftcloud.exe needs VCRUNTIME140.dll, which
+# a fresh Windows doesn't have, and exits at once (0xC0000135) with no message.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

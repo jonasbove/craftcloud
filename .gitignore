@@ -1,0 +1,17 @@
+.env
+*.local
+/target/
+node_modules/
+/build/
+
+/dist/
+__pycache__/
+
+# Local working notes (not part of the project); CLAUDE.md is tracked (`@AGENTS.md`),
+# one machine's facts go in CLAUDE.local.md
+/CLAUDE.local.md
+/PLAN.md
+/docs/RESEARCH.md
+
+# Agent worktrees
+/.claude/

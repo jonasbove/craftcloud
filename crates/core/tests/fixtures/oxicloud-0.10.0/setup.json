@@ -1,0 +1,9 @@
+{
+  "id": "04381287-02d6-4bee-b28c-ab9db645e497",
+  "username": "john",
+  "email": "john@example.org",
+  "role": "owner",
+  "image": null,
+  "is_external": false,
+  "is_online": false
+}

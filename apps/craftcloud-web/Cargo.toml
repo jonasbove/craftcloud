@@ -1,0 +1,30 @@
+[package]
+name = "craftcloud-web"
+description = "CraftCloud's web frontend: the server's own pages (setup, sign-in, files), built to wasm with Trunk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "craftcloud-web"
+path = "src/main.rs"
+
+[dependencies]
+craftcloud-core = { workspace = true }
+craftcloud-ui-egui = { workspace = true }
+egui = { workspace = true }
+log = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# `wgpu` pulls egui-wgpu's defaults: WebGPU plus the WebGL2 fallback.
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "persistence"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window", "Document", "HtmlDocument", "Element", "HtmlCanvasElement", "Location", "History", "Headers", "Request", "RequestInit", "RequestCredentials", "Response", "Performance", "HtmlAnchorElement", "HtmlElement", "Node", "HtmlInputElement", "File", "FileList", "Blob", "XmlHttpRequest", "XmlHttpRequestUpload", "XmlHttpRequestResponseType", "XmlHttpRequestEventTarget", "ProgressEvent", "EventTarget"] }

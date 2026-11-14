@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=CraftCloud
+GenericName=File sync
+Comment=Keeps your CraftCloud folder in sync
+Exec=craftcloud %u
+TryExec=craftcloud
+Icon=io.github.jonasbove.craftcloud
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=sync;cloud;files;craft;
+StartupNotify=true
+StartupWMClass=io.github.jonasbove.craftcloud
+MimeType=x-scheme-handler/craftcloud;

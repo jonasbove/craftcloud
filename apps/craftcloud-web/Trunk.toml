@@ -1,0 +1,12 @@
+# Build with: trunk build --release --cargo-profile wasm-release   (from apps/craftcloud-web)
+# or `cargo xtask web` from the repository root.
+[build]
+target = "index.html"
+dist = "../../dist/web"
+# Absolute: the frontend answers nested paths too (/admin/users, /login?oidc_code=…).
+public_url = "/"
+filehash = true
+
+[serve]
+addresses = ["127.0.0.1"]
+port = 8767

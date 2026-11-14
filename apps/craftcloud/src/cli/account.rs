@@ -1,0 +1,361 @@
+//! Signing in and out, the desktop client's sync (through its control channel), storage use, and
+//! opening the local copy of a file.
+
+use std::time::{Duration, Instant};
+
+use craftcloud_core::ServerUrl;
+use craftcloud_core::api::auth::{self, DevicePoll};
+use craftcloud_core::sync::SyncPlan;
+use craftcloud_native::control::{self, LinkHandoff, Request, SendError, Status};
+use craftcloud_native::http::execute;
+use craftcloud_native::open::{self, OpenError};
+use craftcloud_native::settings::Prefs;
+use serde_json::json;
+
+use super::output::{self, CliError, Fail, Result, print_json};
+use super::remote::{Ctx, clean};
+
+fn send(req: &craftcloud_core::http::HttpRequest) -> Result<craftcloud_core::http::HttpResponse> {
+    execute(req).map_err(CliError::transport)
+}
+
+/// `login [server]`: the device flow, as in the desktop client.
+pub fn login(ctx: &mut Ctx, server: Option<&str>, no_browser: bool) -> Result<()> {
+    let server = match server {
+        Some(s) => ServerUrl::parse(s).map_err(|e| CliError::usage(format!("{s}: {e}")))?,
+        None => ctx.server().map_err(|_| CliError::usage("Which server? Run `craftcloud login <server>`."))?,
+    };
+    let resp = send(&auth::device_authorize(&server, &craftcloud_native::client_name()))?;
+    let start = auth::parse_device_authorize(&resp).map_err(|e| CliError::api(&e).context("starting the sign-in"))?;
+    if ctx.json {
+        print_json(&json!({"user_code": start.user_code, "verification_uri": start.browser_url(), "expires_in": start.expires_in}))?;
+    } else {
+        eprintln!("To sign in, open {} and approve the code {}", start.browser_url(), start.user_code);
+    }
+    if !no_browser && craftcloud_native::open_url(start.browser_url()).is_err() && !ctx.json {
+        eprintln!("(Couldn't open a browser; open the address yourself.)");
+    }
+    let mut interval = Duration::from_secs(start.interval.max(1));
+    let deadline = Instant::now() + Duration::from_secs(start.expires_in);
+    let tokens = loop {
+        if Instant::now() > deadline {
+            return Err(CliError::new(Fail::SignedOut, "The code ran out before it was approved. Run `craftcloud login` again."));
+        }
+        std::thread::sleep(interval);
+        let resp = send(&auth::device_token(&server, &start.device_code))?;
+        match auth::parse_device_token(&resp).map_err(|e| CliError::api(&e))? {
+            DevicePoll::Pending => {}
+            DevicePoll::SlowDown => interval += Duration::from_secs(5),
+            DevicePoll::Approved(t) => break t,
+            DevicePoll::Denied => return Err(CliError::new(Fail::SignedOut, "The sign-in was denied.")),
+            DevicePoll::Expired => return Err(CliError::new(Fail::SignedOut, "The code ran out. Run `craftcloud login` again.")),
+        }
+    };
+    ctx.tokens(&server).save(&tokens).map_err(|e| CliError::error(format!("couldn't keep the sign-in: {e}")))?;
+    let me = auth::parse_me(&send(&tokens.authorize(auth::me(&server)))?).map_err(|e| CliError::api(&e))?;
+    let username = me.map(|m| m.user.username).unwrap_or_default();
+    // The desktop client's server, when it has none yet; a different one stays as it is.
+    let mut settings = ctx.settings();
+    let default = settings.server.is_empty() || settings.server == server.to_string();
+    if settings.server.is_empty() {
+        settings.server = server.to_string();
+        ctx.store.set(Prefs(settings));
+        ctx.store.flush().map_err(|e| CliError::error(format!("couldn't save the settings: {e}")))?;
+    }
+    if ctx.json {
+        print_json(&json!({"signed_in": true, "server": server.to_string(), "username": username, "default": default}))
+    } else {
+        println!("Signed in to {server} as {username}.");
+        if !default {
+            println!("The desktop client uses another server; pass --server {server} (or set CRAFTCLOUD_SERVER) to use this one.");
+        }
+        Ok(())
+    }
+}
+
+/// `logout`: ends the sign-in on the server and forgets it here.
+pub fn logout(ctx: &mut Ctx) -> Result<()> {
+    let server = ctx.server()?;
+    let store = ctx.tokens(&server);
+    let had = store.load();
+    if let Some(tokens) = &had {
+        // Best effort: the sign-in also ends on the server, so the desktop client stops too.
+        let _ = execute(&tokens.authorize(auth::logout(&server)));
+    }
+    store.delete();
+    let mut settings = ctx.settings();
+    if settings.server == server.to_string() {
+        settings = craftcloud_core::sync::ClientSettings { server: settings.server, ..Default::default() };
+        ctx.store.set(Prefs(settings));
+        ctx.store.flush().map_err(|e| CliError::error(format!("couldn't save the settings: {e}")))?;
+    }
+    if ctx.json {
+        print_json(&json!({"signed_out": true, "server": server.to_string(), "was_signed_in": had.is_some()}))
+    } else {
+        println!("{}", if had.is_some() { format!("Signed out of {server}.") } else { format!("Wasn't signed in to {server}.") });
+        Ok(())
+    }
+}
+
+fn client(ctx: &Ctx, request: &Request) -> Result<Status> {
+    let dir = ctx.dir().ok_or_else(|| CliError::error("no settings folder"))?;
+    control::send(&dir, request).map_err(|e| match e {
+        SendError::NotRunning => CliError::new(Fail::NoClient, "The desktop client isn't running. Start CraftCloud first."),
+        SendError::Failed(why) => CliError::error(why),
+    })
+}
+
+fn show_status(ctx: &Ctx, s: &Status) -> Result<()> {
+    if ctx.json {
+        return print_json(s);
+    }
+    if !s.syncing {
+        println!("The desktop client is running but not signed in.");
+        return Ok(());
+    }
+    println!("{}", state_words(s));
+    println!("server   {}", s.server);
+    println!("folder   {}", s.local_folder);
+    if s.files_total > 0 {
+        println!("files    {} of {}", s.files_done, s.files_total);
+    }
+    for c in &s.conflicts {
+        println!("conflict {c}");
+    }
+    for n in &s.no_room {
+        println!("not synced {n}  (no room in the cloud)");
+    }
+    for n in &s.not_synced {
+        println!("{}", not_synced_line(n));
+    }
+    for a in &s.activity {
+        println!("  {}", a.line());
+    }
+    Ok(())
+}
+
+/// `not synced t13/locked.txt  (can't be read)`.
+pub(super) fn not_synced_line(n: &control::NotSynced) -> String {
+    format!("not synced {}  ({})", n.path, reason_words(&n.reason))
+}
+
+fn reason_words(reason: &str) -> &str {
+    match reason {
+        "unreadable" => "can't be read",
+        "symlink" => "a symbolic link, never followed",
+        "name" => "a name the cloud can't take",
+        "temporary" => "looks like a temporary file",
+        other => other,
+    }
+}
+
+/// How many places the last sync couldn't read (they hold the sync of what is under them).
+fn unreadable(s: &Status) -> usize {
+    s.not_synced.iter().filter(|n| n.unreadable()).count()
+}
+
+/// The state in a few words.
+pub(super) fn state_words(s: &Status) -> String {
+    let error = s.error.clone().unwrap_or_default();
+    match s.state.as_str() {
+        "up_to_date" if unreadable(s) > 0 => {
+            let n = unreadable(s);
+            format!("Up to date · {n} {} can't be read (see `not synced` below; fix the permissions to sync {}).", if n == 1 { "place" } else { "places" }, if n == 1 { "it" } else { "them" })
+        }
+        "up_to_date" if !s.no_room.is_empty() => {
+            let n = s.no_room.len();
+            format!("Up to date · {n} not synced (no room in the cloud: free some, or empty the trash).")
+        }
+        "up_to_date" if !s.failed.is_empty() => {
+            let n = s.failed.len();
+            format!("Up to date · {n} {} couldn't sync (see the activity; tried again every pass).", if n == 1 { "file" } else { "files" })
+        }
+        "up_to_date" => "Up to date.".to_owned(),
+        "paused" => "Paused.".to_owned(),
+        "offline" => format!("Offline: {error}"),
+        "signed_out" => "Signed out: sign in again.".to_owned(),
+        "mass_delete" => format!(
+            "Held: this sync would delete {} files (everything else syncs). Run `craftcloud sync --confirm-deletes` to delete them, or `craftcloud sync --discard-deletes` to bring them back.",
+            s.pending_deletes.len()
+        ),
+        "folder_missing" => "Held: the sync folder is missing (moved, deleted, or on a drive that isn't there); nothing was deleted. Put it back, or make it again (empty) to download everything again.".to_owned(),
+        "failed" => format!("Failed: {error}"),
+        other => format!("{}…", other[..1].to_uppercase() + &other[1..]),
+    }
+}
+
+/// `status`.
+/// Exits with code 9 while the sync is held and waits for a decision, or a place can't be read.
+pub fn status(ctx: &Ctx) -> Result<()> {
+    let s = client(ctx, &Request::Status)?;
+    show_status(ctx, &s)?;
+    held(&s)
+}
+
+/// Code 9 while the sync waits for the person: a mass delete, a missing sync folder, or a place
+/// in a synced folder that can't be read. Symbolic links and names the cloud can't take are left
+/// out for good (until renamed), so they don't count.
+pub(super) fn held(s: &Status) -> Result<()> {
+    match s.state.as_str() {
+        "mass_delete" | "folder_missing" => Err(CliError::new(Fail::Held, state_words(s))),
+        "up_to_date" if unreadable(s) > 0 => Err(CliError::new(Fail::Held, state_words(s))),
+        _ => Ok(()),
+    }
+}
+
+/// What `sync` does about a mass-delete hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Deletes {
+    Hold,
+    Confirm,
+    Discard,
+}
+
+/// `pause` / `resume`.
+pub fn pause(ctx: &Ctx, on: bool) -> Result<()> {
+    let s = client(ctx, if on { &Request::Pause } else { &Request::Resume })?;
+    show_status(ctx, &s)
+}
+
+/// `sync`: through the desktop client when it runs, else one pass here.
+pub fn sync(ctx: &Ctx, wait: bool, once: bool, deletes: Deletes) -> Result<()> {
+    let request = match deletes {
+        Deletes::Hold => Request::Sync { wait },
+        Deletes::Confirm => Request::ConfirmDeletes,
+        Deletes::Discard => Request::DiscardDeletes,
+    };
+    if !once {
+        // How many deletions wait, to say what is about to happen (T-042: not silence).
+        let waiting = match deletes {
+            Deletes::Hold => 0,
+            _ => client(ctx, &Request::Status).map_or(0, |s| s.pending_deletes.len()),
+        };
+        if !ctx.json && waiting > 0 {
+            eprintln!("{}", deletes_words(deletes, waiting, false));
+        }
+        match client(ctx, &request) {
+            Ok(s) => {
+                if !ctx.json && waiting > 0 && s.state != "mass_delete" {
+                    println!("{}", deletes_words(deletes, waiting, true));
+                }
+                show_status(ctx, &s)?;
+                return failed(&s);
+            }
+            Err(e) if e.kind == Fail::NoClient => {}
+            Err(e) => return Err(e),
+        }
+    }
+    if !ctx.json && deletes != Deletes::Hold {
+        eprintln!("{}", deletes_words(deletes, 0, false));
+    }
+    super::headless::once(ctx, deletes)
+}
+
+/// `Deleting 3000 files…` / `Deleted 3000 files.` (and the same for bringing them back); `n` 0:
+/// not known yet.
+pub(super) fn deletes_words(deletes: Deletes, n: usize, done: bool) -> String {
+    let files = if n == 0 { "the held files".to_owned() } else { format!("{n} file{}", if n == 1 { "" } else { "s" }) };
+    match (deletes, done) {
+        (Deletes::Discard, false) => format!("Bringing back {files}…"),
+        (Deletes::Discard, true) => format!("Brought back {files}."),
+        (_, false) => format!("Deleting {files}…"),
+        (_, true) => format!("Deleted {files}."),
+    }
+}
+
+/// A sync that ended anywhere but up to date (or paused, or still busy) is an error, with the
+/// exit code for its kind.
+pub(super) fn failed(s: &Status) -> Result<()> {
+    let kind = match s.state.as_str() {
+        "signed_out" => Fail::SignedOut,
+        "offline" => Fail::Unreachable,
+        "failed" if s.error.as_deref() == Some(craftcloud_native::session::SIGNED_OUT) => Fail::SignedOut,
+        "mass_delete" | "folder_missing" => Fail::Held,
+        "failed" => Fail::Error,
+        _ => return held(s),
+    };
+    Err(CliError::new(kind, state_words(s)))
+}
+
+/// `usage`.
+pub fn usage(ctx: &Ctx) -> Result<()> {
+    let mut remote = ctx.remote()?;
+    let me = remote.ask(&auth::me(remote.server()), auth::parse_me)?.ok_or_else(|| CliError::new(Fail::SignedOut, "Not signed in."))?;
+    // Kept versions count against the quota too (T-049).
+    let versions = remote.session.versions_bytes().map_err(CliError::transport)?;
+    if ctx.json {
+        return print_json(&json!({
+            "username": me.user.username,
+            "used_bytes": me.storage_used_bytes,
+            "quota_bytes": me.storage_quota_bytes,
+            "versions_bytes": versions,
+        }));
+    }
+    println!("{}", usage_words(me.storage_used_bytes, me.storage_quota_bytes, versions));
+    Ok(())
+}
+
+/// `1.2 GB of 10 GB used (200 MB in earlier versions)`.
+pub(super) fn usage_words(used: u64, quota: u64, versions: u64) -> String {
+    let quota = if quota == 0 { "no limit".to_owned() } else { output::size(quota) };
+    let versions = if versions == 0 { String::new() } else { format!(" ({} in earlier versions)", output::size(versions)) };
+    format!("{} of {quota} used{versions}", output::size(used))
+}
+
+/// `open <path>`: the synced local copy, with the app the system picks.
+pub fn open(ctx: &Ctx, path: &str) -> Result<()> {
+    let path = clean(path)?;
+    let local = open::locate(&SyncPlan::from(&ctx.settings()), &path).map_err(open_error)?;
+    open::open(&local).map_err(CliError::error)?;
+    opened(ctx, &local.display().to_string())
+}
+
+/// `craftcloud craftcloud://open?path=…` (how the system starts us for a link): hands the link to
+/// the running desktop client or daemon, or, when none runs, opens the file here and exits.
+pub fn link(ctx: &Ctx, url: &str) -> Result<()> {
+    craftcloud_core::deeplink::parse(url).map_err(|e| CliError::usage(e.to_string()))?;
+    if let Some(dir) = ctx.dir() {
+        match control::send_link(&dir, url) {
+            LinkHandoff::Opened(local) => return opened(ctx, &local),
+            LinkHandoff::Refused(e) => return Err(open_error(e)),
+            LinkHandoff::NotTaken => {}
+        }
+    }
+    let local = open::follow(&SyncPlan::from(&ctx.settings()), url).map_err(open_error)?;
+    opened(ctx, &local.display().to_string())
+}
+
+fn opened(ctx: &Ctx, local: &str) -> Result<()> {
+    if ctx.json { print_json(&json!({"opened": local})) } else { Ok(()) }
+}
+
+/// Exit codes: a bad link or no sync folder 2, not synced or not here 4, the system's opener 1.
+fn open_error(e: OpenError) -> CliError {
+    let kind = match e {
+        OpenError::BadLink(_) | OpenError::NoFolder(_) => Fail::Usage,
+        OpenError::NotSynced(_) | OpenError::NotHere(_) => Fail::NotFound,
+        OpenError::Failed(_) => Fail::Error,
+    };
+    CliError::new(kind, e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::failed;
+    use craftcloud_native::control::Status;
+
+    #[test]
+    fn a_failed_sync_is_an_error() {
+        let ok = Status { state: "up_to_date".into(), ..Status::default() };
+        assert!(failed(&ok).is_ok());
+        let bad = Status { state: "failed".into(), error: Some("disk full".into()), ..Status::default() };
+        assert_eq!(failed(&bad).unwrap_err().kind.code(), 1);
+        let out = Status { state: "failed".into(), error: Some(craftcloud_native::session::SIGNED_OUT.into()), ..Status::default() };
+        assert_eq!(failed(&out).unwrap_err().kind.code(), 3);
+        let codes: Vec<u8> = ["signed_out", "offline", "mass_delete", "folder_missing", "paused", "scanning"]
+            .iter()
+            .map(|s| failed(&Status { state: (*s).into(), ..Status::default() }).err().map_or(0, |e| e.kind.code()))
+            .collect();
+        assert_eq!(codes, [3, 8, 9, 9, 0, 0]);
+    }
+}

@@ -1,0 +1,77 @@
+# .deb and .rpm packages (nfpm: https://nfpm.goreleaser.com). Run by package.sh, which stages
+# the file tree, substitutes its path for ${STAGE} (nfpm doesn't expand env vars in `src`) and
+# exports VERSION, NFPM_ARCH, GLIBC_FLOOR (the build host's glibc) and CRAFTCLOUD_MAINTAINER.
+# Adapted from craft-launcher's packaging/linux/nfpm.yaml (MIT OR Apache-2.0; see NOTICE).
+name: craftcloud
+arch: ${NFPM_ARCH}
+platform: linux
+version: ${VERSION}
+# semver: 0.2.0-rc.1 becomes 0.2.0~rc.1 in deb/rpm, so pre-releases sort before the release.
+version_schema: semver
+release: 1
+section: net
+priority: optional
+maintainer: ${CRAFTCLOUD_MAINTAINER}
+vendor: CraftCloud
+homepage: https://github.com/jonasbove/craftcloud
+license: MIT OR Apache-2.0
+description: |-
+  Desktop sync client and command line for a CraftCloud server
+  CraftCloud keeps a folder on this computer in sync with your self-hosted
+  CraftCloud, so the Craft apps open from it and save to it. It signs in
+  through the browser, lives in the system tray, keeps conflict copies instead
+  of overwriting, and is also the `craftcloud` command line.
+
+# The binary links only glibc and libgcc_s directly. Windowing (X11/Wayland, xkbcommon) and the
+# GPU (Vulkan, EGL/GL) are loaded at runtime with dlopen, so they aren't ELF NEEDED entries and
+# the package tools can't find them: list them here. The tray (StatusNotifierItem), the keychain
+# (Secret Service) and notifications talk to the session bus in pure Rust (zbus), so there is no
+# libdbus, GTK or appindicator dependency. Sign-in keeps its tokens through the Secret Service
+# (GNOME Keyring, KWallet, KeePassXC); xdg-utils opens the browser and the sync folder.
+overrides:
+  deb:
+    depends:
+      - libc6 (>= ${GLIBC_FLOOR})
+      - libgcc-s1
+      - libxkbcommon0
+      - libxkbcommon-x11-0
+      - libwayland-client0
+      - libx11-6
+      - libx11-xcb1
+      - libxcb1
+      - libxcursor1
+      - libxi6
+      - libvulkan1 | libegl1
+    recommends:
+      - mesa-vulkan-drivers
+      - libegl-mesa0
+      - xdg-utils
+      - gnome-keyring | kwalletmanager | keepassxc
+  rpm:
+    # Soname provides, so the same requirements resolve on Fedora/RHEL and openSUSE.
+    depends:
+      - glibc >= ${GLIBC_FLOOR}
+      - libxkbcommon.so.0()(64bit)
+      - libxkbcommon-x11.so.0()(64bit)
+      - libwayland-client.so.0()(64bit)
+      - libX11.so.6()(64bit)
+      - libX11-xcb.so.1()(64bit)
+      - libxcb.so.1()(64bit)
+      - libXcursor.so.1()(64bit)
+      - libXi.so.6()(64bit)
+      - (libvulkan.so.1()(64bit) or libEGL.so.1()(64bit))
+    recommends:
+      - mesa-vulkan-drivers
+      - xdg-utils
+
+contents:
+  - src: ${STAGE}/usr/bin/craftcloud
+    dst: /usr/bin/craftcloud
+    file_info: { mode: 0755 }
+  - src: ${STAGE}/usr/share/
+    dst: /usr/share/
+    type: tree
+
+scripts:
+  postinstall: packaging/linux/postinst.sh
+  postremove: packaging/linux/postinst.sh

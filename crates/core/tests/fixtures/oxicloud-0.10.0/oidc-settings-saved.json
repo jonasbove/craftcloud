@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "issuer_url": "https://id.example.org",
+  "client_id": "craftcloud",
+  "client_secret_set": true,
+  "scopes": "openid profile email groups",
+  "auto_provision": true,
+  "admin_groups": "craftcloud-admins",
+  "disable_password_login": false,
+  "provider_name": "Example ID",
+  "callback_url": "http://127.0.0.1:8097/api/auth/oidc/callback",
+  "env_overrides": []
+}

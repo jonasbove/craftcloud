@@ -1,0 +1,65 @@
+name: Copy images to Docker Hub
+
+# By hand: copies a released version's images from ghcr.io to Docker Hub, unchanged: the digests match,
+# so the build-provenance attestation made when the image was built covers the copy too
+# (`gh attestation verify oci://docker.io/<user>/craftcloud:<ver> --repo <owner>/<repo>`).
+# Releases do this by themselves (image.yml); this is for a release made before Docker Hub was set
+# up, or to put Docker Hub back in step. `latest` tags move only when asked.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to copy, e.g. 0.1.0"
+        required: true
+        type: string
+      latest:
+        description: "Also point :latest and :latest-apps at it"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  copy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        suffix: ["", "-apps"]
+    steps:
+      - name: Copy
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          VERSION: ${{ inputs.version }}
+          LATEST: ${{ inputs.latest }}
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          case "$VERSION" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::not a version: $VERSION"; exit 1 ;;
+          esac
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::error::DOCKERHUB_USERNAME (variable) and DOCKERHUB_TOKEN (secret) must be set."
+            exit 1
+          fi
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+          src="ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/craftcloud:$VERSION$SUFFIX"
+          hub="docker.io/$(printf '%s' "$DOCKERHUB_USERNAME" | tr '[:upper:]' '[:lower:]')/craftcloud"
+          tags=(-t "$hub:$VERSION$SUFFIX")
+          [ "$LATEST" = true ] && tags+=(-t "$hub:latest$SUFFIX")
+          docker buildx imagetools create "${tags[@]}" "$src"
+          want="$(docker buildx imagetools inspect "$src" --format '{{json .Manifest}}' | jq -r .digest)"
+          got="$(docker buildx imagetools inspect "$hub:$VERSION$SUFFIX" --format '{{json .Manifest}}' | jq -r .digest)"
+          echo "ghcr.io $want, Docker Hub $got"
+          if [ "$want" != "$got" ]; then
+            echo "::error::the Docker Hub copy has another digest, so the build's attestation wouldn't cover it"
+            exit 1
+          fi

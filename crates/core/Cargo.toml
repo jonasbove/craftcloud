@@ -1,0 +1,20 @@
+[package]
+name = "craftcloud-core"
+description = "CraftCloud's model and logic without UI: server addresses, the server's runtime config, and (next) the API client and sync engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+percent-encoding = { workspace = true }
+craft-dav = { workspace = true }
+craft-xml = { workspace = true }

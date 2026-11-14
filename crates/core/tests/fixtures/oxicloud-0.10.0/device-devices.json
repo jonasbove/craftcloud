@@ -1,0 +1,11 @@
+[
+    {
+        "id": "4900997e-296e-47dc-9268-f6b7d77d3040",
+        "client_name": "CraftCloud on Laptop",
+        "scopes": "webdav",
+        "status": "authorized",
+        "created_at": "2026-11-13T22:37:24.988844+00:00",
+        "authorized_at": "2026-11-13T22:37:34.610242+00:00",
+        "expires_at": "2026-11-13T22:52:24.988844+00:00"
+    }
+]

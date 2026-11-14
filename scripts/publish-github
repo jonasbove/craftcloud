@@ -1,0 +1,92 @@
+#!/bin/sh
+# Publishes `main` to a public repository whose history starts at a release: its first commit holds
+# exactly the tree of the release tag (no earlier history), and every later commit on `main` is
+# replayed on top with the same tree, message, author and date (a merge becomes one commit with the
+# merge's tree). The primary repository keeps its full history; this one is a pruned copy.
+#
+#   scripts/publish-github REMOTE BASE_TAG [BRANCH]
+#     REMOTE    the public repository's git URL (e.g. https://github.com/OWNER/REPO.git)
+#     BASE_TAG  the release its history starts at (e.g. v0.1.0)
+#     BRANCH    the branch to publish (default: main)
+#
+# PUBLIC_NAME and PUBLIC_EMAIL (both or neither) replace the author and committer of every published
+# commit, e.g. a GitHub account and its no-reply address, so the public history shows that account
+# and no private address; the primary repository keeps the original. Co-author trailers are kept.
+#
+# It's incremental: `refs/publish/<remote-hash>/source` records the last commit published from
+# BRANCH and `refs/publish/<remote-hash>/public` the matching public commit, so a run only replays
+# what's new. Tags `v*` on BRANCH that point at a published commit are pushed as the matching public
+# commit, so a release tag starts the release builds there.
+set -eu
+
+REMOTE="${1:?usage: scripts/publish-github REMOTE BASE_TAG [BRANCH]}"
+BASE="${2:?usage: scripts/publish-github REMOTE BASE_TAG [BRANCH]}"
+BRANCH="${3:-main}"
+key="$(printf '%s' "$REMOTE" | sha256sum | cut -c1-12)"
+SRC="refs/publish/$key/source"
+PUB="refs/publish/$key/public"
+
+git rev-parse --verify -q "$BASE^{commit}" >/dev/null || { echo "no such tag: $BASE" >&2; exit 2; }
+git merge-base --is-ancestor "$BASE" "$BRANCH" || { echo "$BASE is not on $BRANCH" >&2; exit 2; }
+
+# Same author, committer and date as the source commit.
+replay() { # source-commit tree parent-or-empty
+    msg="$(git log -1 --format=%B "$1")"
+    eval "$(git log -1 --format='GIT_AUTHOR_NAME=%an%nGIT_AUTHOR_EMAIL=%ae%nGIT_AUTHOR_DATE=%aI%nGIT_COMMITTER_NAME=%cn%nGIT_COMMITTER_EMAIL=%ce%nGIT_COMMITTER_DATE=%cI' "$1" | sed "s/'/'\\\\''/g; s/=\(.*\)/='\1'/; s/^/export /")"
+    public_identity
+    if [ -n "$3" ]; then
+        printf '%s\n' "$msg" | git commit-tree "$2" -p "$3"
+    else
+        printf '%s\n' "$msg" | git commit-tree "$2"
+    fi
+}
+
+# The public author and committer, if set (see the top).
+public_identity() {
+    if [ -n "${PUBLIC_NAME:-}" ] && [ -n "${PUBLIC_EMAIL:-}" ]; then
+        export GIT_AUTHOR_NAME="$PUBLIC_NAME" GIT_AUTHOR_EMAIL="$PUBLIC_EMAIL" GIT_COMMITTER_NAME="$PUBLIC_NAME" GIT_COMMITTER_EMAIL="$PUBLIC_EMAIL"
+    fi
+}
+if [ -n "${PUBLIC_NAME:-}${PUBLIC_EMAIL:-}" ] && { [ -z "${PUBLIC_NAME:-}" ] || [ -z "${PUBLIC_EMAIL:-}" ]; }; then
+    echo "set both PUBLIC_NAME and PUBLIC_EMAIL, or neither" >&2
+    exit 2
+fi
+
+if ! git rev-parse -q --verify "$PUB" >/dev/null; then
+    public_identity
+    # The first public commit: the release's tree, no parents, named after the release.
+    base_commit="$(git rev-parse "$BASE^{commit}")"
+    version="${BASE#v}"
+    first="$(GIT_AUTHOR_DATE="$(git log -1 --format=%aI "$base_commit")" GIT_COMMITTER_DATE="$(git log -1 --format=%cI "$base_commit")" \
+        sh -c 'printf "CraftCloud %s\n\nThe first public release. Earlier history is kept in the primary repository.\n" "$1" | git commit-tree "$2"' _ "$version" "$base_commit^{tree}")"
+    git update-ref "$PUB" "$first"
+    git update-ref "$SRC" "$base_commit"
+fi
+
+last_src="$(git rev-parse "$SRC")"
+public="$(git rev-parse "$PUB")"
+count=0
+for c in $(git rev-list --reverse --first-parent "$last_src..$BRANCH"); do
+    public="$(replay "$c" "$(git rev-parse "$c^{tree}")" "$public")"
+    git update-ref "$PUB" "$public"
+    git update-ref "$SRC" "$c"
+    count=$((count + 1))
+done
+echo "replayed $count commit(s); public main is $(git rev-parse --short "$PUB")"
+
+# Tags on published commits: point them at the matching public commit (only at the tip or the base).
+tagrefs=""
+for tag in $(git tag --list 'v*' --merged "$BRANCH"); do
+    target="$(git rev-parse "$tag^{commit}")"
+    if [ "$target" = "$(git rev-parse "$SRC")" ]; then
+        git tag -f "public/$tag" "$PUB" >/dev/null
+        tagrefs="$tagrefs refs/tags/public/$tag:refs/tags/$tag"
+    elif [ "$tag" = "$BASE" ]; then
+        root="$(git rev-list --max-parents=0 "$PUB")"
+        git tag -f "public/$tag" "$root" >/dev/null
+        tagrefs="$tagrefs refs/tags/public/$tag:refs/tags/$tag"
+    fi
+done
+
+# shellcheck disable=SC2086 # tagrefs is a list of refspecs
+git push "$REMOTE" "$PUB:refs/heads/$BRANCH" $tagrefs

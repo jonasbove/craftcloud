@@ -1,0 +1,57 @@
+#!/bin/sh
+# Create a CraftCloud user, signed in as an owner or admin. Until the web frontend has its
+# Admin › Users page:
+#
+#   scripts/add-user https://cloud.example.org
+#
+# Asks for your admin username and password, then the new user's username, email and password
+# (nothing is stored). The new user is a regular user; they sign in on the web or the desktop
+# client with that username and password.
+# For tests: CRAFTCLOUD_USER, CRAFTCLOUD_PASSWORD, NEW_USER, NEW_EMAIL, NEW_PASSWORD skip prompts.
+set -eu
+
+SERVER="${1:?usage: scripts/add-user <server-url>}"
+SERVER="${SERVER%/}"
+
+ask() { # variable, prompt, secret
+    eval "current=\${$1:-}"
+    if [ -n "$current" ]; then return; fi
+    printf '%s: ' "$2"
+    if [ "${3:-}" = secret ]; then stty -echo 2>/dev/null || true; fi
+    read -r value
+    if [ "${3:-}" = secret ]; then stty echo 2>/dev/null || true; echo; fi
+    eval "$1=\$value"
+}
+json() { python3 -I -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
+
+ask CRAFTCLOUD_USER "Your admin username"
+ask CRAFTCLOUD_PASSWORD "Your admin password" secret
+login="$(curl -fsS -H 'Content-Type: application/json' \
+    -d "{\"username\": $(json "$CRAFTCLOUD_USER"), \"password\": $(json "$CRAFTCLOUD_PASSWORD")}" "$SERVER/api/auth/login")" || {
+    echo "Sign-in failed: check the address, username and password." >&2
+    exit 1
+}
+token="$(printf '%s' "$login" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
+
+ask NEW_USER "New user's username"
+ask NEW_EMAIL "New user's email"
+while :; do
+    ask NEW_PASSWORD "New user's password (at least 8 characters)" secret
+    if [ "${#NEW_PASSWORD}" -ge 8 ]; then break; fi
+    echo "Too short." >&2
+    NEW_PASSWORD=""
+done
+
+body="{\"username\": $(json "$NEW_USER"), \"email\": $(json "$NEW_EMAIL"), \"password\": $(json "$NEW_PASSWORD"), \"role\": \"user\"}"
+status="$(curl -sS -o /tmp/craftcloud-add-user.$$ -w '%{http_code}' -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "$body" "$SERVER/api/admin/users")"
+answer="$(cat /tmp/craftcloud-add-user.$$)"
+rm -f /tmp/craftcloud-add-user.$$
+if [ "$status" = 201 ]; then
+    echo "Created user '$NEW_USER'. They sign in at $SERVER (or in the desktop client) with that username and password."
+else
+    reason="$(printf '%s' "$answer" | python3 -I -c 'import json,sys
+try: d=json.load(sys.stdin); print(d.get("message") or d.get("error") or d)
+except Exception: print("")')"
+    echo "The server refused ($status): ${reason:-$answer}" >&2
+    exit 1
+fi

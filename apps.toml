@@ -1,0 +1,216 @@
+# CraftCloud app manifest: which Craft web builds go into the image, and which files they open.
+#
+# Pins (version, asset, sha256) are written by `scripts/bump-apps`; everything else is edited by hand.
+# The Dockerfile downloads https://github.com/<repo>/releases/download/v<version>/<asset>, checks sha256,
+# and unpacks it to /srv/craftcloud/apps/<id>/.
+#
+# bridge    how CraftCloud gets files in and out (docs/ARCHITECTURE.md, "Apps in the browser"):
+#             native      craft-web-host (?host=parent, <app>:open / <app>:save)
+#             lightcraft  LightCraft's own bridge (import and export only)
+#             shim        craftcloud-shim.js injected into index.html (experimental)
+# query     extra URL query for the app page (besides host=parent)
+# opens     extensions the app can open from the cloud
+# default   extensions this app claims when a file is opened (each extension has exactly one default)
+# fixups    repairs for packaging bugs in the pinned release, applied by scripts/fetch-apps
+# tagline, color, ink
+#           display data for the app lists, from craft-launcher's crates/core/catalog.toml
+#           (MIT OR Apache-2.0, Copyright (c) 2026 ArtCraft Team)
+
+[apps.wordcraft]
+name    = "WordCraft"
+tagline = "Writing and document design"
+color   = "#3f5fe0"
+ink     = ["#8ea2ff", "#2a44b8"]   # text colour on dark / light
+repo    = "storytold/wordcraft"
+version = "0.18.1"
+asset   = "wordcraft-web-0.18.1.zip"
+sha256  = "3daa7c2d1f209a7eeb2527fcefa3fe31e875848fb1970d68f54edae55fe0bc9f"
+bridge  = "native"
+opens   = ["docx", "docm", "dotx", "dotm", "doc", "dot", "odt", "ott", "fodt", "rtf", "txt", "md", "html", "htm", "tex"]
+default = ["docx", "docm", "dotx", "dotm", "doc", "dot", "odt", "ott", "fodt", "rtf", "txt", "md"]
+
+[apps.gridcraft]
+name    = "GridCraft"
+tagline = "Spreadsheets and data"
+color   = "#1f9d55"
+ink     = ["#4fd68a", "#12703a"]   # text colour on dark / light
+repo    = "storytold/gridcraft"
+version = "0.19.1"
+asset   = "gridcraft-web-0.19.1.zip"
+sha256  = "48c5d1b101befebb3c5ba3b7a14914f01c3207934813ed07dc4251b7ae116a78"
+bridge  = "native"
+opens   = ["xlsx", "xlsm", "xls", "xlsb", "ods", "csv", "tsv"]
+default = ["xlsx", "xlsm", "xls", "xlsb", "ods", "csv", "tsv"]
+
+[apps.deckcraft]
+name    = "DeckCraft"
+tagline = "Presentations and slide shows"
+color   = "#f07a1e"
+ink     = ["#ffa060", "#a84f0a"]   # text colour on dark / light
+repo    = "storytold/deckcraft"
+version = "0.18.1"
+asset   = "deckcraft-web-0.18.1.zip"
+sha256  = "3196e537fcfab538aaa2e88584bc74e29bb584459b916ab584ac22fbafe32db5"
+bridge  = "native"
+opens   = ["deckcraft", "pptx", "potx", "ppsx"]
+default = ["deckcraft", "pptx", "potx", "ppsx"]
+
+[apps.pdfcraft]
+name    = "PdfCraft"
+tagline = "Reading, organizing and protecting PDFs"
+color   = "#e8204f"
+ink     = ["#f23a62", "#b70228"]   # text colour on dark / light
+repo    = "storytold/pdfcraft"
+version = "0.21.1"
+asset   = "pdfcraft-web-0.21.1.zip"
+sha256  = "fe9708d46af191aebb56f70eb32cf8b112b0b9452d17ae6ba3a8c4a8665fe748"
+bridge  = "native"   # exports still download in host mode; the shim's save capture covers them
+opens   = ["pdf"]
+default = ["pdf"]
+
+[apps.figcraft]
+name    = "FigCraft"
+tagline = "Interface design and prototyping"
+color   = "#02da96"
+ink     = ["#4fe8b6", "#047a56"]   # text colour on dark / light
+repo    = "storytold/figcraft"
+version = "0.18.1"
+asset   = "figcraft-web-0.18.1.zip"
+sha256  = "2fbeb93f5022b0a7cc9d8528f1ed7e2b54c94d213ef79e65128aa898c399f02b"
+bridge  = "native"
+opens   = ["figcraft", "fig", "jam", "penpot", "sketch", "svg", "png", "jpg", "jpeg", "webp"]
+default = ["figcraft", "fig", "jam", "penpot", "sketch"]
+
+[apps.cadcraft]
+name    = "CADCraft"
+tagline = "Computer-aided design and drafting"
+color   = "#3ea6e8"
+ink     = ["#7cc8ff", "#1a6fa8"]   # text colour on dark / light
+repo    = "storytold/cadcraft"
+version = "0.20.1"
+asset   = "cadcraft-web-0.20.1.zip"
+sha256  = "300e870c50b66d371055915ba95e3ddbfd4c45431466d5214743b5dcab95a0e1"
+bridge  = "native"
+opens   = ["dxf", "dwg"]
+default = ["dxf", "dwg"]
+
+[apps.filmcraft]
+name    = "FilmCraft"
+tagline = "Video editing, color and sound"
+color   = "#8b5cf6"
+ink     = ["#b69cff", "#6a3fd6"]   # text colour on dark / light
+repo    = "storytold/filmcraft"
+version = "0.20.1"
+asset   = "filmcraft-web-0.20.1.zip"
+sha256  = "1cf3072e3f3b6535fcd024d6f6ab2a16cf7776345d868037dc630de0ad0dbbb8"
+bridge  = "native"
+opens   = ["fcproj", "mp4", "mov", "m4v", "webm", "mkv"]
+default = ["fcproj", "mp4", "mov", "m4v", "webm", "mkv"]
+
+[apps.lightcraft]
+name    = "LightCraft"
+tagline = "Photo library and raw development"
+color   = "#f2a516"
+ink     = ["#ffc14d", "#8a5800"]   # text colour on dark / light
+repo    = "storytold/lightcraft"
+version = "0.21.1"
+asset   = "lightcraft-web-0.21.1.zip"
+sha256  = "57147383a46eaab3b0cc036acf9443b221450c6a19f5dc303ae165bb9678b8cb"
+bridge  = "lightcraft"
+opens   = ["jpg", "jpeg", "png", "tif", "tiff", "webp", "heic", "dng", "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2"]
+default = ["dng", "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2"]
+
+[apps.vectorcraft]
+name    = "VectorCraft"
+tagline = "Vector illustration"
+color   = "#e8573f"
+ink     = ["#ff8a70", "#b83a24"]   # text colour on dark / light
+repo    = "storytold/vectorcraft"
+version = "0.24.1"
+asset   = "vectorcraft-web-0.24.1.zip"
+sha256  = "de31befd175476f252e3563b4b1fdc6c887d5842b33fb7d1f5fdf007dc7633aa"
+bridge  = "shim"
+opens   = ["vectorcraft", "drawcraft", "svg", "svgz", "ai", "eps", "emf", "wmf", "pdf", "dxf"]
+default = ["vectorcraft", "drawcraft", "svg", "svgz", "ai", "eps", "emf", "wmf"]
+
+[apps.effectcraft]
+name    = "EffectCraft"
+tagline = "Motion graphics and visual effects"
+color   = "#e0368f"
+ink     = ["#ff7ab8", "#b0206c"]   # text colour on dark / light
+repo    = "storytold/effectcraft"
+version = "0.24.1"
+asset   = "effectcraft-web-0.24.1.zip"
+sha256  = "8adc985f345d73207abc69a27938905aba1729b63c6c9b332d0244a7567424f1"
+bridge  = "shim"
+query   = "nosw"   # its service worker caches every same-origin GET (docs/UPSTREAM.md A5)
+opens   = ["ecproj", "aep", "aepx"]
+default = ["ecproj", "aep", "aepx"]
+
+[apps.photocraft]
+name    = "PhotoCraft"
+tagline = "Image editing"
+color   = "#2f7bf5"
+ink     = ["#7fb0ff", "#1a5bc4"]   # text colour on dark / light
+repo    = "storytold/photocraft"
+version = "0.23.1"
+asset   = "photocraft-web-0.23.1.zip"
+sha256  = "3a498eb517bca6cec89f9c6b1fc6448269a05428c8a3a4637c16817da157f03c"
+bridge  = "shim"
+# 0.23.1 packaging bug: app/photocraft-web.js imports ./snippets/… but the zip has snippets/ only at the
+# top, so the app hangs on "Loading" (docs/UPSTREAM.md A11).
+fixups  = [{ copy = "snippets", to = "app/snippets" }]
+opens   = ["pcraft", "psd", "psb", "ora", "kra", "xcf", "exr", "png", "jpg", "jpeg", "webp", "tif", "tiff", "heic", "gif", "bmp"]
+default = ["pcraft", "psd", "psb", "ora", "kra", "xcf", "exr", "png", "jpg", "jpeg", "webp", "tif", "tiff", "heic", "gif", "bmp"]
+
+[apps.designcraft]
+name    = "DesignCraft"
+tagline = "Page layout and publishing"
+color   = "#7bb51c"
+ink     = ["#a6e04a", "#457008"]   # text colour on dark / light
+repo    = "storytold/designcraft"
+version = "0.20.1"
+asset   = "designcraft-web-0.20.1.zip"
+sha256  = "50fb2bebce1f48065318953393626b84b25cd1736c556e523275dadc46ae6906"
+bridge  = "shim"
+opens   = ["designcraft", "idml", "indd", "indt"]
+default = ["designcraft", "idml", "indd", "indt"]
+
+[apps.soundcraft]
+name    = "SoundCraft"
+tagline = "Recording, editing and mixing audio"
+color   = "#1fa5c9"
+ink     = ["#5fd0ee", "#0e7290"]   # text colour on dark / light
+repo    = "storytold/soundcraft"
+version = "0.20.1"
+asset   = "soundcraft-web-0.20.1.zip"
+sha256  = "ca7c03c53cf4b7ec9ae26ef2cbde5d86566d006127040fe694fb95f9773a34e4"
+bridge  = "shim"
+opens   = ["scraft", "scraftz", "wav", "flac", "mp3", "ogg", "m4a", "mid", "midi"]
+default = ["scraft", "scraftz", "wav", "flac", "mp3", "ogg", "m4a", "mid", "midi"]
+
+[apps.texturecraft]
+name    = "TextureCraft"
+tagline = "3D texture painting"
+color   = "#c2672b"
+ink     = ["#e58a4e", "#9c4a15"]   # text colour on dark / light
+repo    = "storytold/texturecraft"
+version = "0.6.1"
+asset   = "texturecraft-web-0.6.1.zip"
+sha256  = "6dea6a9f77a161cba3258ab4c6db591bdb4dd32b7385d16a7db997ab671a5f3b"
+bridge  = "shim"
+opens   = ["tcraft", "glb", "gltf", "fbx", "dae", "usd", "usda", "usdc", "usdz", "abc", "obj", "ply", "stl"]
+default = ["tcraft", "glb", "gltf", "fbx", "dae", "usd", "usda", "usdc", "usdz", "abc", "obj", "ply", "stl"]
+
+[apps.materialcraft]
+name    = "MaterialCraft"
+tagline = "Procedural material design"
+color   = "#178a9c"
+ink     = ["#63c5d3", "#106573"]   # text colour on dark / light
+repo    = "storytold/materialcraft"
+version = "0.4.1"
+asset   = "materialcraft-web-0.4.1.zip"
+sha256  = "73b8c319881fd7218737d30b5eeb033801a17427bcf3d31920da32a1fbb1ffec"
+bridge  = "shim"
+opens   = ["mcraft", "sbs"]
+default = ["mcraft", "sbs"]

@@ -1,0 +1,114 @@
+name: Server image
+
+# The server image, for amd64 and arm64, to the GitHub container registry on each `v*` tag:
+#
+#   ghcr.io/<owner>/craftcloud:<ver>        ghcr.io/<owner>/craftcloud:latest        (slim)
+#   ghcr.io/<owner>/craftcloud:<ver>-apps   ghcr.io/<owner>/craftcloud:latest-apps   (Craft web apps bundled)
+#
+# When the repository secret DOCKERHUB_TOKEN and the variable DOCKERHUB_USERNAME are set, the same
+# images are copied (not rebuilt, so the digests match and the attestation covers them too) to
+# docker.io/<DOCKERHUB_USERNAME>/craftcloud.
+#
+# By hand (workflow_dispatch) it builds both without pushing, to check the Dockerfile. The build
+# stages run on the runner's own platform and cross-compile (see the Dockerfile's top), so arm64
+# needs no emulation for the Rust; QEMU only runs the final stages' few commands.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    name: image (${{ matrix.variant }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io
+      id-token: write # signing the attestation (Sigstore)
+      attestations: write
+      artifact-metadata: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { variant: slim, target: default, suffix: "" }
+          - { variant: apps, target: with-apps, suffix: "-apps" }
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Version and tags
+        id: v
+        env:
+          SUFFIX: ${{ matrix.suffix }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          version="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME but Cargo.toml says $version"
+            exit 1
+          fi
+          image="ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/craftcloud"
+          {
+            echo "version=$version"
+            echo "image=$image"
+            echo "tags=$image:$version$SUFFIX,$image:latest$SUFFIX"
+          } >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        if: github.ref_type == 'tag'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build${{ github.ref_type == 'tag' && ' and push' || '' }}
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            CRAFTCLOUD_VERSION=${{ steps.v.outputs.version }}
+            CARGO_BUILD_JOBS=4
+          tags: ${{ steps.v.outputs.tags }}
+          push: ${{ github.ref_type == 'tag' }}
+          provenance: false # GitHub's attestation below is the signed one
+      - name: Attest build provenance
+        if: ${{ github.ref_type == 'tag' && !github.event.repository.private }}
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.v.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: Copy to Docker Hub
+        if: github.ref_type == 'tag'
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          SOURCE: ${{ steps.v.outputs.image }}@${{ steps.build.outputs.digest }}
+          VERSION: ${{ steps.v.outputs.version }}
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::notice::Docker Hub isn't set up (DOCKERHUB_USERNAME / DOCKERHUB_TOKEN); ghcr.io only."
+            exit 0
+          fi
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+          hub="docker.io/$(printf '%s' "$DOCKERHUB_USERNAME" | tr '[:upper:]' '[:lower:]')/craftcloud"
+          docker buildx imagetools create -t "$hub:$VERSION$SUFFIX" -t "$hub:latest$SUFFIX" "$SOURCE"
+          digest="$(docker buildx imagetools inspect "$hub:$VERSION$SUFFIX" --format '{{json .Manifest}}' | jq -r .digest)"
+          if [ "$digest" != "${SOURCE#*@}" ]; then
+            echo "::error::the Docker Hub copy has another digest, so the build's attestation wouldn't cover it"
+            exit 1
+          fi

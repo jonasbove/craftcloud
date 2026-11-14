@@ -1,0 +1,49 @@
+name: Remove a version from Docker Hub
+
+# By hand: deletes a version's tags (`<ver>` and `<ver>-apps`) from Docker Hub, e.g. a release that was
+# withdrawn. It never touches `latest`: the next release moves that. The token needs Docker Hub's
+# "Read, Write, Delete" access.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version whose tags to delete, e.g. 0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  remove:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Delete the tags
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          case "$VERSION" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::not a version: $VERSION"; exit 1 ;;
+          esac
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::error::DOCKERHUB_USERNAME (variable) and DOCKERHUB_TOKEN (secret) must be set."
+            exit 1
+          fi
+          ns="$(printf '%s' "$DOCKERHUB_USERNAME" | tr '[:upper:]' '[:lower:]')"
+          jwt="$(jq -n --arg u "$DOCKERHUB_USERNAME" --arg p "$DOCKERHUB_TOKEN" '{username: $u, password: $p}' \
+            | curl -fsS -H 'Content-Type: application/json' -d @- https://hub.docker.com/v2/users/login | jq -r .token)"
+          echo "::add-mask::$jwt"
+          for tag in "$VERSION" "$VERSION-apps"; do
+            code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $jwt" \
+              "https://hub.docker.com/v2/repositories/$ns/craftcloud/tags/$tag/")"
+            case "$code" in
+              204) echo "deleted $ns/craftcloud:$tag" ;;
+              404) echo "$ns/craftcloud:$tag doesn't exist" ;;
+              *) echo "::error::deleting $ns/craftcloud:$tag answered $code"; exit 1 ;;
+            esac
+          done

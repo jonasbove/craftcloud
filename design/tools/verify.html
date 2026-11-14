@@ -1,0 +1,42 @@
+<!doctype html><meta charset="utf-8"><title>loading</title>
+<style>html,body{margin:0;background:#222}iframe{width:1440px;height:900px;border:0;display:block}img{display:block;width:1440px}</style>
+<iframe id="f" src="figcraft/index.html?control&webgl"></iframe>
+<pre id="log" style="color:#fff;position:fixed;bottom:0;left:0;font:12px monospace"></pre>
+<script>
+const q = new URLSearchParams(location.search);
+const page = q.get('page') || '1 Launcher', frame = q.get('frame') || 'launcher-grid-dark', fonts = q.get('fonts') !== '0';
+const log = m => { document.getElementById('log').textContent += m + '\n'; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const b64 = buf => { let s = ''; const u = new Uint8Array(buf); for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); };
+(async () => {
+  try {
+    const fr = document.getElementById('f');
+    for (let i = 0; i < 600 && !(fr.contentWindow && fr.contentWindow.figcraft); i++) await sleep(250);
+    const api = fr.contentWindow.figcraft;
+    if (!api) { log('no window.figcraft'); document.title = 'fail'; return; }
+    log('api ok');
+    if (fonts) for (const f of ['Inter-Variable.ttf', 'Archivo-Variable.ttf', 'GeistMono-Variable.ttf']) {
+      const r = await api.execute('text.loadFont', { data: b64(await (await fetch('files/' + f)).arrayBuffer()) });
+      log('font ' + JSON.stringify(r));
+    }
+    const doc = new Uint8Array(await (await fetch('files/craftcloud.figcraft')).arrayBuffer());
+    const o = await api.openFile('craftcloud.figcraft', doc);
+    log('open ' + JSON.stringify(o).slice(0, 200));
+    const pages = await api.execute('page.list', {});
+    const p = (pages.pages || pages).find(x => x.name === page);
+    await api.execute('page.select', { id: p.id });
+    const found = await api.execute('node.find', { name: frame, limit: 5 });
+    log('found ' + JSON.stringify(found));
+    await api.execute('select.set', { ids: [found.ids[0]] }).catch(e => log('select: ' + e.message));
+    await api.execute('view.zoomSelection', {});
+    await sleep(3000);
+    if (q.get('shot') === '1') {  // ui.screenshot: times out in headless Chromium (see README)
+      const shot = await api.screenshot({});
+      document.body.innerHTML = '';
+      const img = new Image(); img.src = 'data:image/png;base64,' + shot.data; document.body.appendChild(img);
+      await new Promise(r => img.onload = r);
+    }
+    document.title = 'done';
+  } catch (e) { log('ERR ' + e.message); document.title = 'fail'; }
+})();
+</script>

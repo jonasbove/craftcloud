@@ -1,0 +1,158 @@
+# CraftCloud front proxy (runs inside the container; docs/ARCHITECTURE.md).
+#
+# Serves CraftCloud's web frontend and the Craft web builds itself (OxiCloud stamps `X-Frame-Options: DENY` on every
+# response and the apps must sit in a same-origin iframe). OxiCloud's API paths go to OxiCloud on
+# 127.0.0.1:8087. TLS is the job of the reverse proxy in front of the container.
+#
+# Set by docker/entrypoint.sh: CRAFTCLOUD_PORT, CRAFTCLOUD_BLOCKED_PATHS (OxiCloud features switched
+# off). craftcloud-admin listens on 127.0.0.1:8088.
+
+{
+	admin off
+	auto_https off
+	persist_config off
+	servers {
+		# Keep the client address from an outer reverse proxy (Caddy, nginx, Traefik). Only addresses
+		# listed here may set X-Forwarded-For; sign-in rate limits go by the address it yields, so set
+		# CRAFTCLOUD_TRUSTED_PROXIES to your proxy's address (or 127.0.0.1/32 if clients connect directly).
+		trusted_proxies static {$CRAFTCLOUD_TRUSTED_PROXIES:private_ranges}
+	}
+	log {
+		output stdout
+		format console
+		level WARN
+	}
+}
+
+:{$CRAFTCLOUD_PORT} {
+	# All interfaces inside the container by default; the NixOS module (host networking) narrows it.
+	bind {$CRAFTCLOUD_BIND_ADDRESS:0.0.0.0}
+
+	# OxiCloud's own apps that CraftCloud removes by default (CRAFTCLOUD_NATIVE_APPS turns them back on).
+	@blocked path {$CRAFTCLOUD_BLOCKED_PATHS}
+	handle @blocked {
+		respond 404
+	}
+
+	# craftcloud-admin: live config and the admin settings API (it checks who is asking).
+	@admin path /craftcloud/config.json /craftcloud/api/*
+	handle @admin {
+		header Cache-Control "no-store"
+		reverse_proxy 127.0.0.1:8088
+	}
+
+	# CraftCloud's own static files: app manifest, shim, discovery.xml, icons.
+	handle /craftcloud/* {
+		root * /srv/craftcloud
+		header Cache-Control "no-cache"
+		file_server {
+			precompressed br gzip
+		}
+	}
+
+	# The Craft web builds, each file only if craftcloud-admin says that app is on (settings
+	# changes apply on the next request; off or not bundled answers 404).
+	handle /apps/* {
+		forward_auth 127.0.0.1:8088 {
+			uri /internal/apps-gate
+		}
+		root * /srv/craftcloud
+
+		# A bare app directory goes to its index.html.
+		@appdir path_regexp appdir ^(/apps/[a-z0-9-]+)/?$
+		redir @appdir {re.appdir.1}/index.html 308
+
+		header {
+			X-Content-Type-Options nosniff
+			# Same-origin framing only: the CraftCloud editor page frames the app.
+			X-Frame-Options SAMEORIGIN
+			Content-Security-Policy "frame-ancestors 'self'"
+			Referrer-Policy strict-origin-when-cross-origin
+			# SoundCraft records audio; FigCraft/PhotoCraft may use the camera. Same origin only.
+			Permissions-Policy "camera=(self), microphone=(self), geolocation=()"
+		}
+		# Files whose names carry a content hash never change; everything else revalidates.
+		# (Two exclusive matchers: two `header` directives setting the same field don't override reliably.)
+		# (Trunk's hashes are 16 hex digits, or 15 when the leading digit is 0.)
+		@hashed path_regexp -[0-9a-f]{12,}(_bg)?\.(wasm|js)$|\.part-[a-z]+$
+		@unhashed not path_regexp -[0-9a-f]{12,}(_bg)?\.(wasm|js)$|\.part-[a-z]+$
+		header @hashed Cache-Control "public, max-age=31536000, immutable"
+		header @unhashed Cache-Control "no-cache"
+
+		file_server {
+			precompressed br gzip
+			hide _headers *.md .*
+		}
+	}
+
+	# Single sign-on (docs/OIDC.md). OxiCloud answers a few failures on the way to and back from the
+	# identity provider with a raw error page; send the browser to the sign-in page instead, with a
+	# `login_error` key the frontend puts into words.
+	# The provider sent the person back with `?error=…` and no code (cancelled, or not allowed):
+	# OxiCloud would answer 400 in plain text.
+	@sso_provider_denied {
+		path /api/auth/oidc/callback
+		query error=access_denied
+	}
+	redir @sso_provider_denied /login?login_error=provider_denied 302
+	@sso_provider_error {
+		path /api/auth/oidc/callback
+		query error=*
+		not query error=access_denied
+	}
+	redir @sso_provider_error /login?login_error=provider_error 302
+	# OxiCloud couldn't read the provider's metadata (wrong issuer URL, provider down): a JSON 500.
+	# (`header` + `respond`, not `redir`: inside handle_response, `redir` answered an empty 200.)
+	handle /api/auth/oidc/authorize {
+		reverse_proxy 127.0.0.1:8087 {
+			@failed status 4xx 5xx
+			handle_response @failed {
+				header Location /login?login_error=provider_unreachable
+				respond 302
+			}
+		}
+	}
+	# Any other callback failure that isn't already a redirect to the sign-in page.
+	handle /api/auth/oidc/callback {
+		reverse_proxy 127.0.0.1:8087 {
+			@failed status 4xx 5xx
+			handle_response @failed {
+				header Location /login?login_error=callback_failed
+				respond 302
+			}
+		}
+	}
+
+	# OxiCloud's protocols (an allow-list): REST, WebDAV, WOPI, health, Nextcloud-client and
+	# well-known endpoints, WebSockets under /api. Its own web pages are not served: CraftCloud's
+	# frontend replaces them.
+	@oxicloud path /api/* /webdav /webdav/* /wopi/* /health /ready /.well-known/* /remote.php /remote.php/* /ocs/* /index.php /index.php/* /status.php /login/v2 /login/v2/*
+	handle @oxicloud {
+		reverse_proxy 127.0.0.1:8087 {
+			flush_interval -1
+			transport http {
+				read_timeout 0
+				write_timeout 0
+			}
+		}
+	}
+
+	# Everything else: CraftCloud's web frontend (one page; it routes /device, /setup, … itself).
+	handle {
+		root * /srv/craftcloud/web
+		header {
+			X-Content-Type-Options nosniff
+			X-Frame-Options DENY
+			Content-Security-Policy "frame-ancestors 'none'"
+			Referrer-Policy strict-origin-when-cross-origin
+		}
+		@hashed path_regexp -[0-9a-f]{12,}(_bg)?\.(wasm|js)$
+		@unhashed not path_regexp -[0-9a-f]{12,}(_bg)?\.(wasm|js)$
+		header @hashed Cache-Control "public, max-age=31536000, immutable"
+		header @unhashed Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server {
+			precompressed br gzip
+		}
+	}
+}

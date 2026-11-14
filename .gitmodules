@@ -1,0 +1,4 @@
+[submodule "upstream/oxicloud"]
+	path = upstream/oxicloud
+	url = https://github.com/AtalayaLabs/OxiCloud.git
+	shallow = true

@@ -1,0 +1,70 @@
+{
+  "users": [
+    {
+      "user": {
+        "id": "1e9ef0fd-7510-41ea-8317-9908214ebfdd",
+        "username": "test",
+        "email": "test@example.org",
+        "role": "user",
+        "image": null,
+        "is_external": false,
+        "is_online": false
+      },
+      "email_verified_at": "2026-11-13T21:54:22.545372Z",
+      "created_at": "2026-11-13T21:54:22.545369Z",
+      "updated_at": "2026-11-13T21:54:22.665769Z",
+      "last_login_at": null,
+      "active": false,
+      "storage_quota_bytes": 1073741824,
+      "storage_used_bytes": 0,
+      "has_password": true,
+      "opaque_registered": false,
+      "opaque_migrated": false
+    },
+    {
+      "user": {
+        "id": "a15eb90c-17d8-4a34-a724-97e000789b56",
+        "username": "jane",
+        "email": "jane@example.org",
+        "role": "admin",
+        "image": null,
+        "is_external": false,
+        "is_online": false
+      },
+      "email_verified_at": "2026-11-13T21:54:22.335353Z",
+      "created_at": "2026-11-13T21:54:22.335351Z",
+      "updated_at": "2026-11-13T21:54:22.654187Z",
+      "last_login_at": null,
+      "active": true,
+      "storage_quota_bytes": 5000000000,
+      "storage_used_bytes": 0,
+      "has_password": true,
+      "opaque_registered": false,
+      "opaque_migrated": false
+    },
+    {
+      "user": {
+        "id": "ba001cef-d8f4-4430-9617-7ae72721982a",
+        "username": "john",
+        "email": "john@example.org",
+        "role": "owner",
+        "image": null,
+        "is_external": false,
+        "is_online": true
+      },
+      "email_verified_at": "2026-11-13T21:54:10.048360Z",
+      "created_at": "2026-11-13T21:54:10.048359Z",
+      "updated_at": "2026-11-13T21:54:22.130637Z",
+      "last_login_at": "2026-11-13T21:54:22.130637Z",
+      "active": true,
+      "storage_quota_bytes": 107374182400,
+      "storage_used_bytes": 0,
+      "has_password": true,
+      "opaque_registered": false,
+      "opaque_migrated": false
+    }
+  ],
+  "total": 3,
+  "limit": 100,
+  "offset": 0
+}

@@ -1,0 +1,38 @@
+# CraftCloud: `cp .env.example .env`, edit it, then `docker compose up -d`.
+# Put a TLS reverse proxy in front for anything beyond localhost (see README).
+
+services:
+  postgres:
+    image: postgres:18.2-alpine3.23
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: craftcloud
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: craftcloud
+    volumes:
+      - pg_data:/var/lib/postgresql/
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U craftcloud -d craftcloud"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  craftcloud:
+    image: ${CRAFTCLOUD_IMAGE:-ghcr.io/jonasbove/craftcloud:latest}
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ${CRAFTCLOUD_ENV_FILE:-.env}
+    environment:
+      OXICLOUD_DB_CONNECTION_STRING: postgres://craftcloud:${POSTGRES_PASSWORD}@postgres:5432/craftcloud
+    ports:
+      - "${CRAFTCLOUD_BIND:-127.0.0.1}:${CRAFTCLOUD_HOST_PORT:-8086}:8086"
+    volumes:
+      - storage:/app/storage
+
+volumes:
+  pg_data:
+  storage:

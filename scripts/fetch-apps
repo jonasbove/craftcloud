@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""Download, verify and unpack the Craft web builds pinned in apps.toml, then precompress them.
+
+Usage: scripts/fetch-apps <apps.toml> <out-dir> [--cache DIR] [--only app,app]
+
+Runs in the Dockerfile's `apps` stage (and locally for testing). For each [apps.<id>]:
+  1. download https://github.com/<repo>/releases/download/v<version>/<asset> (cached by sha256)
+  2. refuse it unless its sha256 matches the pin
+  3. unpack to <out-dir>/<id>/, stripping the zip's single top-level folder, refusing unsafe paths
+  4. write .br and .gz siblings for compressible files so Caddy never compresses at request time
+     (files that shrink by less than 10%, e.g. already-gzipped wasm parts, are left alone)
+Also writes <out-dir>/apps.json: id, name, version, bridge, query, opens, default, entry.
+"""
+import gzip
+import hashlib
+import json
+import shutil
+import subprocess
+import sys
+import tomllib
+import urllib.request
+import zipfile
+from pathlib import Path, PurePosixPath
+
+COMPRESSIBLE = {".wasm", ".js", ".mjs", ".html", ".css", ".json", ".svg", ".txt", ".md", ".map", ".xml", ".ttf", ".otf"}
+MIN_SAVING = 0.10
+# Bump when unpacking or precompression changes, so cached trees are rebuilt.
+PROCESS_VERSION = "p1"
+
+
+def sha256_of(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def download(url: str, sha: str, cache: Path) -> Path:
+    target = cache / f"{sha}.zip"
+    if target.exists() and sha256_of(target) == sha:
+        return target
+    tmp = target.with_suffix(".part")
+    req = urllib.request.Request(url, headers={"User-Agent": "craftcloud-fetch-apps"})
+    with urllib.request.urlopen(req, timeout=120) as resp, tmp.open("wb") as out:
+        shutil.copyfileobj(resp, out, 1 << 20)
+    got = sha256_of(tmp)
+    if got != sha:
+        tmp.unlink()
+        sys.exit(f"sha256 mismatch for {url}: expected {sha}, got {got}")
+    tmp.rename(target)
+    return target
+
+
+def unpack(zip_path: Path, dest: Path) -> None:
+    with zipfile.ZipFile(zip_path) as z:
+        names = [n for n in z.namelist() if not n.endswith("/")]
+        tops = {PurePosixPath(n).parts[0] for n in names}
+        strip = 1 if len(tops) == 1 and all(len(PurePosixPath(n).parts) > 1 for n in names) else 0
+        for info in z.infolist():
+            if info.is_dir():
+                continue
+            parts = PurePosixPath(info.filename).parts[strip:]
+            if not parts or any(p in ("..", "") for p in parts) or PurePosixPath(info.filename).is_absolute():
+                sys.exit(f"{zip_path.name}: unsafe path {info.filename!r}")
+            if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                sys.exit(f"{zip_path.name}: symlink {info.filename!r} refused")
+            out = dest.joinpath(*parts)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            with z.open(info) as src, out.open("wb") as dst:
+                shutil.copyfileobj(src, dst, 1 << 20)
+            out.chmod(0o644)
+
+
+def inside(root: Path, rel: str) -> Path:
+    p = (root / rel).resolve()
+    if not p.is_relative_to(root.resolve()):
+        sys.exit(f"fixup path {rel!r} leaves the app directory")
+    return p
+
+
+def apply_fixups(app: str, dest: Path, fixups: list) -> None:
+    """Repairs for packaging bugs in a pinned release (each one is also in docs/UPSTREAM.md).
+
+    Supported: {copy = "<dir or file>", to = "<path>"}, both relative to the app root.
+    """
+    for fx in fixups:
+        if set(fx) == {"copy", "to"}:
+            src, dst = inside(dest, fx["copy"]), inside(dest, fx["to"])
+            if not src.exists():
+                sys.exit(f"{app}: fixup source {fx['copy']!r} not found (fixed upstream? drop the fixup)")
+            if src.is_dir():
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            else:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+            print(f"{app:14} fixup: copied {fx['copy']} -> {fx['to']}", flush=True)
+        else:
+            sys.exit(f"{app}: unknown fixup {fx!r}")
+
+
+def precompress(root: Path, have_brotli: bool) -> tuple[int, int]:
+    raw = packed = 0
+    for f in sorted(p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in COMPRESSIBLE):
+        size = f.stat().st_size
+        raw += size
+        gz = f.with_name(f.name + ".gz")
+        with f.open("rb") as src, gzip.GzipFile(gz, "wb", compresslevel=9, mtime=0) as dst:
+            shutil.copyfileobj(src, dst, 1 << 20)
+        if gz.stat().st_size > size * (1 - MIN_SAVING):
+            gz.unlink()
+            continue
+        packed += gz.stat().st_size
+        if have_brotli:
+            br = f.with_name(f.name + ".br")
+            subprocess.run(["brotli", "-q", "11", "-f", "-o", str(br), str(f)], check=True)
+            packed += br.stat().st_size
+    return raw, packed
+
+
+def main(argv):
+    args = [a for a in argv]
+    cache = Path("/tmp/craftcloud-cache")
+    only = None
+    if "--cache" in args:
+        i = args.index("--cache"); cache = Path(args[i + 1]); del args[i:i + 2]
+    if "--only" in args:
+        i = args.index("--only"); only = set(args[i + 1].split(",")); del args[i:i + 2]
+    if len(args) != 2:
+        sys.exit(__doc__)
+    manifest, out = Path(args[0]), Path(args[1])
+    apps = tomllib.loads(manifest.read_text())["apps"]
+    cache.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
+    have_brotli = shutil.which("brotli") is not None
+    if not have_brotli:
+        print("warning: no `brotli` binary, writing .gz only", file=sys.stderr)
+
+    index = []
+    for app, spec in apps.items():
+        if only and app not in only:
+            continue
+        url = f"https://github.com/{spec['repo']}/releases/download/v{spec['version']}/{spec['asset']}"
+        dest = out / app
+        if dest.exists():
+            shutil.rmtree(dest)
+        # The finished tree (unpacked + precompressed) is cached per zip sha256 and per version of this
+        # processing, so a pin bump only recompresses the apps that changed.
+        fixups = spec.get("fixups", [])
+        fix_key = "-fx" + hashlib.sha256(json.dumps(fixups, sort_keys=True).encode()).hexdigest()[:8] if fixups else ""
+        tree = cache / f"{spec['sha256']}-{PROCESS_VERSION}{fix_key}{'' if have_brotli else '-nobr'}.tree"
+        if tree.is_dir():
+            shutil.copytree(tree, dest)
+            print(f"{app:14} {spec['version']:8} from cache", flush=True)
+        else:
+            zip_path = download(url, spec["sha256"], cache)
+            dest.mkdir()
+            unpack(zip_path, dest)
+            if not (dest / "index.html").is_file():
+                sys.exit(f"{app}: no index.html at the top of {spec['asset']}")
+            apply_fixups(app, dest, fixups)
+            raw, packed = precompress(dest, have_brotli)
+            tmp_tree = tree.with_suffix(".tmp")
+            shutil.rmtree(tmp_tree, ignore_errors=True)
+            shutil.copytree(dest, tmp_tree)
+            tmp_tree.rename(tree)
+            print(f"{app:14} {spec['version']:8} unpacked, {raw / 1e6:7.1f} MB compressible, "
+                  f"{packed / 1e6:7.1f} MB of .gz/.br", flush=True)
+        index.append({
+            "id": app,
+            "name": spec["name"],
+            "tagline": spec.get("tagline", ""),
+            "color": spec.get("color", ""),
+            "ink": spec.get("ink", []),
+            "version": spec["version"],
+            "bridge": spec["bridge"],
+            "query": spec.get("query", ""),
+            "opens": spec["opens"],
+            "default": spec["default"],
+            "entry": f"/apps/{app}/index.html",
+        })
+    (out / "apps.json").write_text(json.dumps({"apps": index}, indent=2) + "\n")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

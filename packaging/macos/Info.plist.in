@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template: packaging/macos/package.sh substitutes @VERSION@ (full, e.g. 0.2.0-rc.1),
+     @SHORT_VERSION@ (numeric X.Y.Z) and @BUILD_SHA@.
+     The executable keeps the name craftcloud: it is also the command line
+     (CraftCloud.app/Contents/MacOS/craftcloud status). CraftCloud is a normal Dock app that also
+     sits in the menu bar, so LSUIElement stays unset. It opens craftcloud:// links. -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleName</key>
+  <string>CraftCloud</string>
+  <key>CFBundleDisplayName</key>
+  <string>CraftCloud</string>
+  <key>CFBundleIdentifier</key>
+  <string>io.github.jonasbove.craftcloud</string>
+  <key>CFBundleExecutable</key>
+  <string>craftcloud</string>
+  <key>CFBundleIconFile</key>
+  <string>craftcloud</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleSignature</key>
+  <string>????</string>
+  <key>CFBundleShortVersionString</key>
+  <string>@SHORT_VERSION@</string>
+  <key>CFBundleVersion</key>
+  <string>@SHORT_VERSION@</string>
+  <key>CraftCloudVersion</key>
+  <string>@VERSION@</string>
+  <key>CraftCloudBuildCommit</key>
+  <string>@BUILD_SHA@</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.productivity</string>
+  <!-- Must match MACOSX_DEPLOYMENT_TARGET in package.sh. -->
+  <key>LSMinimumSystemVersion</key>
+  <string>11.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key>
+  <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>Copyright © 2026 the CraftCloud contributors. MIT OR Apache-2.0.</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>io.github.jonasbove.craftcloud.link</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>craftcloud</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>

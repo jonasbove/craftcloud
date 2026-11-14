@@ -1,0 +1,62 @@
+# Maintainer: CraftCloud contributors <https://github.com/jonasbove/craftcloud>
+#
+# AUR recipe that builds the desktop client from the release's source tarball with cargo. See
+# ../README.md for publishing it (updpkgsums, .SRCINFO).
+pkgname=craftcloud
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Desktop sync client and command line for a CraftCloud server'
+arch=('x86_64' 'aarch64')
+url='https://github.com/jonasbove/craftcloud'
+license=('MIT OR Apache-2.0')
+depends=('glibc' 'gcc-libs' 'hicolor-icon-theme' 'libxkbcommon' 'libxkbcommon-x11' 'xdg-utils')
+makedepends=('cargo' 'git' 'pkgconf')
+optdepends=(
+  'org.freedesktop.secrets: keep the sign-in in the keychain (gnome-keyring, kwallet, keepassxc)'
+  'wayland: native Wayland windows'
+  'libx11: X11 and XWayland windows'
+  'libxcursor: X11 cursors'
+  'libxi: X11 input'
+  'vulkan-icd-loader: GPU drawing through Vulkan'
+  'libglvnd: GPU drawing through EGL'
+)
+provides=('craftcloud')
+conflicts=('craftcloud-bin' 'craftcloud-git')
+options=('!lto')
+source=("${pkgname}-${pkgver}.tar.gz::https://github.com/jonasbove/craftcloud/archive/refs/tags/v${pkgver}.tar.gz")
+# Filled in by updpkgsums for each release.
+sha256sums=('TODO')
+
+_id=io.github.jonasbove.craftcloud
+
+prepare() {
+  cd "${pkgname}-${pkgver}"
+  export RUSTUP_TOOLCHAIN=stable
+  # Cargo.lock pins git dependencies too; fetch them all here, so build() runs offline.
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "${pkgname}-${pkgver}"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release -p craftcloud
+}
+
+check() {
+  cd "${pkgname}-${pkgver}"
+  ./target/release/craftcloud --version
+}
+
+package() {
+  cd "${pkgname}-${pkgver}"
+  install -Dm755 target/release/craftcloud "${pkgdir}/usr/bin/craftcloud"
+  install -Dm644 "packaging/linux/${_id}.desktop" "${pkgdir}/usr/share/applications/${_id}.desktop"
+  install -dm755 "${pkgdir}/usr/share/metainfo"
+  sed -e "s/@VERSION@/${pkgver}/g" -e "s/@DATE@/$(date -u -d "@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y-%m-%d)/g" \
+    "packaging/linux/${_id}.metainfo.xml.in" >"${pkgdir}/usr/share/metainfo/${_id}.metainfo.xml"
+  install -dm755 "${pkgdir}/usr/share/icons"
+  cp -dr --no-preserve=ownership packaging/linux/icons/hicolor "${pkgdir}/usr/share/icons/"
+  install -Dm644 -t "${pkgdir}/usr/share/doc/${pkgname}" README.md NOTICE
+  install -Dm644 -t "${pkgdir}/usr/share/licenses/${pkgname}" LICENSE-MIT LICENSE-APACHE
+}

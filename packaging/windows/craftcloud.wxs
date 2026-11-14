@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  CraftCloud MSI (WiX Toolset v5: `dotnet tool install -g wix`, plus the UI and Util extensions:
+  `wix extension add -g WixToolset.UI.wixext/5.0.2 WixToolset.Util.wixext/5.0.2`). Built by
+  package.ps1:
+
+    wix build craftcloud.wxs -arch x64 -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext
+      -culture en-US -loc craftcloud.en-us.wxl -d Version=1.2.3 -d DisplayVersion=1.2.3-rc.1
+      -d BinDir=... -d IconPath=... -o out.msi
+
+  Per-user install (no UAC prompt), by default into %LOCALAPPDATA%\Programs\CraftCloud, with a
+  Start menu shortcut. The shortcut carries the AppUserModelID io.github.jonasbove.craftcloud, which
+  Windows needs to show notifications from an unpackaged app and to group its taskbar button. The
+  installer registers craftcloud:// links under HKCU\Software\Classes\craftcloud, the same values
+  the client writes on every start (crates/native/src/url_scheme.rs), and removes them on uninstall.
+  The setup wizard is WiX's own (WixUI_InstallDir without the licence page: the code is MIT OR
+  Apache-2.0, so there is nothing to accept). Its Finish page offers to start CraftCloud.
+
+  Per-user packages can't use a file as a component's KeyPath (ICE38), so each component is keyed
+  on an HKCU value, and the folders it creates are removed on uninstall (ICE64).
+
+  Structure adapted from craft-launcher's packaging/windows (MIT OR Apache-2.0; see NOTICE). The
+  UpgradeCode and component GUIDs are CraftCloud's own: never reuse them in another product.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package
+      Name="CraftCloud"
+      Manufacturer="CraftCloud"
+      Version="$(var.Version)"
+      UpgradeCode="31DDA738-C856-4991-8F0E-79A1BB6F5385"
+      Scope="perUser"
+      Compressed="yes"
+      Language="1033">
+    <SummaryInformation Description="CraftCloud: keeps a folder in sync with your CraftCloud server" Manufacturer="CraftCloud" />
+    <!-- Same-version upgrades let successive pre-releases of one X.Y.Z replace each other
+         (MSI versions are numeric, so 1.2.3-rc.1 and 1.2.3-rc.2 are both 1.2.3). -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+        DowngradeErrorMessage="A newer version of CraftCloud is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- The Apps & features icon only (keep the .exe extension, ICE50). The shortcut takes the
+         exe's own icon (build.rs embeds it), at a path every update keeps. -->
+    <Icon Id="CraftCloudIcon.exe" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="CraftCloudIcon.exe" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/jonasbove/craftcloud" />
+    <Property Id="ARPURLUPDATEINFO" Value="https://github.com/jonasbove/craftcloud/releases" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/jonasbove/craftcloud/issues" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="LocalProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="CraftCloud" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <!-- An update installs where the person put the previous version. -->
+    <Property Id="INSTALLFOLDER" Secure="yes" />
+    <Property Id="PREVIOUSINSTALLFOLDER" Secure="yes">
+      <RegistrySearch Id="PreviousInstallFolder" Root="HKCU" Key="Software\CraftCloud" Name="InstallDir" Type="raw" />
+    </Property>
+    <SetProperty Id="INSTALLFOLDER" Action="CraftCloudRestoreFolder" Value="[PREVIOUSINSTALLFOLDER]"
+        Before="CostInitialize" Sequence="both" Condition="PREVIOUSINSTALLFOLDER AND NOT INSTALLFOLDER" />
+
+    <Feature Id="Main" Title="CraftCloud" Level="1">
+      <ComponentGroupRef Id="CraftCloudFiles" />
+    </Feature>
+
+    <!-- WixUI_InstallDir without its licence page: Welcome goes straight to the folder page. -->
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <UI>
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg" Order="2" Condition="NOT Installed" />
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchCraftCloud"
+          Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+    </UI>
+
+    <!-- The full version (Version is numeric, so it drops a pre-release tag), shown on the wizard's
+         pages through craftcloud.en-us.wxl. -->
+    <Property Id="CraftCloudVersion" Value="$(var.DisplayVersion)" />
+
+    <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="CraftCloud $(var.DisplayVersion) is installed. Start it from the Start menu, enter your server's address and choose the folders to sync." />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Start CraftCloud" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WixShellExecTarget" Value="[#CraftCloudExe]" />
+    <!-- Runs in the wizard's own process, so CraftCloud starts as the person, not elevated. -->
+    <CustomAction Id="LaunchCraftCloud" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixShellExec" Impersonate="yes" Return="ignore" />
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="CraftCloudFiles">
+      <Component Id="CraftCloudApp" Directory="INSTALLFOLDER" Guid="0A4390F2-3223-475B-9018-F5773A02DF93">
+        <File Id="CraftCloudNotice" Source="$(var.BinDir)\NOTICE" KeyPath="no" />
+        <File Id="CraftCloudExe" Source="$(var.BinDir)\craftcloud.exe" KeyPath="no" />
+        <!-- Read back by the next version's installer. -->
+        <RegistryValue Root="HKCU" Key="Software\CraftCloud" Name="InstallDir" Value="[INSTALLFOLDER]" Type="string" KeyPath="yes" />
+        <!-- Win+R "craftcloud". -->
+        <RegistryValue Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\craftcloud.exe" Value="[#CraftCloudExe]" Type="string" />
+        <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+        <RemoveFolder Id="RemoveLocalProgramsFolder" Directory="LocalProgramsFolder" On="uninstall" />
+      </Component>
+
+      <!-- craftcloud:// links start this client (the values url_scheme.rs writes). -->
+      <Component Id="CraftCloudUrlScheme" Directory="INSTALLFOLDER" Guid="FEDFA35F-D370-453C-B76D-A3048C07C70A">
+        <RegistryKey Root="HKCU" Key="Software\Classes\craftcloud">
+          <RegistryValue Type="string" Value="URL:CraftCloud link" KeyPath="yes" />
+          <RegistryValue Type="string" Name="URL Protocol" Value="" />
+          <RegistryValue Type="string" Key="DefaultIcon" Value="&quot;[#CraftCloudExe]&quot;,0" />
+          <RegistryValue Type="string" Key="shell\open\command" Value="&quot;[#CraftCloudExe]&quot; &quot;%1&quot;" />
+        </RegistryKey>
+      </Component>
+
+      <Component Id="CraftCloudShortcut" Directory="ProgramMenuFolder" Guid="A2FB6995-9759-4D1B-A8BE-23DB9A3C1C4E">
+        <Shortcut Id="StartMenuShortcut" Name="CraftCloud"
+            Description="Keeps your CraftCloud folder in sync"
+            Target="[#CraftCloudExe]" WorkingDirectory="INSTALLFOLDER">
+          <ShortcutProperty Key="System.AppUserModel.ID" Value="io.github.jonasbove.craftcloud" />
+        </Shortcut>
+        <RegistryValue Root="HKCU" Key="Software\CraftCloud" Name="StartMenuShortcut" Value="1" Type="integer" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

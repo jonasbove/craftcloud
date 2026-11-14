@@ -1,0 +1,73 @@
+#!/bin/sh
+# Create the owner (first admin) account of a new CraftCloud server from the terminal, instead of
+# the setup wizard in the browser:
+#
+#   scripts/create-owner http://localhost:8086
+#
+# Asks for the username, email and password (nothing is stored). Only works while the server has
+# no accounts yet; afterwards, add people with scripts/add-user. The web apps choice (setup step 4)
+# keeps its default (CRAFTCLOUD_WEB_APPS in .env).
+# For tests: OWNER_USER, OWNER_EMAIL, OWNER_PASSWORD skip the prompts.
+set -eu
+
+SERVER="${1:?usage: scripts/create-owner <server-url>}"
+SERVER="${SERVER%/}"
+
+ask() { # variable, prompt, secret
+    eval "current=\${$1:-}"
+    if [ -n "$current" ]; then return; fi
+    printf '%s: ' "$2"
+    if [ "${3:-}" = secret ]; then stty -echo 2>/dev/null || true; fi
+    read -r value
+    if [ "${3:-}" = secret ]; then stty echo 2>/dev/null || true; echo; fi
+    eval "$1=\$value"
+}
+json() { python3 -I -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
+
+status="$(curl -fsS "$SERVER/api/auth/status")" || {
+    echo "Can't reach CraftCloud at $SERVER." >&2
+    exit 1
+}
+if printf '%s' "$status" | python3 -I -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("initialized") else 1)'; then
+    echo "This server already has an owner. Add more people with: scripts/add-user $SERVER" >&2
+    exit 1
+fi
+
+ask OWNER_USER "Owner username"
+ask OWNER_EMAIL "Owner email"
+while :; do
+    ask OWNER_PASSWORD "Password (at least 8 characters)" secret
+    if [ "${#OWNER_PASSWORD}" -lt 8 ]; then
+        echo "Too short." >&2
+        OWNER_PASSWORD=""
+        continue
+    fi
+    if [ -t 0 ]; then # typed by hand: ask twice
+        printf 'Password again: '
+        stty -echo 2>/dev/null || true
+        read -r again
+        stty echo 2>/dev/null || true
+        echo
+        if [ "$again" != "$OWNER_PASSWORD" ]; then
+            echo "The passwords don't match." >&2
+            OWNER_PASSWORD=""
+            continue
+        fi
+    fi
+    break
+done
+
+body="{\"username\": $(json "$OWNER_USER"), \"email\": $(json "$OWNER_EMAIL"), \"password\": $(json "$OWNER_PASSWORD")}"
+out="$(mktemp)"
+code="$(curl -sS -o "$out" -w '%{http_code}' -H 'Content-Type: application/json' -d "$body" "$SERVER/api/setup")"
+answer="$(cat "$out")"
+rm -f "$out"
+if [ "$code" = 201 ] || [ "$code" = 200 ]; then
+    echo "Created the owner '$OWNER_USER'. Sign in at $SERVER (or in the desktop client) with that username and password."
+else
+    reason="$(printf '%s' "$answer" | python3 -I -c 'import json,sys
+try: d=json.load(sys.stdin); print(d.get("message") or d.get("error") or d)
+except Exception: print("")')"
+    echo "The server refused ($code): ${reason:-$answer}" >&2
+    exit 1
+fi
