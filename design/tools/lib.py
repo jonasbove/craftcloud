@@ -62,23 +62,36 @@ APPS = [
 APP = {a[0]: dict(id=a[0], name=a[1], prefix=a[1][:-5], tagline=a[2], color=a[3], ink_d=a[4], ink_l=a[5],
                   version=a[6], opens=a[7], exp=a[8], cat=a[9]) for a in APPS}
 
-# What each card says under its name, and its most recent cloud file.
+# What each card says under its name, and its most recent cloud file. App names come from APP
+# (never typed again, never another vendor's product): the file holds them as string variables too
+# (Apps/<id>/name, /blurb, /kind), bound to the cards and file rows.
+def N(app):
+    return APP[app]["name"]
+
+
 BLURB = {
-    "wordcraft": "Opens Word, OpenDocument, RTF and Markdown files and saves them back to your cloud.",
-    "gridcraft": "Opens Excel, OpenDocument and CSV sheets and saves them back to your cloud.",
-    "deckcraft": "Opens PowerPoint decks and saves them back to your cloud.",
+    "wordcraft": f"Opens {N('wordcraft')}, OpenDocument, RTF and Markdown files and saves them back to your cloud.",
+    "gridcraft": f"Opens {N('gridcraft')}, OpenDocument and CSV sheets and saves them back to your cloud.",
+    "deckcraft": f"Opens {N('deckcraft')} decks and saves them back to your cloud.",
     "pdfcraft": "Reads, annotates and organizes PDFs; saves them back to your cloud.",
     "photocraft": "Opens PSD, layered and flat images through CraftCloud's file bridge.",
     "lightcraft": "A library: photos are added to it and exports come back. Never saves over the original.",
     "vectorcraft": "Opens SVG, AI and EPS artwork through CraftCloud's file bridge.",
-    "figcraft": "Opens FigCraft, .fig and Sketch files and saves them back to your cloud.",
-    "designcraft": "Opens IDML and InDesign layouts through CraftCloud's file bridge.",
+    "figcraft": f"Opens {N('figcraft')}, .fig and Sketch files and saves them back to your cloud.",
+    "designcraft": f"Opens IDML and {N('designcraft')} layouts through CraftCloud's file bridge.",
     "cadcraft": "Opens DWG and DXF drawings and saves them back to your cloud.",
     "filmcraft": "Imports your clips into a project; the project saves back to your cloud.",
-    "effectcraft": "Opens After Effects and EffectCraft projects through CraftCloud's file bridge.",
+    "effectcraft": f"Opens {N('effectcraft')} projects through CraftCloud's file bridge.",
     "soundcraft": "Imports audio into a session through CraftCloud's file bridge.",
     "texturecraft": "Opens GLB, FBX and OBJ models through CraftCloud's file bridge.",
-    "materialcraft": "Opens Substance and MaterialCraft graphs through CraftCloud's file bridge.",
+    "materialcraft": f"Opens {N('materialcraft')} graphs through CraftCloud's file bridge.",
+}
+# A file's type, named after the app that opens it.
+KIND = {
+    "wordcraft": f"{N('wordcraft')} document",
+    "gridcraft": f"{N('gridcraft')} spreadsheet",
+    "deckcraft": f"{N('deckcraft')} deck",
+    "photocraft": f"{N('photocraft')} image",
 }
 RECENT = {
     "wordcraft": "Recent: Q3 report.docx · 2 h ago",
@@ -173,6 +186,9 @@ class Doc:
             R("variable.create", {"collection": "Apps", "name": f"{i}/color", "type": "color", "values": {"Dark": a["color"], "Light": a["color"]}})
             R("variable.create", {"collection": "Apps", "name": f"{i}/ink", "type": "color", "values": {"Dark": a["ink_d"], "Light": a["ink_l"]}})
             R("variable.create", {"collection": "Apps", "name": f"{i}/wash", "type": "color", "values": {"Dark": a["color"] + "0d", "Light": a["color"] + "0d"}})
+            for key, val in (("name", a["name"]), ("blurb", BLURB.get(i)), ("kind", KIND.get(i))):
+                if val:
+                    R("variable.create", {"collection": "Apps", "name": f"{i}/{key}", "type": "string", "values": {"Dark": val, "Light": val}})
         # Text styles are made from specimen layers: `style.create {value}` drops fontVariations and
         # textCase (FigCraft 0.18.1), `style.create {from}` keeps them.
         y = 0

@@ -2,7 +2,7 @@
 
 import os
 
-from lib import APP, ASSETS, ORDER, PINNED, THEME, USER, STORAGE, VERSION, OXICLOUD, CATS
+from lib import APP, ASSETS, ORDER, PINNED, THEME, USER, STORAGE, VERSION, OXICLOUD, CATS, KIND
 from cards import CARD_W, CARD_H, fill_card, fill_row, TABLE_COLS
 from components import ICON
 
@@ -526,7 +526,7 @@ def details_panel(d, f, x, light=False):
     doc_preview(d, p, DETAILS_W - 48, 150)
     nm = vstack(d, p, "Name block", 0, 0, DETAILS_W - 48, gap=4)
     d.text(nm, "Q3 report.docx", "Display/Dialog title 22", "ink_strong", name="Detail name")
-    d.text(nm, "Word document · opens in WordCraft", "Small/12.5", "muted", name="Detail kind")
+    d.text(nm, f"{KIND['wordcraft']} · opens in {APP['wordcraft']['name']}", "Small/12.5", "muted", name="Detail kind")
     ac = hstack(d, p, "Detail actions", gap=8)
     d.set(ac, sizingH="fill")
     o = d.inst("Button", ac, props={"Kind": "Primary", "Label": "Open in WordCraft"}, name="Open in app")
@@ -715,7 +715,7 @@ def new_document(d, name, x, y, backdrop):
     hud(d, fld, "Format", color="ink", name="Format label")
     cells = d.frame(fld, "Format cells", 0, 0, 10, 34, stroke="line", layout="horizontal", sizingH="hug",
                     sizingV="fixed")
-    for i, (lab, on) in enumerate((("Word .docx", True), ("OpenDocument .odt", False), ("Markdown .md", False),
+    for i, (lab, on) in enumerate(((f"{APP['wordcraft']['name']} .docx", True), ("OpenDocument .odt", False), ("Markdown .md", False),
                                    ("Plain text .txt", False))):
         if i:
             d.rect(cells, 0, 0, 1, 34, "line", name="sep")

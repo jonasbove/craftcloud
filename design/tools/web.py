@@ -4,7 +4,7 @@ one drop shadow for menus and dialogs, no blur, gradients or rounded corners."""
 
 import os
 
-from lib import APP, ASSETS, ORDER, USER, STORAGE, VERSION, OXICLOUD
+from lib import APP, ASSETS, ORDER, USER, STORAGE, VERSION, OXICLOUD, KIND
 from components import ICON
 from screens import (W, H, GAP, DETAILS_W, hud, vstack, hstack, side_stroke, menu, scrim, dialog, dialog_actions,
                      doc_preview, screen, launcher_grid)
@@ -16,15 +16,15 @@ DW, DH = 960, 640  # desktop window
 WEB_FILES = [
     # name, colour app (None: neutral), type, modified, size, shared, favourite
     ("Drafts", "folder", "Folder", "Today 09:10", "6 items", "—", False),
-    ("Budget 2027.xlsx", "gridcraft", "Excel spreadsheet", "Yesterday 16:05", "86 KB", "2 people", True),
+    ("Budget 2027.xlsx", "gridcraft", KIND["gridcraft"], "Yesterday 16:05", "86 KB", "2 people", True),
     ("Contract.pdf", "pdfcraft", "PDF document", "Today 08:30", "1.2 MB", "Link", False),
     ("Floorplan.dwg", "cadcraft", "DWG drawing", "11 Nov 2026", "3.4 MB", "—", False),
     ("IMG_2041.CR3", "lightcraft", "Canon raw photo", "9 Nov 2026", "28.6 MB", "—", False),
     ("Logo.svg", "vectorcraft", "SVG image", "Today 10:02", "14 KB", "Link", False),
     ("Notes.md", "wordcraft", "Markdown text", "Today 07:55", "3 KB", "—", False),
-    ("Pitch.pptx", "deckcraft", "PowerPoint deck", "10 Nov 2026", "5.8 MB", "2 people", False),
-    ("Poster.psd", "photocraft", "Photoshop image", "Today 11:20", "42.1 MB", "—", False),
-    ("Q3 report.docx", "wordcraft", "Word document", "Today 11:42", "248 KB", "Link", True),
+    ("Pitch.pptx", "deckcraft", KIND["deckcraft"], "10 Nov 2026", "5.8 MB", "2 people", False),
+    ("Poster.psd", "photocraft", KIND["photocraft"], "Today 11:20", "42.1 MB", "—", False),
+    ("Q3 report.docx", "wordcraft", KIND["wordcraft"], "Today 11:42", "248 KB", "Link", True),
     ("Theme.wav", "soundcraft", "WAV audio", "9 Nov 2026", "31.0 MB", "—", False),
     ("Trailer.mp4", "filmcraft", "MP4 video", "6 Nov 2026", "412 MB", "2 people", False),
     ("archive.zip", None, "ZIP archive", "2 Nov 2026", "96.3 MB", "—", False),
@@ -87,7 +87,7 @@ def new_components(d, lib):
             cells[lab] = d.frame(c, f"{lab or 'More'} cell", 0, 0, w, 48, fill=None, layout="horizontal",
                                  padding=[0, 12, 0, 12] if lab else [0, 0, 0, 0], gap=8, crossAlign="center",
                                  mainAlign="center" if not lab else "min", sizingH="fixed", sizingV="fill")
-        ty = d.text(cells["Type"], "Word document", "Body/13", "muted", name="Type")
+        ty = d.text(cells["Type"], KIND["wordcraft"], "Body/13", "muted", name="Type")
         md = d.text(cells["Modified"], "Today 11:42", "Body/13", "muted", name="Modified")
         sz = d.text(cells["Size"], "248 KB", "Mono/12", "muted", name="Size")
         sh = d.text(cells["Shared"], "Link", "Body/13", "muted", name="Shared")
@@ -232,6 +232,8 @@ def web_row(d, parent, x, y, fl, state="Default"):
     iid = d.inst("File row/web", parent, x, y, name=f"Row {name}")
     d.R("instance.setProperties", {"ids": [iid], "properties": {
         "State": state, "Name": name, "Type": typ, "Modified": mod, "Size": size, "Shared": shared, "Favourite": fav}})
+    if app in KIND and typ == KIND[app]:
+        d.R("variable.bind", {"ids": [iid], "field": "componentProperties/Type", "variable": f"{app}/kind"})
     if app == "folder":
         d.set(d.sub(iid, "File icon"), visible=False)
         d.set(d.sub(iid, "Folder icon"), visible=True)
@@ -518,7 +520,7 @@ def web_details(d, f, x):
     col = vstack(d, nm, "Name col", 0, 0, 250, gap=4)
     d.set(col, sizingH="fill")
     d.text(col, "Q3 report.docx", "Display/Dialog title 22", "ink_strong", name="Detail name")
-    d.text(col, "Word document · 248 KB", "Small/12.5", "muted", name="Detail kind")
+    d.text(col, f"{KIND['wordcraft']} · 248 KB", "Small/12.5", "muted", name="Detail kind")
     fav = d.frame(nm, "Favourite", 0, 0, 34, 34, fill=None, stroke="line_strong", layout="horizontal",
                   mainAlign="center", crossAlign="center")
     d.inst("Icon/Star", fav, name="Star")

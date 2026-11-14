@@ -90,6 +90,7 @@ def fill_card(d, iid, app, hover=False):
     d.R("instance.setProperties", {"ids": [iid], "properties": {
         "Version": a["version"], "Opens": opens_label(a), "Tagline": a["tagline"], "Blurb": BLURB[app],
         "Recent": RECENT[app], "Experimental": a["exp"]}})
+    d.R("variable.bind", {"ids": [iid], "field": "componentProperties/Blurb", "variable": f"{app}/blurb"})
     d.set(d.sub(iid, "Version"), fill=f"app:{app}/ink")
     wm = d.sub(iid, "Wordmark")
     d.R("instance.setProperties", {"ids": [wm], "properties": {"Name": a["prefix"]}})

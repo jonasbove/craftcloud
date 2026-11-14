@@ -78,6 +78,15 @@ What each screen shows:
 `good` (#3fd6b8, hue 168°) and `accent_ink` (#a9c48e, hue 90°, much less saturated) stay distinct; `good` is unchanged.
 The accent values live in `tools/lib.py` (`THEME`) and must match the code and the logo.
 
+## App names (`Apps` string variables)
+
+Every text that names a Craft app takes the name from `tools/lib.py` (`APP`), never typed again, and never another
+vendor's product: a `.pptx` is a "DeckCraft deck", a `.psd` a "PhotoCraft image". The file also holds them as string
+variables in the `Apps` collection, `<app>/name`, `<app>/blurb` (the card text) and `<app>/kind` (a file's type),
+bound to the app cards' Blurb and the file rows' Type properties, so editing a variable changes every screen.
+Texts that mix a name into a longer line (the details panel's "WordCraft document · opens in WordCraft") are built
+from the same values by the scripts, as FigCraft can't bind part of a text (limitation 9 below).
+
 ## Brand
 
 - **`Brand/Logo` (64 px)** is the mackerel logo, `assets/logo/craftcloud-logo-256.png` as an image fill (already clipped
