@@ -728,41 +728,26 @@ jobs:
         env:
           VERSION: ${{ steps.v.outputs.version }}
           REPO: ${{ github.repository }}
-          OWNER: ${{ github.repository_owner }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # The Craft apps' layout (GitHub's generated notes): "## What's Changed", one line per change
-          # with its author and link, then "**Full Changelog**". CraftCloud takes no pull requests on
-          # GitHub (it is published from its primary repository), so the lines are the commits since
-          # the previous release; the first release lists its RELEASE-NOTES highlights instead.
+          # The Craft apps' layout: GitHub's generated notes ("## What's Changed", one line per merged pull
+          # request with its author, then "**Full Changelog**"), plus a link to RELEASE-NOTES.md when it has a
+          # section for this version, so "upgrade all devices together" notes can't be missed.
           tag="v$VERSION"
           prev="$(git describe --tags --abbrev=0 --match 'v*' "$tag^" 2>/dev/null || true)"
-          {
-            echo "## What's Changed"
-            if [ -n "$prev" ]; then
-              git log --reverse --no-merges --format="* %s by @$OWNER in https://github.com/$REPO/commit/%H" "$prev..$tag"
-            else
-              # The bullets under "**What's in it**" in the version's RELEASE-NOTES section.
-              awk -v h="## $VERSION" '
-                $0 == h || index($0, h " ") == 1 { on = 1; next }
-                on && /^## / { exit }
-                on && /^\*\*What.s in it\*\*/ { list = 1; next }
-                list && /^\*\*/ { exit }
-                list && /^- / { sub(/^- /, "* "); print; next }
-                list && /^  [^ ]/ { sub(/^  /, " "); printf "%s", ""; print; next }
-              ' docs/RELEASE-NOTES.md | awk 'NR > 1 && /^ / { sub(/^ /, ""); printf " %s", $0; next } { if (NR > 1) print ""; printf "%s", $0 } END { print "" }'
-            fi
-            echo
-            if grep -q -x -E "## $VERSION( .*)?" docs/RELEASE-NOTES.md; then
-              echo "Before updating, read the [release notes](https://github.com/$REPO/blob/$tag/docs/RELEASE-NOTES.md)."
-              echo
-            fi
-            echo
-            if [ -n "$prev" ]; then
-              echo "**Full Changelog**: https://github.com/$REPO/compare/$prev...$tag"
-            else
-              echo "**Full Changelog**: https://github.com/$REPO/commits/$tag"
-            fi
-          } > notes.md
+          args=(-f tag_name="$tag")
+          [ -n "$prev" ] && args+=(-f previous_tag_name="$prev")
+          gh api "repos/$REPO/releases/generate-notes" "${args[@]}" --jq .body > generated.md
+          link=""
+          if grep -q -x -E "## $VERSION( .*)?" docs/RELEASE-NOTES.md; then
+            link="Before updating, read the [release notes](https://github.com/$REPO/blob/$tag/docs/RELEASE-NOTES.md)."
+          fi
+          # The link goes right above "**Full Changelog**" (or at the end, if GitHub left that line out).
+          awk -v link="$link" '
+            /^\*\*Full Changelog\*\*/ && link != "" && !done { print link; print ""; done = 1 }
+            { print }
+            END { if (link != "" && !done) { print ""; print link } }
+          ' generated.md > notes.md
           cat notes.md
       - name: Draft release
         env:
