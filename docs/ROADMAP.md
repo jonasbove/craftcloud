@@ -149,6 +149,12 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   ends quietly; the tray's icon and menu no longer change at every sync cycle (a tray host rebuilt an open menu each
   time); a removed device shows as signed out rather than as an error (OxiCloud answers its refresh with 404).
   The README's Hyprland and Sway notes say how to start it at login there.
+- 2026-11-14: Testing: `cargo xtask e2e-sync`, a two-client sync smoke test against any server. Two scratch
+  clients sign in as separate devices and sync a fresh folder pass by pass: create, edit, rename and move both
+  ways, unicode names, a 20 MB file, 200 small files, deletes to the trash (checked through the REST API), a
+  conflict copy on both sides and temporary-looking names (T-063, T-064). It checks that no other client syncs
+  the account (through its sessions, for an admin account) and that the cloud and both clients end the same,
+  keeps every pass's `--json` and ends with a PASS/FAIL table ([TESTING.md](TESTING.md)).
 - 2026-11-14: Releases: the Release workflow install-tests every Linux package before it makes a draft
   (`package-test`): the deb on Debian 12 and Ubuntu 22.04/24.04, the rpm on Fedora 41/42 (x86_64 and aarch64),
   the Arch package, the AppImage and the tarball, each installed with its package manager, checked, signed in and
