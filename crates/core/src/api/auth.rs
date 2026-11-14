@@ -167,8 +167,8 @@ impl DeviceStart {
 /// `POST /api/auth/device/authorize`. `client_name` is what the approval page and the device
 /// list show, e.g. "CraftCloud on Studio".
 pub fn device_authorize(server: &ServerUrl, client_name: &str) -> HttpRequest {
-    // OxiCloud v0.10.0 stores but does not enforce the scope (docs/UPSTREAM.md C7); ask for the
-    // narrowest one anyway so the device list says what the client is for.
+    // Ask for the narrowest scope, so the device list says what the client is for (see
+    // docs/UPSTREAM.md C7).
     HttpRequest::new(Method::Post, server.join("api/auth/device/authorize")).json(&json!({"client_name": client_name, "scope": "webdav"}))
 }
 

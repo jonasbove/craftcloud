@@ -146,7 +146,7 @@ has the map.
   answer over D-Bus on Linux and may hang, so they run on threads of their own (`apps/craftcloud/src/main.rs`,
   `tray.rs`). A missing tray, keychain or notification service degrades the client, never stops it.
 - **Desktop sign-in is through the browser only** (OxiCloud's OAuth 2.0 device flow; the client never sees a
-  password). Tokens live in the OS keychain. OxiCloud v0.10.0 does not enforce a device token's `scope`
+  password). Tokens live in the OS keychain. Treat a device token like the account's password
   (UPSTREAM.md C7).
 - **Never break wasm.** `crates/core` and `crates/ui-egui` build for `wasm32-unknown-unknown`, and `cargo xtask ci`
   checks it. Desktop-only code goes in `crates/native` or `apps/craftcloud`.
