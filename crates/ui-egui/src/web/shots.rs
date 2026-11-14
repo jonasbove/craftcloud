@@ -172,6 +172,33 @@ fn share_ready(s: egui::Vec2, t: egui::Theme) -> H {
     h
 }
 
+/// "Your share links" with the design frame's five links (one gone, one expired), at 2026-11-14
+/// 13:32 UTC seen at UTC+1.
+fn share_links(s: egui::Vec2, t: egui::Theme) -> H {
+    let mut h = visit("/links", None, s, t);
+    h.state_mut().backend.wall = Some(crate::backend::WallClock { unix: 1_794_663_120.0, utc_offset_minutes: 60 });
+    start(&mut h, INIT, true);
+    let link = |id: &str, item: &str, kind: &str, name: &str, pw: bool, expires: Option<&str>, made: &str, opened: u64| {
+        json!({"id": id, "item_id": item, "item_name": name, "item_type": kind, "token": format!("tok-{id}"),
+            "url": format!("https://cloud.example.org/s/tok-{id}"), "has_password": pw, "expires_at": expires, "created_at": made, "access_count": opened})
+    };
+    let list = json!({"items": [
+        link("s1", "f1", "file", "Q3 report.docx", true, Some("2026-11-21T13:32:00Z"), "2026-11-14T13:32:00Z", 3),
+        link("s2", "d1", "folder", "Team", false, None, "2026-11-10T09:00:00Z", 12),
+        link("s3", "f3", "file", "Board pitch.pptx", true, Some("2026-12-14T08:05:00Z"), "2026-11-14T08:05:00Z", 0),
+        link("s4", "f4", "file", "Poster.psd", false, None, "2026-11-02T10:00:00Z", 7),
+        link("s5", "f5", "file", "Budget 2026.xlsx", false, Some("2026-11-02T12:00:00Z"), "2026-10-26T10:00:00Z", 5),
+    ], "pagination": {"page": 1, "has_next": false}});
+    soft(&mut h, "/api/shares?page=1&per_page=100", json_ok(&list));
+    let at = |id: &str, path: &str| json_ok(&json!({"id": id, "name": path.rsplit('/').next(), "path": format!("/Personal/{path}"), "size": 1000}));
+    soft(&mut h, "/api/files/f1?metadata=true", at("f1", "Documents/Reports/Q3 report.docx"));
+    soft(&mut h, "/api/folders/d1", at("d1", "Projects/Team"));
+    soft(&mut h, "/api/files/f3?metadata=true", at("f3", "Clients/North/Board pitch.pptx"));
+    soft(&mut h, "/api/files/f4?metadata=true", Ok(HttpResponse::new(404, br#"{"error":"Not found"}"#.to_vec())));
+    soft(&mut h, "/api/files/f5?metadata=true", at("f5", "Finance/Budget 2026.xlsx"));
+    h
+}
+
 /// The device approval page, after `button` and the server's `status` answer.
 fn device_answered(s: egui::Vec2, t: egui::Theme, button: &str, status: &str) -> H {
     let mut h = visit("/device", Some("7KQ-4XM"), s, t);
@@ -334,6 +361,41 @@ fn scenes() -> Vec<Scene> {
         ("files-share-created-copied", |s, t| {
             let mut h = share_ready(s, t);
             click(&mut h, "COPY");
+            h
+        }),
+        ("share-links", share_links),
+        ("share-links-copied", |s, t| {
+            use egui_kittest::kittest::Queryable;
+            let mut h = share_links(s, t);
+            h.query_all_by_label("COPY").next().unwrap_or_else(|| panic!("no COPY")).click();
+            h.run();
+            h
+        }),
+        ("share-links-revoke", |s, t| {
+            use egui_kittest::kittest::Queryable;
+            let mut h = share_links(s, t);
+            h.query_all_by_label("REVOKE").next().unwrap_or_else(|| panic!("no REVOKE")).click();
+            h.run();
+            h
+        }),
+        ("share-links-empty", |s, t| {
+            let mut h = visit("/links", None, s, t);
+            start(&mut h, INIT, true);
+            soft(&mut h, "/api/shares?page=1&per_page=100", json_ok(&json!({"items": [], "pagination": {"page": 1, "has_next": false}})));
+            h
+        }),
+        ("share-account-menu", |s, t| {
+            let mut h = visit("/", None, s, t);
+            start(&mut h, INIT, true);
+            soft(&mut h, "/api/auth/device/devices", ok(&fixture("device-devices.json")));
+            click(&mut h, "Account: john");
+            let five: Vec<Value> = (1..=5)
+                .map(|i| {
+                    json!({"id": format!("s{i}"), "item_id": format!("f{i}"), "item_type": "file", "token": format!("t{i}"),
+                    "url": format!("https://cloud.example.org/s/t{i}"), "has_password": false, "created_at": "2026-11-13T09:00:00Z"})
+                })
+                .collect();
+            soft(&mut h, "/api/shares?page=1&per_page=100", json_ok(&json!({"items": five, "pagination": {"page": 1, "has_next": false}})));
             h
         }),
         ("home", |s, t| {

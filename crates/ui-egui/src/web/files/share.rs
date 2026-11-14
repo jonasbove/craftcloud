@@ -183,28 +183,55 @@ fn date_text(d: Date) -> String {
 fn expires_line(expires_at: Option<&str>, now: Option<Now>) -> String {
     let Some(t) = expires_at.and_then(|e| e.parse::<Timestamp>().ok()) else { return "Never".into() };
     let z = local(t, now);
-    let when = if z.hour() == 0 && z.minute() == 0 {
-        // A link made to last to the end of a day.
-        z.date().yesterday().map_or_else(|_| date_text(z.date()), |d| format!("end of {}", date_text(d)))
-    } else {
-        format!("{}, {}", date_text(z.date()), z.strftime("%H:%M"))
+    let when = match last_day(&z) {
+        Some(d) => format!("end of {}", date_text(d)),
+        None => format!("{}, {}", date_text(z.date()), z.strftime("%H:%M")),
     };
-    let Some(now) = now else { return when };
+    match time_left(t, now) {
+        Some(left) => format!("{when} · {left}"),
+        None => when,
+    }
+}
+
+/// The day a link made to last to the end of a day (it ends at midnight) works through.
+fn last_day(z: &jiff::Zoned) -> Option<Date> {
+    (z.hour() == 0 && z.minute() == 0).then(|| z.date().yesterday().ok()).flatten()
+}
+
+/// "today", "in 1 day", "in 7 days"; `None` when it is over or the clock isn't known.
+fn time_left(t: Timestamp, now: Option<Now>) -> Option<String> {
+    let now = now?;
     let secs = t.as_second() - now.at.as_second();
     let days = (secs as f64 / 86_400.0).round() as i64;
-    let left = match secs {
-        ..=0 => return when,
+    Some(match secs {
+        ..=0 => return None,
         s if s < 86_400 / 2 => "today".to_owned(),
         _ if days == 1 => "in 1 day".to_owned(),
         _ => format!("in {days} days"),
-    };
-    format!("{when} · {left}")
+    })
+}
+
+/// A link's expiry as the list of links shows it (#19): the last day it works ("21 Nov 2026"),
+/// how long is left ("in 7 days"; `None` when it is over or the clock isn't known), and whether it
+/// is over. `None` for a link that never expires, or a time that can't be read.
+pub(crate) fn expiry_cell(expires_at: Option<&str>, clock: Option<WallClock>) -> Option<(String, Option<String>, bool)> {
+    let t = expires_at?.parse::<Timestamp>().ok()?;
+    let now = Now::from(clock);
+    let z = local(t, now);
+    let day = last_day(&z).unwrap_or_else(|| z.date());
+    let over = now.is_some_and(|n| t <= n.at);
+    Some((date_text(day), time_left(t, now), over))
 }
 
 /// "My files / Documents / Reports", where an item is.
 fn location(item: &Item) -> String {
+    place(&item.path)
+}
+
+/// "My files / Documents / Reports": the folder a cloud path (`Documents/Reports/q3.docx`) is in.
+pub(crate) fn place(path: &str) -> String {
     let mut parts = vec!["My files"];
-    if let Some((dir, _)) = item.path.rsplit_once('/') {
+    if let Some((dir, _)) = path.rsplit_once('/') {
         parts.extend(dir.split('/').filter(|s| !s.is_empty()));
     }
     parts.join(" / ")
@@ -225,6 +252,15 @@ enum Act {
     Cancel,
     Create,
     Copy(String),
+    /// "See all your share links": the page that lists them (#19).
+    AllLinks,
+}
+
+/// A link in words: accent ink, underlined, Small 13.
+fn text_link(ui: &mut Ui, label: &str) -> egui::Response {
+    let t = Tokens::get(ui.ctx());
+    ui.add(egui::Label::new(RichText::new(label).size(13.0).underline().color(t.accent_ink)).sense(Sense::click()))
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 impl Files {
@@ -404,13 +440,17 @@ impl Files {
                         act = Some(Act::Create);
                     }
                 }
+                (chrome::Part::ActionsLeft, Some(_)) => {
+                    if text_link(ui, "See all your share links").clicked() {
+                        act = Some(Act::AllLinks);
+                    }
+                }
                 (chrome::Part::ActionsRight, Some(_)) => {
-                    // "See all your share links" joins the left side with the page that lists them (#19).
                     if chrome::button(ui, "Done", ButtonKind::Secondary, Some(Icon::Check), true).clicked() {
                         act = Some(Act::Cancel);
                     }
                 }
-                (chrome::Part::ActionsLeft | chrome::Part::HeroRight, _) => {}
+                (chrome::Part::HeroRight, _) => {}
             },
         );
         if let (Some(month), Some(field), Some(now)) = (s.month, date_field, now) {
@@ -419,6 +459,10 @@ impl Files {
         match act {
             None => {}
             Some(Act::Cancel) => self.sheet = None,
+            Some(Act::AllLinks) => {
+                self.sheet = None;
+                self.go_to_links = true;
+            }
             Some(Act::Create) => {
                 s.error = None;
                 s.month = None;

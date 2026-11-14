@@ -22,10 +22,16 @@ fn caps(ui: &Ui, text: &str, size: f32, color: Color32) -> std::sync::Arc<egui::
 
 /// A folder or file glyph in `rect` (square), coloured by the app that opens it.
 pub fn file_glyph(ui: &Ui, rect: Rect, item: &Item) {
+    kind_glyph(ui, rect, item.is_folder(), &item.name);
+}
+
+/// A folder, or a file named `name` in its app's colour, when only the name is known (the list of
+/// share links).
+pub fn kind_glyph(ui: &Ui, rect: Rect, folder: bool, name: &str) {
     let t = Tokens::get(ui.ctx());
     let p = ui.painter();
     let s = rect.width();
-    if item.is_folder() {
+    if folder {
         let body = Rect::from_min_max(rect.min + vec2(0.0, s * 0.22), rect.max - vec2(0.0, s * 0.1));
         let tab = Rect::from_min_size(rect.min + vec2(0.0, s * 0.12), vec2(s * 0.42, s * 0.16));
         let fill = if t.dark { Color32::from_gray(150) } else { Color32::from_gray(120) };
@@ -33,7 +39,7 @@ pub fn file_glyph(ui: &Ui, rect: Rect, item: &Item) {
         p.rect_filled(body, CornerRadius::same(1), fill);
         return;
     }
-    let fill = item.app().map_or(if t.dark { Color32::from_gray(140) } else { Color32::from_gray(130) }, super::apps::color);
+    let fill = super::apps::for_name(name).map_or(if t.dark { Color32::from_gray(140) } else { Color32::from_gray(130) }, super::apps::color);
     let w = s * 0.72;
     let page = Rect::from_center_size(rect.center(), vec2(w, s * 0.92));
     let fold = w * 0.32;
