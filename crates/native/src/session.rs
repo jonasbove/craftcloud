@@ -140,7 +140,7 @@ impl Session {
         }
         let answer = http::execute(&auth::refresh(&self.server, &self.tokens.refresh_token));
         let resp = self.note(answer)?;
-        if matches!(resp.status, 401 | 403) {
+        if refresh_refused(resp.status) {
             self.signed_out = true;
             return Err(SIGNED_OUT.into());
         }
@@ -291,9 +291,23 @@ fn lock(path: &Path) -> Result<LockGuard, String> {
     Ok(LockGuard(file))
 }
 
+/// Whether the server's answer to a refresh means the sign-in is over. OxiCloud v0.10.0 answers 404
+/// "Session not found" once the device is removed or its session has ended (UPSTREAM.md C10), and
+/// that must show as "Signed out", not as an error that never clears.
+fn refresh_refused(status: u16) -> bool {
+    matches!(status, 401 | 403 | 404)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::lock;
+    use super::{lock, refresh_refused};
+
+    #[test]
+    fn a_session_the_server_no_longer_knows_is_signed_out() {
+        assert!(refresh_refused(404), "OxiCloud's answer for a removed device");
+        assert!(refresh_refused(401) && refresh_refused(403));
+        assert!(!refresh_refused(500) && !refresh_refused(502) && !refresh_refused(429), "trouble on the server is tried again");
+    }
 
     #[test]
     fn the_refresh_lock_is_exclusive_across_handles() {
