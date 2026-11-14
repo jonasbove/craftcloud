@@ -1,8 +1,7 @@
 # Releasing CraftCloud
 
-How a version goes out. The primary repository keeps the full history; https://github.com/jonasbove/craftcloud is a
-public copy whose history starts at the first release (`scripts/publish-github`), and that is where releases and
-images are published.
+How a version goes out. Everything happens on https://github.com/jonasbove/craftcloud: the code, its pull requests,
+the tags, the releases and the images.
 
 ## What a release is
 
@@ -11,7 +10,8 @@ A `v<version>` tag on `main`, whose version matches `Cargo.toml`. Pushed to GitH
 - **Release** (`.github/workflows/release.yml`): the desktop packages for Linux, Windows and macOS, and a **draft**
   GitHub release titled `CraftCloud v<version>`, with the files, `SHA256SUMS.txt`, GPG signatures (`.asc`),
   `release-signing-key.asc` and build-provenance attestations. Its text has the Craft apps' layout: `## What's
-  Changed` (the commits since the previous release, one line each) and `**Full Changelog**`, plus a link to
+  Changed` (GitHub's generated notes: each pull request merged since the previous release, with its author) and
+  `**Full Changelog**`, plus a link to
   [RELEASE-NOTES.md](RELEASE-NOTES.md) when it has a section for the version.
   FreeBSD and riscv64 are added to the draft later by the `late` job, when (and if) they build.
   The draft is made only when the **package tests** pass (`package-test`, `packaging/linux/test-package.sh`): every
@@ -29,6 +29,9 @@ Nothing is released by itself: a person publishes the draft.
 
 ## Checklist
 
+Steps 1 and 2 are one pull request ("🔖 Release <version>"), merged like any other: by a maintainer's explicit
+confirmation.
+
 1. **Release notes:** turn `## Unreleased` in [RELEASE-NOTES.md](RELEASE-NOTES.md) into `## <version>`, with what
    changed and, first, anything that needs care when updating ("upgrade all devices together"). Start a new empty
    `## Unreleased` above it.
@@ -41,22 +44,14 @@ Nothing is released by itself: a person publishes the draft.
    (`.deb`), each with a desktop session, and check what containers can't: the tray icon and its menu, the sign-in
    kept in the keychain across a restart, the browser sign-in (the code page opens and approving it signs in), and
    start at login. A `craftcloud://` link from the browser opening the client is worth a click too.
-5. **Tag** the commit on `main` (`git tag -a v<version> -m "CraftCloud <version>"`) and push the tag to the primary
-   repository.
-6. **Publish** to GitHub as the project account (no private address in the public history):
-
-   ```sh
-   PUBLIC_NAME=jonasbove PUBLIC_EMAIL=31095576+jonasbove@users.noreply.github.com \
-     scripts/publish-github https://github.com/jonasbove/craftcloud.git v0.1.0
-   ```
-
-   The second argument is always `v0.1.0`, where the public history starts; the script replays the commits since
-   the last run and pushes the tags that point at them.
-7. **Watch** the Release and Server image runs. A failed package test means no draft: its log shows the distro,
+5. **Tag** `main` after the release pull request is merged: `git pull`, then
+   `git tag -a v<version> -m "CraftCloud <version>"` on the merge commit and `git push origin v<version>`. Tags
+   can't be moved or deleted afterwards, so check the commit first.
+6. **Watch** the Release and Server image runs. A failed package test means no draft: its log shows the distro,
    the step and, for a sync failure, the server's log; fix it and tag a new version. When the draft has every file
    (and FreeBSD/riscv64, or their jobs have given up), read it over and **publish** it. Published releases are immutable: their files can't be
    changed afterwards.
-8. **After publishing:**
+7. **After publishing:**
    - Update the AUR recipes in `packaging/arch/` (`pkgver`, `updpkgsums`, `makepkg --printsrcinfo > .SRCINFO`) and
      push them to the AUR.
    - Redeploy your own servers from the new image, after reading the release notes.
@@ -76,9 +71,9 @@ Nothing is released by itself: a person publishes the draft.
 - Environment `release`: deployments only from tags matching `v*`; holds `RELEASE_SIGNING_KEY`.
 - Repository variable `DOCKERHUB_USERNAME` and secret `DOCKERHUB_TOKEN` (a Docker Hub access token with read and
   write access) for the Docker Hub copy.
-- A ruleset protecting `v*` tags from being moved or deleted, and `main` from force pushes and deletion.
+- Rulesets: `v*` tags can't be moved or deleted; `main` changes only through pull requests (no approvals required,
+  no bypass) and can't be force-pushed or deleted.
 - Immutable releases, secret scanning with push protection, Dependabot alerts, private vulnerability reporting
   ([SECURITY.md](../SECURITY.md)).
 - Workflows from outside contributors' pull requests wait for approval; `GITHUB_TOKEN` is read-only by default.
-- Changes reach GitHub only through `scripts/publish-github`, so pull requests opened there are merged in the
-  primary repository and published from it, not merged on GitHub.
+- Every pull request, from anyone, is merged on GitHub by a maintainer's explicit confirmation (AGENTS.md).

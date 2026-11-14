@@ -56,11 +56,17 @@ Dependencies and assets use SPDX identifiers. An expression is allowed when ever
 The three blocks above are copied unchanged from the Craft repositories. Where CraftCloud does not (yet) follow
 them, this says why. Nothing here weakens a rule for new work; it says what exists today.
 
-- **Not a storytold repository.** CraftCloud lives at https://github.com/jonasbove/craftcloud. It follows the Craft
-  apps' house rules by choice, but its `main` is not behind storytold's branch protection (core rule 8), and its CI
-  does not call `storytold/craft-common-actions` (core rule 11): `.github/workflows/ci.yml` writes the same gate
+- **Not a storytold repository.** CraftCloud lives at https://github.com/jonasbove/craftcloud, its only home: the
+  code, issues, pull requests, releases and images are all there. It follows the Craft apps' house rules by choice.
+  Its CI does not call `storytold/craft-common-actions` (core rule 11): `.github/workflows/ci.yml` writes the same gate
   out, because the shared workflow needs a paid StepSecurity subscription in a private repository (see the comment
   at its top). For the same reason there is no `house-rules.yml` workflow yet.
+- **`main` changes only through a pull request** (core rule 8), enforced by a GitHub ruleset. **Every pull
+  request is merged by a maintainer's explicit confirmation; agents open pull requests and ask, they never merge on
+  their own.** One topic per pull request, on a branch (`fix/…`, `docs/…`, `feature/…`, `chore/…`), titled with a
+  gitmoji subject; its description says what changed, what ran (the `cargo xtask ci` summary line, any live tests)
+  and what could not run. The agent then asks the maintainer to merge that pull request, by number and title, and
+  merges only after a yes for it.
 - **Commit trailers.** Commits made with an agent keep their `Co-Authored-By:` trailer. Pull request descriptions
   follow core rule 15.
 - **`plan/`** (core rule 9) is `PLAN.md` here: a gitignored notebook, not rules.
@@ -228,7 +234,7 @@ README's Status section in step.
   Craft apps' release file set from `packaging/` (Linux AppImage, deb, rpm, tar.gz, Flatpak and Arch packages for
   x86_64 and aarch64; Windows x64 and arm64 MSI and portable zip; a universal macOS DMG; FreeBSD and Linux riscv64
   as untried extras that may fail). On a tag, a **draft** release (`CraftCloud v<ver>`, notes in the Craft apps' layout: `## What's
-  Changed` from the commits since the last release, `**Full Changelog**`) with `SHA256SUMS.txt`, build-provenance attestations (public repository) and, when the `RELEASE_SIGNING_KEY`
+  Changed` from GitHub's generated notes, `**Full Changelog**`) with `SHA256SUMS.txt`, build-provenance attestations (public repository) and, when the `RELEASE_SIGNING_KEY`
   secret (in the `release` environment, which only `v*` tags may use) is set, a GPG `.asc` for every file. Its own workflow rather than craft-common-actions' (UPSTREAM.md D1).
   Builds are not code-signed in v1; the README says how to get past Gatekeeper and SmartScreen. The release job
   doesn't wait for FreeBSD and riscv64: a `late` job adds them to the draft when they finish. It does wait for
