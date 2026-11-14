@@ -152,8 +152,11 @@ has the map.
     `cargo xtask ci` doesn't mean the image builds, and a built image says nothing about your tree.
   - On a shared machine keep builds polite: `CARGO_BUILD_JOBS` at about half the cores, `nice`, and `< /dev/null` for
     background runs (cargo can stop on a tty read).
-- **Commits:** one subject line in plain English, `Area: what changed for the person` (`Sync: …`, `Web: …`,
-  `CLI: …`, `Docs: …`), with the tester's task id when there is one (`(T-064)`).
+- **Commits:** one subject line in plain English that starts with a [gitmoji](https://gitmoji.dev):
+  `<gitmoji> Area: what changed for the person`, with the tester's task id when there is one (`(T-064)`).
+  Examples: `🐛 Sync: …` (a bug fix), `✨ Web: …` (a feature), `📝 Docs: …`, `👷 CI: …`, `📦 Releases: …`,
+  `🔒️ Security: …`, `⬆️ Deps: …`, `♻️ …` (a refactor), `✅ …` (tests), `🙈 …` (`.gitignore`). One gitmoji per
+  commit, the one that fits its main change.
 
 ## Running and looking at the app
 - **Desktop client:** `cargo run --release -p craftcloud` (window and tray); `craftcloud --hidden` starts in the tray.

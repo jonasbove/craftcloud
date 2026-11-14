@@ -5,8 +5,9 @@ Thanks for helping. The rules every change follows (people and AI agents alike) 
 In short:
 
 - **One change per PR**, on a branch named `feature/`, `bugfix/`, `docs/`, `test/`, `refactor/` or
-  `chore/` plus a short topic (`bugfix/sync-temp-folders`). The title is the commit message: plain
-  English, what changed for the person or developer.
+  `chore/` plus a short topic (`bugfix/sync-temp-folders`). The title is the commit message: a
+  [gitmoji](https://gitmoji.dev), then plain English, what changed for the person or developer
+  (`🐛 Sync: temp-looking folders sync again`).
 - **The server stays upstream OxiCloud, unmodified.** CraftCloud adds the desktop client, the web
   frontend and a small admin service around it. Something the server can't do goes into
   [docs/UPSTREAM.md](docs/UPSTREAM.md) as a gap, not into a patch.
