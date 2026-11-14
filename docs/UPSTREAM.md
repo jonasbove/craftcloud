@@ -239,17 +239,6 @@ fix below would remove some of that glue.
 > registry (extension or MIME → handler, with a default and alternatives) would let deployments add or
 > replace editors without patching the SPA.
 
-### C7. Enforce scopes on device-flow tokens
-
-> **`scope` in `POST /api/auth/device/authorize` is stored but not enforced**
->
-> A client asks for e.g. `webdav` and the device list shows that scope, but the token it receives
-> (`DeviceAuthService`, `generate_access_token`) is an ordinary user JWT: the auth middleware never checks
-> scopes, so a sync client or a DAV app gets the user's full rights, admin included.
->
-> Ask: honour the scopes (e.g. `files` = REST files + WebDAV only, no `/api/admin/*`, no account changes),
-> and show them on the approval page. CraftCloud's desktop client would request the narrowest one.
-
 ### C8. A folder's ETag doesn't always change when a file is added to it
 
 > **WebDAV folder ETag / `getlastmodified` stay the same after a new child file**
@@ -299,19 +288,6 @@ fix below would remove some of that glue.
 > Ask: subtract the purged bytes when the trash is emptied (or an item is deleted for good), the way an upload
 > adds them, or let a user recount their own use.
 
-### C12. A backslash in a WebDAV `PUT` name answers 500 but creates the file, which then breaks listings
-
-> **`PUT /webdav/back%5Cslash.txt` → 500, yet the file exists, and every `PROPFIND` of its folder is cut off**
->
-> Seen on 2026-11-14 with v0.10.0: the `PUT` answers 500 "An internal error occurred", but the file is created
-> (`GET /api/folders/{id}/resources` lists `back\slash.txt`). From then on a `PROPFIND` (depth 1) of that folder
-> stops mid-stream (no closing `</D:multistatus>`; through Caddy's gzip a client sees "Peer disconnected"), so
-> every sync client of that account is stuck offline until the file is removed over REST. `MKCOL` with a
-> backslash answers 400 "name must not contain '/' or '\\'", as it should. CraftCloud never uploads such names.
->
-> Ask: refuse the name on `PUT` the way `MKCOL` does (400, nothing created), and never let one bad entry end a
-> listing.
-
 ### C13. `If-Range` is ignored on WebDAV `GET`
 
 > **`Range` gets a 206, but `If-Range` with a stale ETag still gets a 206 of the new bytes**
@@ -351,20 +327,6 @@ fix below would remove some of that glue.
 >
 > Ask: distinct keys, e.g. `account_not_provisioned` and `client_auth_failed` (the latter is an admin problem,
 > the former a user one).
-
-### C16. Admin by group is only decided when the account is created
-
-> **Joining or leaving the admin group at the provider changes nothing for an existing account**
->
-> Seen on 2026-11-14 with v0.10.0: `OXICLOUD_OIDC_ADMIN_GROUPS` maps the `groups` claim to the admin role only
-> when the account is created at first sign-in (`map_oidc_role` is called on the JIT path only). A person added
-> to the group later stays a user; one removed stays an admin. An account joined by email (auto-link) keeps its
-> role too. The claim name is fixed to `groups`, and `auto_link_email_match` is not in the admin settings DTOs
-> (environment only).
->
-> Ask: re-evaluate the role from the groups on each sign-in (at least upgrade and downgrade between user and
-> admin, never touching the owner), a configurable groups claim name, and `auto_link_email_match` in the admin
-> settings.
 
 ## D. craft-common-actions (github.com/storytold/craft-common-actions)
 
