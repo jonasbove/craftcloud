@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-Nothing yet.
+- **Building the server image yourself on an arm64 machine works** (a Raspberry Pi, an Apple Silicon Mac):
+  `docker compose build` stopped in the web frontend step there. The published images were not affected.
 
 ## 0.1.0
 

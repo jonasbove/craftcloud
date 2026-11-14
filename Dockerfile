@@ -16,10 +16,13 @@ ARG OXICLOUD_VERSION=0.10.0
 ARG CADDY_VERSION=2.11.9
 ARG ALPINE_IMAGE=alpine:3.24
 ARG RUST_IMAGE=rust:1.97-slim-bookworm
+# The web stage needs glibc 2.38 or newer: Trunk downloads a prebuilt wasm-bindgen, and its arm64
+# build won't run on bookworm's glibc 2.36 (building the image on an arm64 machine failed there).
+ARG WEB_RUST_IMAGE=rust:1.97-slim-trixie
 ARG TRUNK_VERSION=0.21.14
 
 # ─── CraftCloud web frontend: wasm, built once on the build machine (same for every platform) ────
-FROM --platform=$BUILDPLATFORM ${RUST_IMAGE} AS web
+FROM --platform=$BUILDPLATFORM ${WEB_RUST_IMAGE} AS web
 ARG TRUNK_VERSION
 # Cargo jobs inside the build; keep it modest on a shared machine.
 ARG CARGO_BUILD_JOBS=6
