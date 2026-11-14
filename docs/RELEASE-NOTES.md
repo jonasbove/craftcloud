@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Server: files opened in the browser stay files.** HTML, SVG and XML that people store are served with a
+  sandbox policy, so they never run as pages on your CraftCloud's address. WebDAV names with a backslash are refused
+  (as the desktop client already does).
 - **Building the server image yourself on an arm64 machine works** (a Raspberry Pi, an Apple Silicon Mac):
   `docker compose build` stopped in the web frontend step there. The published images were not affected.
 
