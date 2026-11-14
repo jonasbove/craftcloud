@@ -1,0 +1,37 @@
+name: Pull request title
+
+# The title becomes the merge commit's subject (the repository merges with the pull request's title), so it must
+# start with a gitmoji like every commit subject (AGENTS.md "Commits"): `🐛 Sync: …`, `📝 Docs: …`. A required check
+# in the main ruleset, so a title without one can't be merged. Changing the title re-runs it.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  gitmoji:
+    name: gitmoji title
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: The title starts with a gitmoji
+        env:
+          # Through the environment, never pasted into the script: a title is text anyone can write.
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          python3 - <<'PY'
+          import os, sys, unicodedata
+          title = os.environ["TITLE"]
+          first = title[:1]
+          # Every gitmoji is a Unicode "other symbol" (So), optionally followed by the emoji variation selector.
+          ok = bool(first) and unicodedata.category(first) == "So"
+          rest = title[1:].lstrip("️")
+          ok = ok and rest.startswith(" ") and rest.strip() != ""
+          if not ok:
+              print(f"::error::The title must start with a gitmoji and a space, e.g. \"🐛 Sync: …\" (https://gitmoji.dev). Got: {title!r}")
+              sys.exit(1)
+          print(f"ok: {title}")
+          PY

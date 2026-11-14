@@ -162,7 +162,8 @@ has the map.
   `<gitmoji> Area: what changed for the person`, with the tester's task id when there is one (`(T-064)`).
   Examples: `🐛 Sync: …` (a bug fix), `✨ Web: …` (a feature), `📝 Docs: …`, `👷 CI: …`, `📦 Releases: …`,
   `🔒️ Security: …`, `⬆️ Deps: …`, `♻️ …` (a refactor), `✅ …` (tests), `🙈 …` (`.gitignore`). One gitmoji per
-  commit, the one that fits its main change.
+  commit, the one that fits its main change. A pull request's title follows the same form: it becomes the merge
+  commit's subject, and the **Pull request title** check refuses a title without a gitmoji.
 
 ## Running and looking at the app
 - **Desktop client:** `cargo run --release -p craftcloud` (window and tray); `craftcloud --hidden` starts in the tray.
@@ -250,6 +251,8 @@ README's Status section in step.
   from ghcr.io to Docker Hub unchanged (same digests, so the build's attestation covers the copy).
 - `.github/workflows/dockerhub-remove.yml` (**Remove a version from Docker Hub**): by hand, deletes a version's
   two tags there (never `latest`).
+- `.github/workflows/pr-title.yml` (**Pull request title**): a pull request's title must start with a gitmoji
+  (it becomes the merge commit's subject); a required check for merging into `main`.
 - `.github/workflows/dockerhub-page.yml` (**Docker Hub page**): the Docker Hub description and overview, from
   `docker/DOCKERHUB.md`, on a push that changes it and by hand.
 - `.github/workflows/packaging-lint.yml` (**Packaging lint**): actionlint, shellcheck on `packaging/`, and the
