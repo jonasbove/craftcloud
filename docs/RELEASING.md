@@ -14,6 +14,12 @@ A `v<version>` tag on `main`, whose version matches `Cargo.toml`. Pushed to GitH
   Changed` (the commits since the previous release, one line each) and `**Full Changelog**`, plus a link to
   [RELEASE-NOTES.md](RELEASE-NOTES.md) when it has a section for the version.
   FreeBSD and riscv64 are added to the draft later by the `late` job, when (and if) they build.
+  The draft is made only when the **package tests** pass (`package-test`, `packaging/linux/test-package.sh`): every
+  Linux package is installed in a clean container with its distro's package manager (`.deb` on Debian 12, Ubuntu
+  22.04 and 24.04; `.rpm` on Fedora 41 and 42; both on x86_64 and aarch64; the Arch package on Arch Linux; the
+  AppImage and the tarball on Ubuntu 22.04), checked (`--version`, `--help`, the desktop entry, icons, AppStream
+  file and `craftcloud://` handler), signed in through the device flow and synced both ways against a server image
+  built from the same commit, upgraded from the previous published release, and removed again.
 - **Server image** (`.github/workflows/image.yml`): `ghcr.io/jonasbove/craftcloud:<version>`, `:latest`,
   `:<version>-apps` and `:latest-apps`, for amd64 and arm64, with attestations, and the same images copied to
   Docker Hub (`docker.io/jonasbove/craftcloud`). These are public as soon as the
@@ -29,9 +35,15 @@ Nothing is released by itself: a person publishes the draft.
 2. **Version:** set `version` in the root `Cargo.toml` and run `cargo update -w`. Update the stage line in
    [ROADMAP.md](ROADMAP.md) and the README's Status section if they name the version.
 3. **Gate:** `cargo xtask ci` must say `all 4 steps passed`. Build the image and run `scripts/smoke-test` on it.
-4. **Tag** the commit on `main` (`git tag -a v<version> -m "CraftCloud <version>"`) and push the tag to the primary
+   To try the whole release without publishing anything, start the Release workflow by hand (on `main` or a
+   branch): it builds every file and runs the package tests, and makes no draft (that needs a tag).
+4. **Before a bigger release, on a desktop:** install the new packages on a Fedora VM (`.rpm`) and a Debian VM
+   (`.deb`), each with a desktop session, and check what containers can't: the tray icon and its menu, the sign-in
+   kept in the keychain across a restart, the browser sign-in (the code page opens and approving it signs in), and
+   start at login. A `craftcloud://` link from the browser opening the client is worth a click too.
+5. **Tag** the commit on `main` (`git tag -a v<version> -m "CraftCloud <version>"`) and push the tag to the primary
    repository.
-5. **Publish** to GitHub as the project account (no private address in the public history):
+6. **Publish** to GitHub as the project account (no private address in the public history):
 
    ```sh
    PUBLIC_NAME=jonasbove PUBLIC_EMAIL=31095576+jonasbove@users.noreply.github.com \
@@ -40,10 +52,11 @@ Nothing is released by itself: a person publishes the draft.
 
    The second argument is always `v0.1.0`, where the public history starts; the script replays the commits since
    the last run and pushes the tags that point at them.
-6. **Watch** the Release and Server image runs. When the draft has every file (and FreeBSD/riscv64, or their jobs
-   have given up), read it over and **publish** it. Published releases are immutable: their files can't be
+7. **Watch** the Release and Server image runs. A failed package test means no draft: its log shows the distro,
+   the step and, for a sync failure, the server's log; fix it and tag a new version. When the draft has every file
+   (and FreeBSD/riscv64, or their jobs have given up), read it over and **publish** it. Published releases are immutable: their files can't be
    changed afterwards.
-7. **After publishing:**
+8. **After publishing:**
    - Update the AUR recipes in `packaging/arch/` (`pkgver`, `updpkgsums`, `makepkg --printsrcinfo > .SRCINFO`) and
      push them to the AUR.
    - Redeploy your own servers from the new image, after reading the release notes.

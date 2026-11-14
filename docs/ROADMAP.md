@@ -35,7 +35,7 @@ backup of anything you sync with it.
 | Craft web apps in the browser | in part: the `-apps` image serves and gates them; opening a cloud file in one and saving it back is not built | [CRAFT-INTEGRATION.md § 6](CRAFT-INTEGRATION.md#6-the-craft-web-apps-in-the-browser) |
 | "Open from / Save to CraftCloud" in the launcher and the apps | proposal, upstream | [CRAFT-INTEGRATION.md § 4–5](CRAFT-INTEGRATION.md#4-the-artcraft-launcher-proposal-upstream) |
 | Files on demand | design only | [FILES-ON-DEMAND.md](FILES-ON-DEMAND.md) |
-| Releases (published image, desktop release, signing) | desktop packaging done, not yet run in CI: the Craft apps' release file set (AppImage, deb, rpm, Flatpak, Arch, tar.gz; MSI and portable zip; universal DMG) from `release.yml` as a draft release, GPG-signed when a key is set; no published image, no code signing | [README](../README.md#downloads) |
+| Releases (published image, desktop release, signing) | desktop packaging done, not yet run in CI: the Craft apps' release file set (AppImage, deb, rpm, Flatpak, Arch, tar.gz; MSI and portable zip; universal DMG) from `release.yml` as a draft release, GPG-signed when a key is set, and only after every Linux package passed its install test (`package-test`); no published image, no code signing | [README](../README.md#downloads) |
 | Upstream gaps and proposals | drafted, not filed | [UPSTREAM.md](UPSTREAM.md) |
 
 ## Milestones
@@ -78,6 +78,12 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-14: Releases: the Release workflow install-tests every Linux package before it makes a draft
+  (`package-test`): the deb on Debian 12 and Ubuntu 22.04/24.04, the rpm on Fedora 41/42 (x86_64 and aarch64),
+  the Arch package, the AppImage and the tarball, each installed with its package manager, checked, signed in and
+  synced against a server built in the same run, upgraded from the previous release and removed. The script,
+  `packaging/linux/test-package.sh`, also runs locally with Docker; RELEASING.md adds a manual desktop check on
+  Fedora and Debian VMs before bigger releases.
 - 2026-11-14: Version 0.1.0, the first release: the server image is published to `ghcr.io/jonasbove/craftcloud`
   (amd64 and arm64, slim and `-apps`) with provenance, and compose and the NixOS module default to it; the
   release no longer waits for the untried FreeBSD and riscv64 builds, which join the draft when they finish;

@@ -11,6 +11,11 @@
 #   and, when their builds succeed (never tried yet, so they may not):
 #   craftcloud-<ver>-freebsd-{x86_64,aarch64}.tar.gz    craftcloud-<ver>-linux-riscv64.{deb,rpm,tar.gz}
 #
+# `package-test` installs the Linux files in clean distro containers (packaging/linux/test-package.sh:
+# install, version, files, a sign-in and sync round trip against a server built from this commit,
+# upgrade from the previous release, removal). It runs on every run, also by hand from a branch, and
+# the draft is made only when it passes.
+#
 # On a `v*` tag the `release` job makes a **draft** GitHub release with those files, SHA256SUMS.txt
 # and the version's section of docs/RELEASE-NOTES.md. In a public repository each file also gets a
 # signed build-provenance attestation. With the RELEASE_SIGNING_KEY secret set (an ASCII-armoured
@@ -440,15 +445,166 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # The slim server image, built once per architecture for package-test's sync round trip and
+  # handed over as an artifact (`pkgtest-*`, so `release-*` never picks it up). It builds alongside
+  # the Linux builds, so it adds no wall time. arm64 builds natively on the Arm runner (the
+  # Dockerfile's build stages run on the build platform), so the aarch64 packages get the round
+  # trip too, against a server on the same machine.
+  server-image:
+    name: Server image for package tests (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Build the slim image
+        run: |
+          version="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          docker build --target default --build-arg CRAFTCLOUD_VERSION="$version" --build-arg CARGO_BUILD_JOBS=4 \
+            -t craftcloud:pkgtest .
+          docker save craftcloud:pkgtest | gzip -1 > "$RUNNER_TEMP/server-image.tar.gz"
+          ls -lh "$RUNNER_TEMP/server-image.tar.gz"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pkgtest-server-${{ matrix.arch }}
+          path: ${{ runner.temp }}/server-image.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  # Every Linux package installed in a clean container of a distro it is for, with that distro's
+  # package manager, then started, signed in and synced against the server image above, upgraded
+  # from the previous release and removed (packaging/linux/test-package.sh, which runs the same way
+  # on any machine with Docker). The containers run on the runner of the package's architecture.
+  package-test:
+    name: Install ${{ matrix.ext }} on ${{ matrix.distro }} ${{ matrix.arch }}
+    needs: [linux, arch, server-image]
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 25
+    permissions:
+      contents: read # the previous release's packages (gh release list/download)
+    strategy:
+      fail-fast: false
+      matrix:
+        # Pinned by digest (multi-arch index); the tag says which release it is.
+        include:
+          - { ext: deb, arch: x86_64, distro: debian-12, image: "debian:12@sha256:268fb24c39bca92d326dd83ea3abebe4a3f7751c804ffef23bb6d857dd343ff8" }
+          - { ext: deb, arch: aarch64, distro: debian-12, image: "debian:12@sha256:268fb24c39bca92d326dd83ea3abebe4a3f7751c804ffef23bb6d857dd343ff8" }
+          - { ext: deb, arch: x86_64, distro: ubuntu-22.04, image: "ubuntu:22.04@sha256:74b12b11ffa550fba1929ad4d8d16533c34f6612728469671afba1b03b66881c" }
+          - { ext: deb, arch: aarch64, distro: ubuntu-22.04, image: "ubuntu:22.04@sha256:74b12b11ffa550fba1929ad4d8d16533c34f6612728469671afba1b03b66881c" }
+          - { ext: deb, arch: x86_64, distro: ubuntu-24.04, image: "ubuntu:24.04@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5" }
+          - { ext: deb, arch: aarch64, distro: ubuntu-24.04, image: "ubuntu:24.04@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5" }
+          - { ext: rpm, arch: x86_64, distro: fedora-41, image: "fedora:41@sha256:f1a3fab47bcb3c3ddf3135d5ee7ba8b7b25f2e809a47440936212a3a50957f3d" }
+          - { ext: rpm, arch: aarch64, distro: fedora-41, image: "fedora:41@sha256:f1a3fab47bcb3c3ddf3135d5ee7ba8b7b25f2e809a47440936212a3a50957f3d" }
+          - { ext: rpm, arch: x86_64, distro: fedora-42, image: "fedora:42@sha256:99e203b80b1c3d8f7e161ec10a68fd02b081ef83a3963553e513c82846b97814" }
+          - { ext: rpm, arch: aarch64, distro: fedora-42, image: "fedora:42@sha256:99e203b80b1c3d8f7e161ec10a68fd02b081ef83a3963553e513c82846b97814" }
+          # The official Arch Linux image is x86_64 only.
+          - { ext: pkg.tar.zst, arch: x86_64, distro: archlinux, image: "archlinux:latest@sha256:d4594bb2300cba11f41c2f27923eb56f63d9988909c402f9c95517d1e362c899" }
+          # The oldest glibc the build supports (it is built on Ubuntu 22.04).
+          - { ext: AppImage, arch: x86_64, distro: ubuntu-22.04, image: "ubuntu:22.04@sha256:74b12b11ffa550fba1929ad4d8d16533c34f6612728469671afba1b03b66881c" }
+          - { ext: tar.gz, arch: x86_64, distro: ubuntu-22.04, image: "ubuntu:22.04@sha256:74b12b11ffa550fba1929ad4d8d16533c34f6612728469671afba1b03b66881c" }
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: dist/linux
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: matrix.ext == 'pkg.tar.zst'
+        with:
+          name: release-arch-${{ matrix.arch }}
+          path: dist/linux
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: pkgtest-server-${{ matrix.arch }}
+          path: ${{ runner.temp }}/server
+      - name: Start the server
+        run: |
+          gunzip -c "$RUNNER_TEMP/server/server-image.tar.gz" | docker load
+          # Postgres and the image through compose.yaml; smoke-test waits for /ready and checks the
+          # basics. KEEP=1 leaves it running for the test.
+          KEEP=1 PROJECT=craftcloud-pkgtest scripts/smoke-test craftcloud:pkgtest 8097
+      - name: The previous release's package
+        id: previous
+        if: matrix.ext != 'AppImage' && matrix.ext != 'tar.gz'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCH: ${{ matrix.arch }}
+          EXT: ${{ matrix.ext }}
+        run: |
+          version="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          # The newest published release other than this version (drafts and pre-releases left out).
+          prev="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases --limit 20 \
+            --json tagName --jq '.[].tagName' | grep -Fvx "v$version" | head -1 || true)"
+          if [ -z "$prev" ]; then
+            echo "::notice::No earlier published release, so the upgrade isn't tested."
+            exit 0
+          fi
+          dir="$RUNNER_TEMP/previous"
+          mkdir -p "$dir"
+          if ! gh release download "$prev" --repo "$GITHUB_REPOSITORY" --dir "$dir" --pattern "craftcloud-*-linux-$ARCH.$EXT"; then
+            echo "::notice::$prev has no craftcloud-*-linux-$ARCH.$EXT, so the upgrade isn't tested."
+            exit 0
+          fi
+          shopt -s nullglob
+          files=("$dir"/craftcloud-*-linux-"$ARCH"."$EXT")
+          if [ "${#files[@]}" -eq 1 ]; then
+            echo "Upgrading from $prev: ${files[0]}"
+            echo "file=${files[0]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::$prev has ${#files[@]} files matching craftcloud-*-linux-$ARCH.$EXT, so the upgrade isn't tested."
+          fi
+      - name: Install, run, sync, upgrade, remove
+        env:
+          ARCH: ${{ matrix.arch }}
+          EXT: ${{ matrix.ext }}
+          IMAGE: ${{ matrix.image }}
+          PREVIOUS: ${{ steps.previous.outputs.file }}
+        run: |
+          shopt -s nullglob
+          files=(dist/linux/craftcloud-*-linux-"$ARCH"."$EXT")
+          if [ "${#files[@]}" -ne 1 ]; then
+            echo "::error::expected one craftcloud-*-linux-$ARCH.$EXT, found ${#files[@]}: ${files[*]}"
+            exit 1
+          fi
+          # A throwaway account on the throwaway server above.
+          export CRAFTCLOUD_TEST_USER=pkgtest
+          CRAFTCLOUD_TEST_PASSWORD="pkgtest-$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
+          export CRAFTCLOUD_TEST_PASSWORD
+          args=(--image "$IMAGE" --server http://127.0.0.1:8097)
+          if [ -n "$PREVIOUS" ]; then args+=(--previous "$PREVIOUS"); fi
+          packaging/linux/test-package.sh "${args[@]}" "${files[0]}"
+      - name: Server logs
+        if: failure()
+        run: |
+          for c in $(docker ps -aq --filter label=com.docker.compose.project=craftcloud-pkgtest); do
+            echo "::group::$(docker inspect --format '{{.Name}}' "$c")"
+            docker logs --tail 200 "$c" 2>&1
+            echo "::endgroup::"
+          done
+      - name: Stop the server
+        if: always()
+        run: docker compose -p craftcloud-pkgtest down -v || true
+
   release:
     name: release (draft)
     # Doesn't wait for the untried FreeBSD and riscv64 builds (up to two hours): `late` adds them to
     # the draft when they finish. Their artifacts are named `late-*`, so `release-*` never picks them up.
-    needs: [linux, flatpak, arch, macos, windows]
+    # No draft unless every Linux package passed its install test.
+    needs: [linux, flatpak, arch, macos, windows, package-test]
     if: >-
       ${{ !cancelled() && startsWith(github.ref, 'refs/tags/v')
       && needs.linux.result == 'success' && needs.flatpak.result == 'success' && needs.arch.result == 'success'
-      && needs.macos.result == 'success' && needs.windows.result == 'success' }}
+      && needs.macos.result == 'success' && needs.windows.result == 'success'
+      && needs.package-test.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     # RELEASE_SIGNING_KEY lives in the `release` environment, which only `v*` tags may use, so no

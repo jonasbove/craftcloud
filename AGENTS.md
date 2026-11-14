@@ -231,7 +231,11 @@ README's Status section in step.
   Changed` from the commits since the last release, `**Full Changelog**`) with `SHA256SUMS.txt`, build-provenance attestations (public repository) and, when the `RELEASE_SIGNING_KEY`
   secret (in the `release` environment, which only `v*` tags may use) is set, a GPG `.asc` for every file. Its own workflow rather than craft-common-actions' (UPSTREAM.md D1).
   Builds are not code-signed in v1; the README says how to get past Gatekeeper and SmartScreen. The release job
-  doesn't wait for FreeBSD and riscv64: a `late` job adds them to the draft when they finish.
+  doesn't wait for FreeBSD and riscv64: a `late` job adds them to the draft when they finish. It does wait for
+  `package-test`: every Linux package installed in clean distro containers (Debian 12, Ubuntu 22.04/24.04, Fedora
+  41/42 on x86_64 and aarch64; Arch; the AppImage and tarball on Ubuntu 22.04), checked, signed in and synced against
+  a server image built in the same run (`server-image`), upgraded from the previous release and removed
+  (`packaging/linux/test-package.sh`, which also runs locally with Docker). Run by hand, it tests without a draft.
 - `.github/workflows/image.yml` (**Server image**): on `v*` tags, the slim and `-apps` images for amd64 and arm64
   to `ghcr.io/<owner>/craftcloud` (`:<ver>`, `:latest`, `:<ver>-apps`, `:latest-apps`) with a provenance
   attestation, copied unchanged to Docker Hub when `DOCKERHUB_USERNAME` (variable) and `DOCKERHUB_TOKEN`
