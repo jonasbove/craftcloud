@@ -56,8 +56,7 @@ pub fn temporary(name: &str) -> bool {
 }
 
 /// Why the server can't take this name (one path segment), if it can't. OxiCloud 0.10.0 answers
-/// a backslash in a `PUT` with 500 yet creates the file, and from then on every listing of its
-/// folder is cut off (docs/UPSTREAM.md C12): such a name must never reach it.
+/// a backslash in a name badly: such a name must never reach it.
 pub fn server_refuses(name: &str) -> Option<&'static str> {
     if name.contains('\\') {
         Some("the cloud can't take a backslash (\\) in a name; rename it to sync it")

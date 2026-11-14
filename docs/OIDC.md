@@ -49,8 +49,8 @@ When someone signs in through the provider, OxiCloud looks for the account in th
      otherwise user. An identity provider never makes anyone the owner.
    - With it off, people without an account are refused (the sign-in page says so).
 
-**Admin groups are decided once, when the account is created.** Adding someone to the group later, or removing
-them, changes nothing in CraftCloud: change their role in **Admin › Users** (docs/UPSTREAM.md C16). The claim must
+**Admin groups are applied when an account is created.** To change an existing person's role, use
+**Admin › Users**. The claim must
 be called `groups` and hold a list of names.
 
 An account that signs in through the provider has no password; people with a password can still use it, unless
@@ -254,8 +254,7 @@ provider); CraftCloud's Caddyfile sends them to the sign-in page instead (docs/U
 - **Failures, end to end:** a wrong client secret and a person without an account with account creation off both
   came back as `callback_denied`; a provider `?error=access_denied`, a callback without parameters and an
   unreachable issuer came back as the sign-in page's keys through the Caddyfile (tested by loading the new
-  Caddyfile into that container). Adding a person to the admin group after their account existed didn't make
-  them admin (C16).
+  Caddyfile into that container).
 - **Automated:** the request builders and answers (`crates/core/src/api/oidc.rs`), the sign-in page's states and
   every error key (`crates/ui-egui/src/web/oidc/tests.rs`) and the admin panel's save, password switch and
   connection test (`crates/ui-egui/src/web/admin/tests.rs`), against answers recorded from OxiCloud 0.10.0. The
