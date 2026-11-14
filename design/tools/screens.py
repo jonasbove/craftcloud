@@ -715,7 +715,7 @@ def new_document(d, name, x, y, backdrop):
     hud(d, fld, "Format", color="ink", name="Format label")
     cells = d.frame(fld, "Format cells", 0, 0, 10, 34, stroke="line", layout="horizontal", sizingH="hug",
                     sizingV="fixed")
-    for i, (lab, on) in enumerate(((f"{APP['wordcraft']['name']} .docx", True), ("OpenDocument .odt", False), ("Markdown .md", False),
+    for i, (lab, on) in enumerate((("Office Open .docx", True), ("OpenDocument .odt", False), ("Markdown .md", False),
                                    ("Plain text .txt", False))):
         if i:
             d.rect(cells, 0, 0, 1, 34, "line", name="sep")

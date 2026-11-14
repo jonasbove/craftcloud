@@ -99,18 +99,24 @@ impl Item {
                     .is_some_and(|e| matches!(e.as_str(), "md" | "txt" | "csv" | "tsv" | "json" | "toml" | "yaml" | "yml" | "log")))
     }
 
-    /// "Word document", "PNG image", "Folder" — what kind of file, in words.
+    /// "DOCX document", "PNG image", "Folder" — what kind of file, in words. A file is named by its
+    /// format, never by another vendor's product: the Craft app that opens it is said beside it.
     #[allow(dead_code)] // For the details and previews that follow.
     pub fn kind_label(&self) -> String {
         if self.is_folder() {
             return "Folder".into();
         }
         let ext = apps::extension(&self.name).unwrap_or_default();
+        let format = ext.to_uppercase();
+        match ext.as_str() {
+            "docx" | "doc" | "docm" | "odt" | "rtf" => return format!("{format} document"),
+            "xlsx" | "xls" | "xlsm" | "ods" => return format!("{format} spreadsheet"),
+            "pptx" | "ppsx" | "potx" | "odp" => return format!("{format} presentation"),
+            "deckcraft" => return "DeckCraft presentation".into(),
+            _ => {}
+        }
         let known = match ext.as_str() {
-            "docx" | "doc" | "docm" | "odt" | "rtf" => "Word document",
-            "xlsx" | "xls" | "xlsm" | "ods" => "Spreadsheet",
             "csv" | "tsv" => "Table",
-            "pptx" | "ppsx" | "potx" | "deckcraft" => "Presentation",
             "pdf" => "PDF document",
             "md" => "Markdown",
             "txt" => "Text",
@@ -345,7 +351,11 @@ mod tests {
         png.category = "Image".into();
         assert_eq!(png.kind_label(), "PNG image");
         assert!(png.has_thumbnail());
-        assert_eq!(item(Kind::File, "Q3.docx", 1, "").kind_label(), "Word document");
+        assert_eq!(item(Kind::File, "Q3.docx", 1, "").kind_label(), "DOCX document");
+        assert_eq!(item(Kind::File, "Notes.odt", 1, "").kind_label(), "ODT document");
+        assert_eq!(item(Kind::File, "Budget.xlsx", 1, "").kind_label(), "XLSX spreadsheet");
+        assert_eq!(item(Kind::File, "Pitch.pptx", 1, "").kind_label(), "PPTX presentation");
+        assert_eq!(item(Kind::File, "Talk.deckcraft", 1, "").kind_label(), "DeckCraft presentation");
         assert_eq!(item(Kind::Folder, "Q3", 1, "").kind_label(), "Folder");
         assert_eq!(item(Kind::File, "README", 1, "").kind_label(), "File");
         assert!(item(Kind::File, "notes.md", 1, "").is_text());
