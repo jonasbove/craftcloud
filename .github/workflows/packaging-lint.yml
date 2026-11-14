@@ -1,5 +1,6 @@
 # Quick static checks for the release pipeline (seconds, no Rust build): workflow syntax, the
-# packaging shell scripts, the Linux desktop entry and AppStream file, the macOS Info.plist and the
+# packaging shell scripts, the Claude workflows' checks (.github/scripts/claude-bot-test.sh), the
+# Linux desktop entry and AppStream file, the macOS Info.plist and the
 # MSI sources. The Craft apps' check (craft-common-actions packaging-lint), written out here for the
 # same reason as the gate in ci.yml.
 name: Packaging lint
@@ -7,9 +8,9 @@ name: Packaging lint
 on:
   push:
     branches: [main]
-    paths: [".github/workflows/**", ".github/actionlint.yaml", "packaging/**"]
+    paths: [".github/workflows/**", ".github/actionlint.yaml", ".github/scripts/**", ".github/*.json", "packaging/**"]
   pull_request:
-    paths: [".github/workflows/**", ".github/actionlint.yaml", "packaging/**"]
+    paths: [".github/workflows/**", ".github/actionlint.yaml", ".github/scripts/**", ".github/*.json", "packaging/**"]
   workflow_dispatch:
 
 permissions:
@@ -47,8 +48,14 @@ jobs:
       # Warnings and errors; style notes (such as `a && b || true` in install.sh) don't fail it.
       - name: shellcheck
         run: |
-          find packaging -type f -name '*.sh' -print0 | xargs -0 --no-run-if-empty shellcheck --severity=warning
+          find packaging .github/scripts -type f -name '*.sh' -print0 | xargs -0 --no-run-if-empty shellcheck --severity=warning
           shellcheck --severity=warning packaging/linux/AppRun
+      # What lets Claude's answers through to GitHub (claude-pr.yml, claude-issues.yml), fed hostile input.
+      - name: Claude workflow checks
+        run: |
+          jq -e '(map(.name) | unique | length) == length and all(.[]; (.name | type) == "string" and (.group | IN("type", "platform", "area", "state", "priority")))' .github/labels.json
+          jq -e '.gitmojis | length > 0' .github/gitmojis.json
+          .github/scripts/claude-bot-test.sh
       - name: Desktop entry, AppStream file, Info.plist and the MSI sources
         run: |
           desktop-file-validate packaging/linux/io.github.jonasbove.craftcloud.desktop
