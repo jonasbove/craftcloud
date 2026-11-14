@@ -205,6 +205,16 @@ inputs.craftcloud = {
 
 `image` defaults to `ghcr.io/jonasbove/craftcloud:latest`; set `services.craftcloud.image` to a pinned version
 (`ghcr.io/jonasbove/craftcloud:0.1.1`), the `-apps` image, or your own registry's.
+(`ghcr.io/jonasbove/craftcloud:0.1.0`), the `-apps` image, or your own registry's.
+`imageFile` loads the image from the Nix store instead of a registry (a `pkgs.dockerTools.pullImage` pinned by
+digest, for a machine that can't reach one).
+
+The flake's VM test boots this module in one virtual machine and a desktop client in another, signs the client in
+through the device flow and syncs a file each way (`nix/vm-test.nix`; it needs KVM):
+
+```sh
+nix build .#checks.x86_64-linux.vm-sync -L
+```
 
 ## Status
 
@@ -311,6 +321,26 @@ To keep it installed and updatable, add the flake input above and install the pa
 (`inputs.craftcloud.packages.${pkgs.stdenv.hostPlatform.system}.default`, in `environment.systemPackages` or
 Home Manager's `home.packages`). It brings its own menu entry and icons. Update with
 `nix flake update craftcloud` and a rebuild.
+
+With [Home Manager](https://github.com/nix-community/home-manager), the flake's module installs it, makes it the
+default for `craftcloud://` links and can start it in the tray when you log in:
+
+```nix
+# home.nix (with extraSpecialArgs = { inherit inputs; })
+{ inputs, ... }: {
+  imports = [ inputs.craftcloud.homeManagerModules.default ];
+  programs.craftcloud = {
+    enable = true;
+    startAtLogin = true;     # craftcloud --hidden, from ~/.config/autostart
+    # defaultForLinks = true; (x-scheme-handler/craftcloud in mimeapps.list, turns on xdg.mimeApps)
+    # package = …;            (defaults to the flake's own build)
+  };
+}
+```
+
+`startAtLogin` writes the same autostart entry as **Settings › Start at login**, so the setting shows it as on and
+CraftCloud never starts twice; turning it off in the app lasts until the next switch. Left off, the app's setting
+decides.
 
 ### Connect a computer
 

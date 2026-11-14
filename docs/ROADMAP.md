@@ -113,6 +113,11 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   only inside the workspace, an answer that looks like a credential is never posted,
   and only gitmoji and labels from the lists in `.github/` get through (`.github/scripts/claude-bot.sh`, tested
   with hostile input in Packaging lint). Not run on GitHub yet: it needs the `CLAUDE_CODE_OAUTH_TOKEN` secret.
+- 2026-11-14: Nix: a Home Manager module for the desktop client (`homeManagerModules.default`,
+  `programs.craftcloud`: the package, start at login in the tray through the client's own autostart entry, the
+  default for `craftcloud://` links) and a VM test of the server module (`checks.<system>.vm-sync`): a second
+  machine signs in through the device flow and syncs a file each way. The server module gains `imageFile`, to load
+  the image from the Nix store.
 - 2026-11-14: Releases: the Release workflow install-tests every Linux package before it makes a draft
   (`package-test`): the deb on Debian 12 and Ubuntu 22.04/24.04, the rpm on Fedora 41/42 (x86_64 and aarch64),
   the Arch package, the AppImage and the tarball, each installed with its package manager, checked, signed in and
