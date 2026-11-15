@@ -28,7 +28,7 @@ backup of anything you sync with it.
 | Web file browser (upload, download, rename, move, delete, trash, versions, recent, starred, search) | done | [design-notes/pass-2.md](design-notes/pass-2.md) |
 | Share links | public share page and CLI done; no "create a share link" sheet in the web file browser | [CLI.md › Share links](CLI.md#share-links) |
 | Admin (users, server settings, Craft web apps on or off) | done, on the web and in the CLI | [CLI.md](CLI.md#server-administration-owners-and-admins) |
-| Command line | done; no console output from Windows release builds | [CLI.md](CLI.md) |
+| Command line | done; on Windows through `craftcloud.com` (untried on Windows) | [CLI.md](CLI.md) |
 | Craft apps through the sync folder | done (every app) | [CRAFT-INTEGRATION.md § 1](CRAFT-INTEGRATION.md#1-the-sync-folder-works-today-every-app) |
 | `craftcloud://` deep links | done on Linux and Windows; macOS needs an Apple Event handler | [CRAFT-INTEGRATION.md § 2](CRAFT-INTEGRATION.md#2-deep-links-craftcloud) |
 | Integration contract (`craftcloud apps`, `files`, `save`) | done | [CRAFT-INTEGRATION.md § 3](CRAFT-INTEGRATION.md#3-the-integration-contract-the-craftcloud-command) |
@@ -45,7 +45,7 @@ backup of anything you sync with it.
 | M0 Server image | OxiCloud unmodified behind Caddy, CraftCloud's settings service, slim and `-apps` images, NixOS module | Done |
 | M1 Sync client | Device sign-in, a two-way sync folder with guarded writes, versions and conflict copies, tray | Done; hardening continues from testers' reports |
 | M2 Web frontend | Setup, sign-in, device approval, home, the file browser, admin, single sign-on | Done, except the share-link sheet |
-| M3 Command line and integration | `craftcloud <command>` for files, sync, sharing, versions and admin; the contract the Craft apps and the launcher can use | Done, except console output on Windows |
+| M3 Command line and integration | `craftcloud <command>` for files, sync, sharing, versions and admin; the contract the Craft apps and the launcher can use | Done; the Windows terminal launcher is untried on Windows |
 | M4 First release | Published images, a tagged desktop release, release notes | Not started |
 | M5 Craft web apps in the browser | Open a cloud file in its Craft web app from the web file browser and save it back (`craft-web-host`, the shim for the others) | Serving and gating done; the editor page and the shim not built |
 | M6 Files on demand | Placeholders that download when opened (Windows, Linux, macOS) | Design only |
@@ -70,7 +70,7 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 3. **Craft web apps in the browser:** the page that frames an app and talks `craft-web-host`, and the shim for the
    apps without it ([CRAFT-INTEGRATION.md § 6](CRAFT-INTEGRATION.md#6-the-craft-web-apps-in-the-browser)).
 4. **macOS deep links:** an Apple Event (`kAEGetURL`) handler, so a `craftcloud://` click opens the file.
-5. **The command line on Windows:** a console build, so release builds print to the terminal.
+5. **The command line on Windows:** try `craftcloud.com`, the MSI's PATH entry and its uninstall on Windows 11.
 6. **Files on demand,** in the stages of [FILES-ON-DEMAND.md § 6](FILES-ON-DEMAND.md#6-staged-plan).
 7. **Upstream:** the drafts in [UPSTREAM.md](UPSTREAM.md) and server-side versioning for OxiCloud, filed only after
    they are agreed.
@@ -96,6 +96,9 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   failing each pass; cloud names that differ only in case are held there, all but the one it has. One rule in
   `core::names` (`Platform`) for the warning, the skip and the local path check. A failed download no longer leaves
   its part file, and part files older than a day are cleaned up. Found testing 0.1.1 on Windows 11.
+- 2026-11-15: Windows: `craftcloud status` typed in Command Prompt or PowerShell prints again: `craftcloud.com`, a
+  console program next to `craftcloud.exe`, runs it and passes its output, input and exit code through (#4). The
+  MSI puts its folder on the user's PATH and, on uninstall only, removes the start-at-login value.
 - 2026-11-15: Version 0.1.1: stored HTML and SVG never run as pages, a file being saved is never overwritten by the
   sync, `sync --once` syncs a file saved just before it, and `craftcloud open` returns at once with a usual Windows path.
 - 2026-11-15: CLI: `sync --once` run right after a file was saved no longer ends "up to date" without it: it

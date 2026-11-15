@@ -1,0 +1,26 @@
+[package]
+name = "craftcloud-cli"
+description = "The craftcloud command line in a Windows terminal: a console program that runs craftcloud.exe next to it and passes its output through"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+# Shipped on Windows only, as craftcloud.com next to craftcloud.exe (packaging/windows/package.ps1).
+# It builds and is tested everywhere, so `cargo xtask ci` covers it on Linux too.
+[[bin]]
+name = "craftcloud-cli"
+path = "src/main.rs"
+
+# Ctrl+C in the terminal reaches this program only: the GUI-subsystem child has no console. The
+# handler stops the child, as Ctrl+C stops a console program.
+[target.'cfg(windows)'.dependencies]
+ctrlc = "3.5"
+
+[dev-dependencies]
+tempfile = "3"

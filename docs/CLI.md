@@ -277,9 +277,25 @@ exits 0 when the run ended up to date (with or without `waiting`), 3 when signed
 
 ## Windows
 
-The desktop client is a GUI program on Windows, so in release builds the command line's output doesn't reach the
-console it was started from (Rust's `windows_subsystem`; attaching to the parent console needs `unsafe`, which
-this workspace forbids). Until a console build ships, use the command line on Linux or macOS, or a debug build.
+The desktop client, `craftcloud.exe`, is a GUI program on Windows (no console window opens with it), so Windows
+gives it no console and on its own its output can't reach a terminal (attaching to one needs `unsafe`, which this
+workspace forbids). Next to it the installer and the portable zip put **`craftcloud.com`**, a small console program
+(`apps/craftcloud-cli`) that runs `craftcloud.exe` with the same arguments, passes the input and output through,
+and exits with its exit code. Command Prompt and PowerShell try `.com` before `.exe`, so `craftcloud status` typed
+in a terminal runs it. The Start menu shortcut, start at login and `craftcloud://` links run `craftcloud.exe`.
+
+- **PATH:** the installer adds its folder to your PATH (for you only; uninstalling takes it off again). A terminal
+  opened before the install doesn't see it yet: open a new one. From the portable zip, run it in that folder
+  (`.\craftcloud status` in PowerShell, `craftcloud status` in Command Prompt) or add the folder to PATH yourself.
+- `craftcloud` without a command opens the window and gives the terminal back at once.
+- **Ctrl+C** stops the command. Windows sends it only to programs attached to the console, which `craftcloud.exe`
+  isn't, so `craftcloud.com` stops it; the exit code is then Windows' usual one for Ctrl+C (`-1073741510`).
+- Questions still work (passwords, `trash empty`'s "[y/N]"): the input reaches `craftcloud.exe` through a pipe, and
+  `craftcloud.com` tells it a person is typing (`CRAFTCLOUD_STDIN_CONSOLE=1`). A password shows as you type, as
+  it always did on Windows.
+- Output sent to a file or another program (`craftcloud ls > files.txt`, `craftcloud ls | findstr txt`) is handed on
+  unchanged, as it was before. A program that starts `craftcloud` itself and reads its output (Rust's
+  `Command::new("craftcloud")` looks for `craftcloud.exe`) gets the client directly; that has always worked.
 
 ## Tests
 
