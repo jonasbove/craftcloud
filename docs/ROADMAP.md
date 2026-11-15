@@ -50,6 +50,7 @@ backup of anything you sync with it.
 | M5 Craft web apps in the browser | Open a cloud file in its Craft web app from the web file browser and save it back (`craft-web-host`, the shim for the others) | Serving and gating done; the editor page and the shim not built |
 | M6 Files on demand | Placeholders that download when opened (Windows, Linux, macOS) | Design only |
 | M7 Signed desktop builds | Signed and notarized macOS builds, signed Windows builds | Not started; v1 is unsigned |
+| M8 Native NixOS deployment | OxiCloud, Caddy and craftcloud-admin as NixOS services without Docker, with the Craft web apps built by Nix from `apps.toml` | Not started; the NixOS module runs the Docker image today |
 
 ## Current focus
 
@@ -75,6 +76,13 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
    they are agreed.
 8. **Unmaintained D-Bus crates:** drop the `deny.toml` ignores for zvariant, zvariant_derive and zbus_names
    (RUSTSEC-2026-0370 to 0372) once egui (accesskit) and keyring move to zbus 6.
+9. **A native NixOS deployment (M8):** today `nix/module.nix` runs the Docker image, which already holds the Craft
+   web apps. A Nix derivation (`nix/apps.nix`) would read `apps.toml` with `builtins.fromTOML`, fetch each pinned
+   release zip with `fetchurl` and its sha256, unpack and precompress it, and write `apps.json`: reproducible,
+   cached in the Nix store, and no network during the build. It is worth doing together with running OxiCloud,
+   Caddy and `craftcloud-admin` as NixOS services, not while the module runs the image, since two ways of
+   fetching the apps would drift apart. `scripts/bump-apps` (moving to `cargo xtask` in 0.2.0) stays the way to
+   move the pins.
 
 ## Progress log
 
@@ -144,3 +152,4 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 | Date | Change | Summary |
 |---|---|---|
 | 2026-11-14 | major | First version: the README's roadmap moves here, rebuilt from the docs and the git history. |
+| 2026-11-15 | minor | M8, a native NixOS deployment, with the Craft web apps built by Nix from `apps.toml`. |
