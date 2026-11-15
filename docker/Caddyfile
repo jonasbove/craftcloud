@@ -5,7 +5,8 @@
 # 127.0.0.1:8087. TLS is the job of the reverse proxy in front of the container.
 #
 # Set by docker/entrypoint.sh: CRAFTCLOUD_PORT, CRAFTCLOUD_BLOCKED_PATHS (OxiCloud features switched
-# off). craftcloud-admin listens on 127.0.0.1:8088.
+# off), CRAFTCLOUD_HSTS (the Strict-Transport-Security value, empty on http). craftcloud-admin listens on
+# 127.0.0.1:8088.
 
 {
 	admin off
@@ -27,6 +28,11 @@
 :{$CRAFTCLOUD_PORT} {
 	# All interfaces inside the container by default; the NixOS module (host networking) narrows it.
 	bind {$CRAFTCLOUD_BIND_ADDRESS:0.0.0.0}
+
+	# Strict-Transport-Security when the public address is https (docker/entrypoint.sh sets CRAFTCLOUD_HSTS,
+	# empty on plain http, where no header is sent at all). 180 days, this host only.
+	@hsts expression `{env.CRAFTCLOUD_HSTS} != ""`
+	header @hsts Strict-Transport-Security {env.CRAFTCLOUD_HSTS}
 
 	# OxiCloud's own apps that CraftCloud removes by default (CRAFTCLOUD_NATIVE_APPS turns them back on).
 	@blocked path {$CRAFTCLOUD_BLOCKED_PATHS}
