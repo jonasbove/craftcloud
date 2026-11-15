@@ -100,6 +100,7 @@ ARG CRAFTCLOUD_VERSION=dev
 LABEL org.opencontainers.image.title="CraftCloud" \
       org.opencontainers.image.description="Self-hosted cloud for the Craft apps (based on OxiCloud)" \
       org.opencontainers.image.source="https://github.com/jonasbove/craftcloud" \
+      org.opencontainers.image.url="https://github.com/jonasbove/craftcloud" \
       org.opencontainers.image.version="${CRAFTCLOUD_VERSION}" \
       org.opencontainers.image.licenses="MIT OR Apache-2.0" \
       org.opencontainers.image.base.name="docker.io/diocrafts/oxicloud:${OXICLOUD_VERSION}" \
