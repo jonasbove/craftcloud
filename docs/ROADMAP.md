@@ -78,6 +78,11 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-15: Web: the file browser follows the v2 Files frames (#24). A file's "…" menu has **Versions…**: the
+  current file and the versions kept in `.craftcloud/versions/` (the newest 5), each to download or restore. A
+  restore keeps the current file as a version first and writes with `If-Match`, so a change made meanwhile is never
+  overwritten. The menu says "Move to trash" where it said "Delete". Uploading over a taken name, restoring from the
+  trash with a new name, Recent's OPENED column and the phone layout already matched the frames.
 - 2026-11-14: Releases: the Release workflow install-tests every Linux package before it makes a draft
   (`package-test`): the deb on Debian 12 and Ubuntu 22.04/24.04, the rpm on Fedora 41/42 (x86_64 and aarch64),
   the Arch package, the AppImage and the tarball, each installed with its package manager, checked, signed in and
