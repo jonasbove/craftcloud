@@ -180,6 +180,18 @@ fn scenes() -> Vec<Scene> {
             app.overlay = Some(Overlay::Settings);
             app
         }),
+        ("activity-long-error", || {
+            let mut app = signed_in();
+            let mut p = up_to_date();
+            p.record(event("14:40", ActivityKind::Error, "Weird/what?.md", None, super::tests::LONG_DETAIL));
+            app.host.progress = p;
+            app
+        }),
+        ("failed", || {
+            with(SyncState::Failed(
+                "Another CraftCloud (the desktop client or `craftcloud daemon`) is already syncing C:\\Users\\john\\CraftCloud.".into(),
+            ))
+        }),
         ("paused", || with(SyncState::Paused)),
         ("offline", || with(SyncState::Offline("connection refused".into()))),
         ("signed-out", || with(SyncState::SignedOut)),
