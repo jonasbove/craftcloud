@@ -1,6 +1,6 @@
 # CraftCloud roadmap
 
-**Stage: early alpha** · version 0.1.0, the first release (a published image and desktop builds)
+**Stage: early alpha** · version 0.1.1 (fixes for 0.1.0, the first release: a published image and desktop builds)
 
 > **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-14 · **Change:** major (first version, built from the
 > README's roadmap, the docs and the git history up to `1a37a72`)
@@ -78,6 +78,8 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-15: Version 0.1.1: stored HTML and SVG never run as pages, a file being saved is never overwritten by the
+  sync, `sync --once` syncs a file saved just before it, and `craftcloud open` returns at once with a usual Windows path.
 - 2026-11-15: CLI: `sync --once` run right after a file was saved no longer ends "up to date" without it: it
   waits the 2 s settle time once and syncs the file in a second pass, and lists what still waits as `waiting` (#15).
 - 2026-11-15: Sync: a file being saved (written in the last 2 s) is held for the next pass instead of looking
