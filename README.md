@@ -14,6 +14,13 @@
   a small desktop client for Linux, Windows and macOS.
 </p>
 
+> [!CAUTION]
+> 🚧 **Early alpha: not ready for production.** CraftCloud hasn't had a security review and hasn't been tested
+> in real use for long. Don't put it on the open internet with anything you can't afford to lose or have seen,
+> and keep backups of everything in it. Try it on a private network, with test data. Report problems as
+> [issues](https://github.com/jonasbove/craftcloud/issues), and security problems privately, as
+> [SECURITY.md](SECURITY.md) says.
+
 <p align="center">
   <img alt="Written in Rust" src="https://img.shields.io/badge/written%20in-Rust-4a5e3a?style=flat-square&logo=rust&logoColor=white">
   <img alt="Server: Docker · NixOS" src="https://img.shields.io/badge/server-Docker%20%C2%B7%20NixOS-5e7a48?style=flat-square">
