@@ -331,9 +331,11 @@ struct Client {
     can_hide: bool,
     /// The window closed into the tray (where it can't hide): carry on without one.
     closed_to_tray: bool,
-    /// Asks for the window from elsewhere: the app started again, or a notification clicked.
-    shows: Receiver<()>,
+    /// Asks from elsewhere: show the window (the app started again, or a notification clicked),
+    /// or take a sign-in `craftcloud login` saved.
+    shows: Receiver<control::ToWindow>,
     notes: notify::Notifier,
+    wake: Arc<Wake>,
 }
 
 impl Client {
@@ -345,7 +347,17 @@ impl Client {
         }
         let progress = self.desktop.host.progress();
         self.notes.see(&progress);
-        let mut requests: Vec<Request> = self.shows.try_iter().map(|()| Request::Show).collect();
+        let mut requests = Vec::new();
+        for ask in self.shows.try_iter().collect::<Vec<_>>() {
+            match ask {
+                control::ToWindow::Show => requests.push(Request::Show),
+                control::ToWindow::SignedIn => {
+                    if let Some((server, dir)) = self.take_sign_in() {
+                        self.keychain = Some(read_keychain(server, Some(dir), &self.wake));
+                    }
+                }
+            }
+        }
         let Some(tray) = &mut self.tray else { return requests };
         let moving = progress.state == SyncState::Downloading && progress.files_total > 0;
         tray.show(TrayView { state: progress.state.clone(), line: status_text(&progress), recent: recent_files(&progress), moving });
@@ -371,12 +383,27 @@ impl Client {
         requests
     }
 
-    /// Carries on with no window until the tray asks for one (`true`) or for Quit (`false`).
+    /// `craftcloud login` saved a sign-in: a client still waiting for one reads the settings again
+    /// (the command line set the server) and returns the server and the settings folder, whose
+    /// sign-in is then read from the keychain on a thread of its own, as at the start.
+    fn take_sign_in(&mut self) -> Option<(String, std::path::PathBuf)> {
+        let dir = self.desktop.host.store.dir()?.to_path_buf();
+        let store = settings::open_in(&dir);
+        let saved = store.get().0.clone();
+        if !self.desktop.signed_in_elsewhere(saved.clone()) {
+            return None;
+        }
+        log::info!("a sign-in was saved on the command line: taking it");
+        self.desktop.host.store = store;
+        Some((saved.server, dir))
+    }
+
     /// Whether closing the window can leave the client running in the tray.
     fn has_tray(&self) -> bool {
         self.tray.as_ref().is_some_and(TrayHandle::is_ready)
     }
 
+    /// Carries on with no window until the tray asks for one (`true`) or for Quit (`false`).
     fn wait_in_tray(&mut self, woken: &Receiver<()>) -> bool {
         log::debug!("no window: carrying on in the tray");
         loop {
@@ -638,8 +665,8 @@ fn main() -> ExitCode {
     let (show_tx, shows) = std::sync::mpsc::channel();
     let show: control::ShowWindow = {
         let wake = Arc::clone(&wake);
-        Arc::new(move || {
-            let _ = show_tx.send(());
+        Arc::new(move |ask| {
+            let _ = show_tx.send(ask);
             wake.wake();
         })
     };
@@ -670,8 +697,8 @@ fn main() -> ExitCode {
         TrayHandle::spawn(move || wake.wake())
     });
     let can_hide = window_can_hide_here(|name| std::env::var_os(name));
-    let notes = notify::Notifier::spawn(move || show());
-    let mut client = Client { desktop, tray, keychain, can_hide, closed_to_tray: false, shows, notes };
+    let notes = notify::Notifier::spawn(move || show(control::ToWindow::Show));
+    let mut client = Client { desktop, tray, keychain, can_hide, closed_to_tray: false, shows, notes, wake: Arc::clone(&wake) };
 
     // Started hidden at login where a window can't hide: stay in the tray without mapping one, so
     // no window flashes up. The tray gets a moment to come up; without it the window opens after all.
@@ -757,6 +784,7 @@ mod tests {
     use std::sync::mpsc::{Sender, channel};
     use std::time::Instant;
 
+    use craftcloud_native::control::ToWindow;
     use craftcloud_native::http::{ThreadBackend, Waker};
     use craftcloud_native::settings;
     use craftcloud_ui_egui::desktop::DesktopApp;
@@ -765,7 +793,7 @@ mod tests {
     use super::{Client, NativeHost, OnClose, SHOW, Window, notify, on_close, window_can_hide_here};
 
     /// A client without a tray, keychain or notifications, its settings in `dir`.
-    fn client(dir: &std::path::Path) -> (Client, Sender<()>) {
+    fn client(dir: &std::path::Path) -> (Client, Sender<ToWindow>) {
         let waker: Waker = Arc::new(|| {});
         let host = NativeHost {
             net: ThreadBackend::new(Arc::clone(&waker)),
@@ -782,7 +810,8 @@ mod tests {
         let saved = host.store.get().0.clone();
         let desktop = DesktopApp::waiting_for_keychain(&egui::Context::default(), host, saved);
         let (tx, shows) = channel();
-        (Client { desktop, tray: None, keychain: None, can_hide: true, closed_to_tray: false, shows, notes: notify::Notifier::off() }, tx)
+        let wake = Arc::new(super::Wake { window: std::sync::Mutex::new(None), nudge: std::sync::mpsc::sync_channel(1).0 });
+        (Client { desktop, tray: None, keychain: None, can_hide: true, closed_to_tray: false, shows, notes: notify::Notifier::off(), wake }, tx)
     }
 
     /// One pass of the window's logic, as eframe runs it while the window is minimised (no `ui`).
@@ -801,8 +830,8 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let (mut client, show) = client(dir.path());
-        let on_show = Arc::new(move || {
-            let _ = show.send(());
+        let on_show = Arc::new(move |ask| {
+            let _ = show.send(ask);
         });
         let server = control::serve_window(dir.path(), Arc::default(), on_show).unwrap();
         let start = |hidden| second_start(hidden, || control::is_running(dir.path()), || control::show_window(dir.path()));
@@ -848,13 +877,30 @@ mod tests {
     }
 
     #[test]
+    fn a_waiting_client_takes_a_sign_in_saved_on_the_command_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut client, _show) = client(dir.path());
+        assert!(!client.desktop.wants_keychain(), "no server yet: the Connect sheet");
+        assert_eq!(client.take_sign_in(), None, "nothing saved yet");
+        // `craftcloud login http://127.0.0.1:8093`, in another process: the server goes in the settings.
+        let mut cli = settings::open_in(dir.path());
+        cli.set(settings::Prefs(craftcloud_core::sync::ClientSettings { server: "http://127.0.0.1:8093".into(), ..Default::default() }));
+        cli.flush().unwrap();
+        let (server, settings_dir) = client.take_sign_in().unwrap();
+        assert_eq!((server.as_str(), settings_dir.as_path()), ("http://127.0.0.1:8093", dir.path()), "its keychain entry is read next");
+        assert!(client.desktop.wants_keychain());
+        assert_eq!(client.desktop.host.store.get().0.server, "http://127.0.0.1:8093");
+        assert_eq!(client.take_sign_in(), None, "taken once");
+    }
+
+    #[test]
     fn show_brings_back_a_minimised_window() {
         let dir = tempfile::tempdir().unwrap();
         let (mut client, show) = client(dir.path());
         let mut window = Window::new(&mut client, None, true, None);
         assert!(!minimised_pass(&mut window).contains(&egui::ViewportCommand::Visible(true)), "nothing asked yet");
         // The tray's Show, a second start or a notification clicked.
-        show.send(()).unwrap();
+        show.send(ToWindow::Show).unwrap();
         let commands = minimised_pass(&mut window);
         assert_eq!(commands, SHOW, "out of the taskbar, shown and focused, in that order");
         assert_eq!(SHOW[0], egui::ViewportCommand::Minimized(false));

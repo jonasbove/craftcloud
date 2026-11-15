@@ -98,6 +98,12 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   restore keeps the current file as a version first and writes with `If-Match`, so a change made meanwhile is never
   overwritten. The menu says "Move to trash" where it said "Delete". Uploading over a taken name, restoring from the
   trash with a new name, Recent's OPENED column and the phone layout already matched the frames.
+- 2026-11-15: Desktop: a sign-in made with `craftcloud login` reaches the desktop client. With a server saved and
+  no folder yet, the client reads the keychain at the start as when signed in (still on its own thread) and, with a
+  sign-in, lists the cloud's folders and goes on to step 3 (refreshing an access token that ran out, once); without
+  one it shows the Connect sheet with no alarm. A running client waiting for a sign-in hears of it over the control
+  channel (`{"cmd": "signed_in"}`, sent by `login`), reads the settings again and takes it. Found testing 0.1.1 on
+  Windows 11.
 - 2026-11-15: Desktop: the window's place and size are never saved while it is minimised or hidden (eframe wrote
   Windows' 0×0 at (-32000, -32000), restored as 64×64 at the corner); the last good place is written back instead
   (`apps/craftcloud/src/geometry.rs`), and a window restored smaller than its minimum, or where Windows parks

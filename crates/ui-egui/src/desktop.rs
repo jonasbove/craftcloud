@@ -95,6 +95,8 @@ enum Key {
     Poll,
     ListRoot,
     Me,
+    /// New tokens for a saved sign-in whose access token ran out before the folders were chosen.
+    Refresh,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -187,19 +189,41 @@ pub struct DesktopApp<H: DesktopHost> {
     /// The address typed without a scheme was tried with https://; this is the http:// one to
     /// try when that doesn't answer as CraftCloud.
     http_fallback: Option<ServerUrl>,
+    /// The saved sign-in's tokens were refreshed once already (a second "expired" means it's over).
+    refreshed: bool,
 }
 
 impl<H: DesktopHost> DesktopApp<H> {
     /// With saved settings and tokens the client goes straight to the main window and syncs.
     /// Starts with the sign-in still to come from the keychain ([`DesktopApp::keychain_answered`])
-    /// when this computer was signed in before, and on the Connect screen otherwise.
+    /// when a server is saved (signed in here before, or by `craftcloud login`), and on the
+    /// Connect screen otherwise.
     pub fn waiting_for_keychain(ctx: &egui::Context, host: H, settings: ClientSettings) -> Self {
-        let signed_in_before = ServerUrl::parse(&settings.server).is_ok() && !settings.local_folder.is_empty();
+        let has_server = ServerUrl::parse(&settings.server).is_ok();
         let mut app = Self::new(ctx, host, settings, None);
-        if signed_in_before {
+        if has_server {
             app.screen = Screen::Keychain;
         }
         app
+    }
+
+    /// A sign-in was saved elsewhere while this client waits for one (`craftcloud login`, which
+    /// sets the server in the settings and puts the tokens in the keychain): `true` when it takes
+    /// it, with these settings read afresh; the host then reads the keychain and answers
+    /// [`DesktopApp::keychain_answered`]. A client that is signed in, or choosing its folders,
+    /// carries on as it is.
+    pub fn signed_in_elsewhere(&mut self, settings: ClientSettings) -> bool {
+        if !matches!(self.screen, Screen::Connect(_) | Screen::Browser { .. }) {
+            return false;
+        }
+        let Ok(server) = ServerUrl::parse(&settings.server) else { return false };
+        // The sign-in started here is dropped: its answers are no longer awaited.
+        self.net = Net::default();
+        self.server = Some(server);
+        self.settings = settings;
+        self.error = None;
+        self.screen = Screen::Keychain;
+        true
     }
 
     /// Whether the sign-in is still to come from the keychain.
@@ -212,17 +236,42 @@ impl<H: DesktopHost> DesktopApp<H> {
         if !self.wants_keychain() {
             return;
         }
+        self.refreshed = false;
         match tokens {
+            Some(t) if self.settings.local_folder.is_empty() => {
+                // Signed in by `craftcloud login`, no folder chosen yet: on to step 3, once the
+                // cloud's folders are listed with this sign-in (which also shows it still works).
+                self.tokens = Some(t);
+                self.list_for_choosing();
+            }
             Some(t) => {
                 self.host.start_sync(SyncPlan::from(&self.settings), t.clone());
                 self.tokens = Some(t);
                 self.screen = Screen::Main(Tab::Activity);
             }
             None => {
-                self.error = Some("The saved sign-in isn't in the keychain any more. Connect again.".into());
+                // Only a server saved (it was typed, or the client signed out): nothing was lost.
+                if !self.settings.local_folder.is_empty() {
+                    self.error = Some("The saved sign-in isn't in the keychain any more. Connect again.".into());
+                }
                 self.screen = Screen::Connect(ConnectScreen::new(self.settings.server.clone()));
             }
         }
+    }
+
+    /// Lists the cloud's top folders for the Choose sheet, and asks who is signed in.
+    fn list_for_choosing(&mut self) {
+        let (Some(tokens), Some(server)) = (&self.tokens, &self.server) else { return };
+        let (list, me) = (tokens.authorize(dav::list(server, "")), tokens.authorize(auth::me(server)));
+        self.net.send(&mut self.host, Key::ListRoot, list);
+        self.net.send(&mut self.host, Key::Me, me);
+    }
+
+    /// The saved sign-in couldn't be used: back to the Connect sheet, saying why.
+    fn saved_sign_in_failed(&mut self, why: String) {
+        self.tokens = None;
+        self.error = Some(why);
+        self.screen = Screen::Connect(ConnectScreen::new(self.settings.server.clone()));
     }
 
     pub fn new(ctx: &egui::Context, mut host: H, settings: ClientSettings, tokens: Option<Tokens>) -> Self {
@@ -252,6 +301,7 @@ impl<H: DesktopHost> DesktopApp<H> {
             me: None,
             device,
             http_fallback: None,
+            refreshed: false,
         }
     }
 
@@ -437,6 +487,8 @@ impl<H: DesktopHost> DesktopApp<H> {
                     self.ask_config(http);
                 } else if key == Key::Me {
                     self.me = None;
+                } else if self.wants_keychain() && matches!(key, Key::ListRoot | Key::Refresh) {
+                    self.saved_sign_in_failed(e);
                 } else if key != Key::Poll {
                     self.error = Some(e);
                 }
@@ -466,6 +518,27 @@ impl<H: DesktopHost> DesktopApp<H> {
                 Err(e) => self.error = Some(e.to_string()),
             },
             Key::Poll => self.on_poll(&resp),
+            Key::ListRoot if self.wants_keychain() && auth::is_expired(&resp) => {
+                // The access token from `craftcloud login` lasts an hour: refresh it, once.
+                match (&self.tokens, &self.server) {
+                    (Some(t), Some(server)) if !self.refreshed => {
+                        self.refreshed = true;
+                        let req = auth::refresh(server, &t.refresh_token);
+                        self.net.send(&mut self.host, Key::Refresh, req);
+                    }
+                    _ => self.saved_sign_in_failed("The saved sign-in has run out. Connect again.".into()),
+                }
+            }
+            Key::Refresh => match auth::parse_refresh(&resp) {
+                Ok(tokens) if resp.is_success() => {
+                    // The refresh token changes on use: keep the new one now. Should that fail,
+                    // START SYNCING saves it again (and says so when it can't).
+                    let _ = self.host.save_session(&self.settings, &tokens);
+                    self.tokens = Some(tokens);
+                    self.list_for_choosing();
+                }
+                _ => self.saved_sign_in_failed("The saved sign-in has run out. Connect again.".into()),
+            },
             Key::ListRoot => match dav::parse_list(&resp) {
                 Ok(entries) if matches!(self.screen, Screen::Main(_)) => {
                     let mut folders = top_folders(&entries);
@@ -487,6 +560,7 @@ impl<H: DesktopHost> DesktopApp<H> {
                     let local = self.host.default_folder();
                     self.screen = Screen::Choose { choice: Choice { folders: top_folders(&entries), root_files: true }, local, changing: false };
                 }
+                Err(e) if self.wants_keychain() => self.saved_sign_in_failed(e.to_string()),
                 Err(e) => self.error = Some(e.to_string()),
             },
             // Kept even when it fails (`None` asks again): nothing else needs it.

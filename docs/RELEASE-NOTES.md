@@ -19,6 +19,10 @@
   (or when it saved its place, every 30 seconds) came back as a 64×64 square in the screen's corner on Windows. The
   window's place is now saved only while it is shown, and a window that would come back smaller than it can be
   opens at its default size in the middle of the screen, once; after that it keeps its place again.
+- **Desktop: a sign-in on the command line reaches the window.** After `craftcloud login <server>`, the desktop
+  client stayed on its first setup step with the server filled in, even after a restart. It now starts signed in
+  with that sign-in and goes on to choosing folders (or straight to syncing when a folder is set); a client already
+  running and waiting for a sign-in takes it at once.
 - **Windows: uninstalling turns off start at login.** The MSI used to leave the "Start at login" entry behind,
   starting a program that was no longer there. Uninstalling now removes it (and takes the folder off PATH); an
   update keeps it. If you uninstalled an earlier version with start at login on, remove the leftover entry with
