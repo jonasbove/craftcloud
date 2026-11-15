@@ -717,6 +717,28 @@ fn versions_list_the_current_file_and_the_kept_ones() {
 }
 
 #[test]
+fn a_late_answer_never_fills_another_files_versions() {
+    let mut h = in_reports(&[file("f1", "plan.txt", 8), file("f2", "notes.md", 3)]);
+    for name in ["plan.txt", "notes.md"] {
+        h.get_by_label(&format!("More for {name}")).click();
+        h.run();
+        h.get_by_label("Versions…").click();
+        h.run();
+        h.key_press(egui::Key::Escape);
+        h.run();
+    }
+    h.get_by_label("More for notes.md").click();
+    h.run();
+    h.get_by_label("Versions…").click();
+    h.run();
+    let list = multistatus(HISTORY, &[(NEWEST, "h2-2", 7)]);
+    h.state_mut().backend.answer(&format!("/webdav/{HISTORY}"), Ok(HttpResponse::new(207, list)));
+    h.run();
+    h.get_by_label("Versions of notes.md");
+    assert_eq!(h.query_all_by_label("RESTORE").count(), 0, "plan.txt's versions stay out of notes.md's sheet");
+}
+
+#[test]
 fn a_file_without_history_says_so() {
     let mut h = in_reports(&[file("f1", "plan.txt", 8)]);
     h.get_by_label("More for plan.txt").click();

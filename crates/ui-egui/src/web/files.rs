@@ -92,8 +92,8 @@ enum Key {
     History(Option<String>),
     /// The trash's ids, for leaving trashed files out of search results (by generation).
     TrashIds(u64),
-    /// The "Versions…" sheet's listing.
-    Versions,
+    /// The "Versions…" sheet's listing (by generation: a sheet opened since ignores it).
+    Versions(u64),
     /// A step of restoring a version (see [`versions::Run`]).
     VersionStep,
     /// Best effort; the answer doesn't matter.
@@ -194,6 +194,7 @@ pub struct Files {
     chain: restore::Chain,
     /// Restoring a kept version.
     version_run: Option<versions::Run>,
+    versions_generation: u64,
 }
 
 impl Files {
@@ -237,6 +238,7 @@ impl Files {
             search_trashed: None,
             chain: restore::Chain::default(),
             version_run: None,
+            versions_generation: 0,
         }
     }
 
@@ -281,7 +283,7 @@ impl Files {
                     Key::RestoreCheck(id) => self.on_restore_check(backend, &id, Err(why)),
                     Key::Chain => self.on_chain(backend, Err(why)),
                     Key::History(path) => self.on_history(backend, path, &Err(why)),
-                    Key::Versions => self.on_versions(Err(why)),
+                    Key::Versions(g) => self.on_versions(g, Err(why)),
                     Key::VersionStep => self.on_version_step(backend, Err(why)),
                     _ => {}
                 }
@@ -347,7 +349,7 @@ impl Files {
             Key::Chain => self.on_chain(backend, Ok(resp)),
             Key::TrashIds(g) => self.on_trash_ids(g, &resp),
             Key::History(path) => self.on_history(backend, path, &Ok(resp)),
-            Key::Versions => self.on_versions(Ok(resp)),
+            Key::Versions(g) => self.on_versions(g, Ok(resp)),
             Key::VersionStep => self.on_version_step(backend, Ok(resp)),
             Key::Ignore => {}
         }

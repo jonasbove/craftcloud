@@ -81,11 +81,15 @@ impl Files {
         let req = versions::list(&self.server, &item.path);
         self.sheet_error = None;
         self.sheet = Some(Sheet::Versions(Box::new(History { item, list: None, error: None, restoring: None })));
-        self.net.send(backend, Key::Versions, req);
+        self.versions_generation += 1;
+        self.net.send(backend, Key::Versions(self.versions_generation), req);
     }
 
     /// The answer to the versions listing.
-    pub(super) fn on_versions(&mut self, result: NetResult) {
+    pub(super) fn on_versions(&mut self, generation: u64, result: NetResult) {
+        if generation != self.versions_generation {
+            return;
+        }
         let Some(Sheet::Versions(h)) = &mut self.sheet else { return };
         match result.and_then(|resp| versions::parse_list(&resp).map_err(|e| e.to_string())) {
             Ok(list) => h.list = Some(list),
