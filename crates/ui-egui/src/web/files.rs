@@ -6,14 +6,15 @@
 //! except file bytes, which go over WebDAV by path; the browser's session cookie signs both.
 //! CraftCloud's own data (`.craftcloud/`, the file versions) never shows.
 
-mod apps;
-mod draw;
+pub(super) mod apps;
+pub(super) mod draw;
 mod history;
 mod model;
 mod restore;
+pub(super) mod share;
 mod sheets;
 mod table;
-mod time;
+pub(super) mod time;
 mod upload;
 
 use std::collections::HashMap;
@@ -26,7 +27,7 @@ use egui::{Align2, FontId, Pos2, Rect, Ui, pos2, vec2};
 
 use self::draw::Glyph;
 use self::model::{Item, Sort};
-use self::sheets::Sheet;
+pub(crate) use self::sheets::Sheet;
 use self::upload::{UpState, Uploads};
 use crate::backend::{Backend, Net, NetResult, WallClock};
 use crate::chrome::{self, Kind as ButtonKind};
@@ -91,6 +92,9 @@ enum Key {
     History(Option<String>),
     /// The trash's ids, for leaving trashed files out of search results (by generation).
     TrashIds(u64),
+    /// The share sheet's `POST /api/shares` for the item with this id (see [`share`]): an answer
+    /// that arrives after its sheet was closed never lands in another item's sheet.
+    Share(String),
     /// Best effort; the answer doesn't matter.
     Ignore,
 }
@@ -129,6 +133,8 @@ enum Undo {
 
 struct Toast {
     text: String,
+    /// A second line: the notice then sits bottom right as a card with a good rule ("Link copied").
+    detail: Option<String>,
     bad: bool,
     undo: Option<Undo>,
     until: f64,
@@ -187,6 +193,8 @@ pub struct Files {
     /// The trash's ids while searching (T-043); `None` until the trash has answered.
     search_trashed: Option<std::collections::HashSet<String>>,
     chain: restore::Chain,
+    /// The share sheet's "See all your share links" was clicked: the web app opens that page.
+    pub(crate) go_to_links: bool,
 }
 
 impl Files {
@@ -229,6 +237,7 @@ impl Files {
             search_bust: 0,
             search_trashed: None,
             chain: restore::Chain::default(),
+            go_to_links: false,
         }
     }
 
@@ -272,6 +281,7 @@ impl Files {
                     Key::Picker(g) => self.on_picker_answer(g, Err(why)),
                     Key::RestoreCheck(id) => self.on_restore_check(backend, &id, Err(why)),
                     Key::Chain => self.on_chain(backend, Err(why)),
+                    Key::Share(id) => self.on_share_answer(&id, Err(why)),
                     Key::History(path) => self.on_history(backend, path, &Err(why)),
                     _ => {}
                 }
@@ -335,6 +345,7 @@ impl Files {
             Key::Picker(g) => self.on_picker_answer(g, Ok(resp)),
             Key::RestoreCheck(id) => self.on_restore_check(backend, &id, Ok(resp)),
             Key::Chain => self.on_chain(backend, Ok(resp)),
+            Key::Share(id) => self.on_share_answer(&id, Ok(resp)),
             Key::TrashIds(g) => self.on_trash_ids(g, &resp),
             Key::History(path) => self.on_history(backend, path, &Ok(resp)),
             Key::Ignore => {}
@@ -619,7 +630,12 @@ impl Files {
     }
 
     fn notice(&mut self, text: &str, bad: bool, undo: Option<Undo>) {
-        self.toast = Some(Toast { text: text.to_owned(), bad, undo, until: self.now + TOAST_SECS });
+        self.toast = Some(Toast { text: text.to_owned(), detail: None, bad, undo, until: self.now + TOAST_SECS });
+    }
+
+    /// A good notice with a second line, as a card bottom right.
+    fn notice_detail(&mut self, text: &str, detail: &str) {
+        self.toast = Some(Toast { text: text.to_owned(), detail: Some(detail.to_owned()), bad: false, undo: None, until: self.now + TOAST_SECS });
     }
 
     /// Moves the selection to the trash, with UNDO in the notice.
@@ -946,6 +962,14 @@ impl Files {
                     let at = self.selected_indices();
                     self.download(backend, &at);
                 }
+                // One item at a time: a link opens one file or folder. A phone's row has no room
+                // for it; the "…" menu offers it there.
+                if let [one] = picked.as_slice()
+                    && rect.width() >= 520.0
+                    && draw::text_action(ui, "Share", false).clicked()
+                {
+                    self.start_share(one.clone());
+                }
                 let all_starred = picked.iter().all(|i| i.starred);
                 if draw::text_action(ui, if all_starred { "Unstar" } else { "Star" }, false).clicked() {
                     self.set_starred(backend, &picked, !all_starred);
@@ -1027,6 +1051,7 @@ impl Files {
                 (MenuAction::Open, (!many).then_some((if item.is_folder() { "Open" } else { "Download" }, false, true))),
                 (MenuAction::Download, (many || item.is_folder()).then_some(("Download as zip", false, true))),
                 (MenuAction::ShowInFolder, (!many && !in_folder && item.parent.is_some()).then_some(("Show in folder", false, true))),
+                (MenuAction::Share, (!many).then_some(("Share link…", false, true))),
                 (MenuAction::Rule, None),
                 (MenuAction::Rename, (!many).then_some(("Rename…", false, true))),
                 (MenuAction::Move, Some(("Move to…", false, true))),
@@ -1050,6 +1075,7 @@ impl Files {
                 self.download(backend, &at);
             }
             MenuAction::ShowInFolder => self.show_in_folder(backend, index),
+            MenuAction::Share => self.start_share(item),
             MenuAction::Rename => self.start_rename(index),
             MenuAction::Move => self.start_move(backend),
             MenuAction::Star => self.set_starred(backend, &picked, !all_starred),
@@ -1188,6 +1214,13 @@ impl Files {
             self.toast = None;
             return;
         }
+        if let Some(detail) = toast.detail.clone() {
+            let text = toast.text.clone();
+            if card_toast(ui, area, &text, &detail) {
+                self.toast = None;
+            }
+            return;
+        }
         let galley = ui.painter().layout_no_wrap(toast.text.clone(), FontId::proportional(13.5), if toast.bad { t.bad } else { t.invert_fg });
         let undo_w = if toast.undo.is_some() { 64.0 } else { 0.0 };
         let w = (galley.size().x + 40.0 + undo_w).min(area.width() - 32.0);
@@ -1226,6 +1259,7 @@ enum MenuAction {
     Move,
     Download,
     ShowInFolder,
+    Share,
     Star,
     Trash,
     Restore,
@@ -1264,6 +1298,40 @@ fn storage_line(ui: &mut Ui, used: u64, quota: u64) {
             ui.label(egui::RichText::new(format!("of {}", super::bytes(quota))).size(13.0).color(t.muted));
         }
     });
+}
+
+/// A notice with a second line, bottom right over everything (a sheet too), with a good rule on
+/// its left and a close button. Returns whether it was closed.
+fn card_toast(ui: &mut Ui, area: Rect, text: &str, detail: &str) -> bool {
+    let t = Tokens::get(ui.ctx());
+    let m = if area.width() < 600.0 { 16.0 } else { 24.0 };
+    let w = 420.0_f32.min(area.width() - 2.0 * m);
+    let rect = Rect::from_min_size(pos2(area.right() - w - m, area.bottom() - 66.0 - m), vec2(w, 66.0));
+    let mut closed = false;
+    egui::Area::new(ui.scope_id().with("toast-card")).order(egui::Order::Foreground).fixed_pos(rect.min).show(ui.ctx(), |ui| {
+        let (r, resp) = ui.allocate_exact_size(rect.size(), egui::Sense::hover());
+        ui.painter().add(
+            egui::epaint::Shadow { offset: [0, 8], blur: 24, spread: 0, color: egui::Color32::from_black_alpha(if t.dark { 140 } else { 36 }) }
+                .as_shape(r, 0.0),
+        );
+        ui.painter().rect(r, 0.0, t.bg, egui::Stroke::new(1.0, t.line_strong), egui::StrokeKind::Inside);
+        ui.painter().rect_filled(Rect::from_min_size(r.min, vec2(3.0, r.height())), 0.0, t.good);
+        let width = r.width() - 16.0 - 48.0;
+        let title = draw::fit_text(ui, text, FontId::proportional(14.0), t.ink_strong, width);
+        ui.painter().galley(pos2(r.left() + 16.0, r.top() + 14.0), title, t.ink_strong);
+        let line = draw::fit_text(ui, detail, FontId::proportional(13.0), t.muted, width);
+        ui.painter().galley(pos2(r.left() + 16.0, r.top() + 36.0), line, t.muted);
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Status, true, text));
+        let close = Rect::from_center_size(pos2(r.right() - 22.0, r.center().y), vec2(28.0, 28.0));
+        let c = ui.interact(close, ui.scope_id().with("toast-card-close"), egui::Sense::click());
+        if c.hovered() {
+            ui.painter().rect_filled(close, 0.0, t.sunken);
+        }
+        draw::paint_glyph(ui, Glyph::Close, close.center(), t.ink);
+        c.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Close the notice"));
+        closed = c.clicked();
+    });
+    closed
 }
 
 /// A centred title and note in `rect` (empty folders, errors), with optional actions under them.

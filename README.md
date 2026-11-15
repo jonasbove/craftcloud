@@ -230,6 +230,10 @@ single sign-on, the command line, and the `craftcloud` contract the Craft apps a
 - code-signed desktop builds (macOS and Windows ask once before the first start);
 - opening cloud files in the Craft web apps in the browser, and a sheet to create share links on the web;
 - `craftcloud://` links on macOS (they need an Apple Event handler);
+- opening cloud files in the Craft web apps in the browser, and a page listing your share links on the web;
+- opening cloud files in the Craft web apps in the browser;
+- `craftcloud://` links on macOS (they need an Apple Event handler) and command-line output from Windows release
+  builds;
 - files on demand (a [design](docs/FILES-ON-DEMAND.md) only).
 
 > [!IMPORTANT]

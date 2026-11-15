@@ -20,6 +20,7 @@ use crate::widgets::{error_line, logo, muted};
 
 mod admin;
 mod files;
+mod links;
 mod oidc;
 mod pages;
 pub use admin::{Clock, Tab as AdminTab};
@@ -57,6 +58,8 @@ enum Page {
     Home,
     Files,
     Admin(AdminTab),
+    /// Your share links (`/links`), from the account menu.
+    Links,
     /// The public page of a share link (`/s/<token>`).
     Share,
     Failed(String),
@@ -103,6 +106,9 @@ pub struct WebApp<B: Backend> {
     /// The browser's clock and time zone, for "Today 18:02" (unset in tests: UTC dates).
     clock: Option<Clock>,
     share: Option<share::SharePage>,
+    links: links::Links,
+    /// The account menu under the person's name in the header is open.
+    account_open: bool,
 }
 
 /// The web-apps choice being edited (setup step 4, Admin › Server).
@@ -127,6 +133,7 @@ impl<B: Backend> WebApp<B> {
         net.send(&mut backend, Key::Me, auth::me(&server));
         let form = Form { code: code.unwrap_or_default(), ..Form::default() };
         let files = files::Files::new(server.clone());
+        let links = links::Links::new(server.clone());
         let share = path
             .starts_with("/s/")
             .then(|| craftcloud_core::api::shares::token_of(path))
@@ -157,6 +164,8 @@ impl<B: Backend> WebApp<B> {
             signing_in: false,
             clock: None,
             share,
+            links,
+            account_open: false,
         }
     }
 
@@ -175,6 +184,7 @@ impl<B: Backend> WebApp<B> {
             self.on_answer(key, result);
         }
         self.files.receive(&mut self.backend, &mut answers);
+        self.links.receive(&mut self.backend, &mut answers);
         if let Some(share) = &mut self.share {
             share.receive(&mut self.backend, &mut answers);
         }
@@ -184,7 +194,7 @@ impl<B: Backend> WebApp<B> {
         for (key, result) in self.sso.net.receive(&mut answers) {
             self.on_sso_answer(key, result);
         }
-        if self.net.is_busy() || self.admin.net.is_busy() || self.sso.net.is_busy() {
+        if self.net.is_busy() || self.admin.net.is_busy() || self.sso.net.is_busy() || self.links.is_busy() {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
         }
         let t = Tokens::get(ui.ctx());
@@ -193,7 +203,7 @@ impl<B: Backend> WebApp<B> {
         let (header_rect, middle, footer_rect) = chrome::page_rects(full);
 
         let user = self.me.as_ref().map(|m| m.user.username.clone());
-        let signed_in = user.is_some() && matches!(self.page, Page::Home | Page::Device | Page::Files | Page::Admin(_));
+        let signed_in = user.is_some() && matches!(self.page, Page::Home | Page::Device | Page::Files | Page::Admin(_) | Page::Links);
         let is_admin = self.me.as_ref().is_some_and(|m| m.user.is_admin());
         // (label, selected, enabled, tag) and where each goes.
         let mut nav: Vec<(NavCell<'_>, Option<Page>)> = Vec::new();
@@ -206,7 +216,21 @@ impl<B: Backend> WebApp<B> {
             }
         }
         let cells: Vec<(&str, bool, bool, Option<&str>)> = nav.iter().map(|(cell, _)| *cell).collect();
-        let clicks = chrome::header(ui, header_rect, &chrome::HeaderInfo { nav: &cells, user: if signed_in { user.as_deref() } else { None } });
+        let info = chrome::HeaderInfo {
+            nav: &cells,
+            user: if signed_in { user.as_deref() } else { None },
+            user_selected: self.account_open || self.page == Page::Links,
+        };
+        let clicks = chrome::header(ui, header_rect, &info);
+        if clicks.user {
+            self.account_open = !self.account_open;
+            if self.account_open {
+                self.links.count_for_menu(&mut self.backend);
+            }
+        }
+        if !signed_in {
+            self.account_open = false;
+        }
         if let Some(page) = clicks.nav.and_then(|i| nav.get_mut(i)).and_then(|(_, page)| page.take()) {
             self.enter(page);
         }
@@ -256,6 +280,7 @@ impl<B: Backend> WebApp<B> {
                 Page::Home => self.home_ui(ui, middle),
                 Page::Files => self.files.ui(ui, middle, &mut self.backend),
                 Page::Admin(tab) => self.admin_ui(ui, middle, tab),
+                Page::Links => self.links.ui(ui, middle, &mut self.backend),
                 Page::Share => {
                     if let Some(share) = &mut self.share {
                         share.ui(ui, middle, &mut self.backend);
@@ -263,6 +288,71 @@ impl<B: Backend> WebApp<B> {
                 }
             }
         });
+        if self.account_open
+            && let Some(anchor) = clicks.user_rect
+        {
+            self.account_menu_ui(ui, anchor, clicks.user);
+        }
+        if std::mem::take(&mut self.files.go_to_links) {
+            self.enter(Page::Links);
+        }
+        if std::mem::take(&mut self.links.go_to_files) {
+            self.enter(Page::Files);
+        }
+    }
+
+    /// The account menu, hung under the person's cell: who is signed in, then "Your share links"
+    /// with how many there are. `opened_now`: the click that opened it is not a click outside it.
+    fn account_menu_ui(&mut self, ui: &mut Ui, anchor: egui::Rect, opened_now: bool) {
+        let t = Tokens::get(ui.ctx());
+        let Some(me) = self.me.as_ref().map(|m| m.user.clone()) else { return };
+        let width = 260.0;
+        let screen = ui.ctx().content_rect();
+        let x = anchor.left().min(screen.right() - width - 8.0).max(screen.left() + 8.0);
+        let count = self.links.count();
+        let mut go = false;
+        let area = egui::Area::new(ui.scope_id().with("account-menu"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(x, anchor.bottom() + 4.0))
+            .show(ui.ctx(), |ui| {
+                egui::Frame::new().fill(t.bg).stroke(egui::Stroke::new(1.0, t.line_strong)).shadow(crate::kit::shadow(&t)).show(ui, |ui| {
+                    ui.set_width(width);
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    egui::Frame::new().inner_margin(egui::Margin { left: 14, right: 14, top: 12, bottom: 12 }).show(ui, |ui| {
+                        ui.set_width(width - 28.0);
+                        ui.spacing_mut().item_spacing.y = 6.0;
+                        ui.add(egui::Label::new(RichText::new(&me.username).size(15.0).color(t.ink_strong)).truncate());
+                        chrome::hud(ui, &format!("{} · {}", me.username, me.email), t.muted);
+                    });
+                    let (rule, _) = ui.allocate_exact_size(egui::vec2(width, 1.0), egui::Sense::hover());
+                    ui.painter().hline(rule.x_range(), rule.center().y, t.hairline());
+                    let (row, resp) = ui.allocate_exact_size(egui::vec2(width, 40.0), egui::Sense::click());
+                    if resp.hovered() {
+                        ui.painter().rect_filled(row, 0.0, t.sunken);
+                    }
+                    let left = egui::pos2(row.left() + 14.0, row.center().y);
+                    ui.painter().text(left, egui::Align2::LEFT_CENTER, "Your share links", egui::FontId::proportional(13.5), t.ink);
+                    if let Some(n) = count {
+                        let right = egui::pos2(row.right() - 14.0, row.center().y);
+                        ui.painter().text(right, egui::Align2::RIGHT_CENTER, n.to_string(), egui::FontId::monospace(12.0), t.muted);
+                    }
+                    let label = match count {
+                        Some(n) => format!("Your share links, {n}"),
+                        None => "Your share links".to_owned(),
+                    };
+                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::MenuItem, true, &label));
+                    go = resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+                });
+            });
+        let outside = !opened_now
+            && ui.input(|i| i.pointer.any_pressed())
+            && ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| !area.response.rect.contains(p) && !anchor.contains(p));
+        if go {
+            self.account_open = false;
+            self.enter(Page::Links);
+        } else if outside || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.account_open = false;
+        }
     }
 
     fn send(&mut self, key: Key, request: craftcloud_core::http::HttpRequest) {
@@ -326,6 +416,8 @@ impl<B: Backend> WebApp<B> {
             },
             Key::Logout => {
                 self.me = None;
+                self.account_open = false;
+                self.links = links::Links::new(self.server.clone());
                 self.admin = admin::Admin::default();
                 self.sso = oidc::Sso::default();
                 self.page = Page::Login(After::Home);
@@ -391,10 +483,13 @@ impl<B: Backend> WebApp<B> {
         self.path.trim_end_matches('/') == "/device"
     }
 
-    /// Home, or the admin page the address asks for (`/admin/users`, `/admin/server`) when the
-    /// person may see it.
+    /// Home, your share links (`/links`), or the admin page the address asks for (`/admin/users`,
+    /// `/admin/server`) when the person may see it.
     fn home_or_admin(&self) -> Page {
         let path = self.path.trim_end_matches('/');
+        if path == "/links" {
+            return Page::Links;
+        }
         if !path.starts_with("/admin") || !self.me.as_ref().is_some_and(|m| m.user.is_admin()) {
             return Page::Home;
         }
@@ -423,6 +518,9 @@ impl<B: Backend> WebApp<B> {
         }
         if let Page::Admin(tab) = page {
             self.admin_load(tab);
+        }
+        if page == Page::Links {
+            self.links.open(&mut self.backend);
         }
         if page == Page::Home && !self.net.is_waiting(&Key::Devices) {
             let req = auth::devices(&self.server);

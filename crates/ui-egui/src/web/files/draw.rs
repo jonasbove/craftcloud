@@ -22,10 +22,16 @@ fn caps(ui: &Ui, text: &str, size: f32, color: Color32) -> std::sync::Arc<egui::
 
 /// A folder or file glyph in `rect` (square), coloured by the app that opens it.
 pub fn file_glyph(ui: &Ui, rect: Rect, item: &Item) {
+    kind_glyph(ui, rect, item.is_folder(), &item.name);
+}
+
+/// A folder, or a file named `name` in its app's colour, when only the name is known (the list of
+/// share links).
+pub fn kind_glyph(ui: &Ui, rect: Rect, folder: bool, name: &str) {
     let t = Tokens::get(ui.ctx());
     let p = ui.painter();
     let s = rect.width();
-    if item.is_folder() {
+    if folder {
         let body = Rect::from_min_max(rect.min + vec2(0.0, s * 0.22), rect.max - vec2(0.0, s * 0.1));
         let tab = Rect::from_min_size(rect.min + vec2(0.0, s * 0.12), vec2(s * 0.42, s * 0.16));
         let fill = if t.dark { Color32::from_gray(150) } else { Color32::from_gray(120) };
@@ -33,7 +39,7 @@ pub fn file_glyph(ui: &Ui, rect: Rect, item: &Item) {
         p.rect_filled(body, CornerRadius::same(1), fill);
         return;
     }
-    let fill = item.app().map_or(if t.dark { Color32::from_gray(140) } else { Color32::from_gray(130) }, super::apps::color);
+    let fill = super::apps::for_name(name).map_or(if t.dark { Color32::from_gray(140) } else { Color32::from_gray(130) }, super::apps::color);
     let w = s * 0.72;
     let page = Rect::from_center_size(rect.center(), vec2(w, s * 0.92));
     let fold = w * 0.32;
@@ -79,6 +85,16 @@ pub enum Glyph {
     Search,
     Close,
     More,
+    /// Two overlapping sheets (COPY).
+    Copy,
+    Check,
+    /// An eye (SHOW), and one struck through (HIDE).
+    Eye,
+    EyeOff,
+    Lock,
+    Calendar,
+    Prev,
+    Next,
 }
 
 pub fn paint_glyph(ui: &Ui, glyph: Glyph, c: Pos2, color: Color32) {
@@ -149,6 +165,52 @@ pub fn paint_glyph(ui: &Ui, glyph: Glyph, c: Pos2, color: Color32) {
             for dx in [-5.0, 0.0, 5.0] {
                 p.circle_filled(c + vec2(dx, 0.0), 1.4, color);
             }
+        }
+        Glyph::Copy => {
+            p.rect_stroke(Rect::from_min_max(c + vec2(-2.5, -2.5), c + vec2(6.0, 6.0)), 1.0, s, egui::StrokeKind::Middle);
+            p.add(egui::Shape::line(vec![c + vec2(2.5, -5.5), c + vec2(-5.5, -5.5), c + vec2(-5.5, 2.5)], s));
+        }
+        Glyph::Check => {
+            p.line_segment([c + vec2(-5.5, 0.0), c + vec2(-1.5, 4.0)], s);
+            p.line_segment([c + vec2(-1.5, 4.0), c + vec2(6.0, -4.5)], s);
+        }
+        Glyph::Eye | Glyph::EyeOff => {
+            let lid = |sign: f32| -> Vec<Pos2> {
+                (0..=12)
+                    .map(|i| {
+                        let x = -7.0 + 14.0 * i as f32 / 12.0;
+                        c + vec2(x, sign * 4.5 * (1.0 - (x / 7.0).powi(2)))
+                    })
+                    .collect()
+            };
+            p.add(egui::Shape::line(lid(-1.0), s));
+            p.add(egui::Shape::line(lid(1.0), s));
+            p.circle_stroke(c, 2.0, s);
+            if glyph == Glyph::EyeOff {
+                p.line_segment([c + vec2(-6.0, 6.0), c + vec2(6.0, -6.0)], s);
+            }
+        }
+        Glyph::Lock => {
+            p.rect_filled(Rect::from_min_max(c + vec2(-5.0, -1.0), c + vec2(5.0, 6.0)), 1.0, color);
+            let arc: Vec<Pos2> = (0..=10)
+                .map(|i| {
+                    let a = std::f32::consts::PI * (1.0 + i as f32 / 10.0);
+                    c + vec2(a.cos() * 3.2, -1.0 + a.sin() * 4.0)
+                })
+                .collect();
+            p.add(egui::Shape::line(arc, s));
+        }
+        Glyph::Calendar => {
+            p.rect_stroke(Rect::from_min_max(c + vec2(-6.0, -4.5), c + vec2(6.0, 6.0)), 1.0, s, egui::StrokeKind::Middle);
+            p.line_segment([c + vec2(-6.0, -1.0), c + vec2(6.0, -1.0)], s);
+            p.line_segment([c + vec2(-3.0, -6.5), c + vec2(-3.0, -3.0)], s);
+            p.line_segment([c + vec2(3.0, -6.5), c + vec2(3.0, -3.0)], s);
+        }
+        Glyph::Prev => {
+            p.add(egui::Shape::line(vec![c + vec2(2.0, -4.5), c + vec2(-2.5, 0.0), c + vec2(2.0, 4.5)], s));
+        }
+        Glyph::Next => {
+            p.add(egui::Shape::line(vec![c + vec2(-2.0, -4.5), c + vec2(2.5, 0.0), c + vec2(-2.0, 4.5)], s));
         }
     }
 }
@@ -472,6 +534,11 @@ pub fn text_action(ui: &mut Ui, label: &str, danger: bool) -> Response {
     ui.painter().galley(rect.center() - g.size() / 2.0, g, color);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label.to_uppercase()));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// How wide [`icon_label_button`] draws `label`.
+pub fn icon_label_width(ui: &Ui, label: &str) -> f32 {
+    caps(ui, label, 11.0, Color32::WHITE).size().x + 32.0 + 22.0
 }
 
 /// A launcher button with a drawn glyph before its label (UPLOAD, NEW FOLDER).

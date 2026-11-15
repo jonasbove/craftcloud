@@ -26,7 +26,7 @@ backup of anything you sync with it.
 | Two-way sync folder, versions, conflict copies | done; hardening from testers' reports | [ARCHITECTURE.md › Sync](ARCHITECTURE.md#sync) |
 | Desktop client (tray, Activity, Folders, Settings, start at login) | done | [README](../README.md#downloads) |
 | Web file browser (upload, download, rename, move, delete, trash, versions, recent, starred, search) | done | [design-notes/pass-2.md](design-notes/pass-2.md) |
-| Share links | public share page and CLI done; no "create a share link" sheet in the web file browser | [CLI.md › Share links](CLI.md#share-links) |
+| Share links | done: public share page, CLI, the web's "Share link" sheet and "Your share links" page | [CLI.md › Share links](CLI.md#share-links) |
 | Admin (users, server settings, Craft web apps on or off) | done, on the web and in the CLI | [CLI.md](CLI.md#server-administration-owners-and-admins) |
 | Command line | done; on Windows through `craftcloud.com` (untried on Windows) | [CLI.md](CLI.md) |
 | Craft apps through the sync folder | done (every app) | [CRAFT-INTEGRATION.md § 1](CRAFT-INTEGRATION.md#1-the-sync-folder-works-today-every-app) |
@@ -65,16 +65,18 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 1. **A first release:** a published image (slim and `-apps`), a first run of the **Release** workflow
    (`release.yml`) on a tag, a release signing key (`RELEASE_SIGNING_KEY`), and the AUR recipes in
    `packaging/arch/`, with [RELEASE-NOTES.md](RELEASE-NOTES.md).
-2. **Share links on the web:** a sheet in the web file browser to create, copy and remove a link (the API, the CLI
-   and the public page exist).
-3. **Craft web apps in the browser:** the page that frames an app and talks `craft-web-host`, and the shim for the
+2. **Craft web apps in the browser:** the page that frames an app and talks `craft-web-host`, and the shim for the
    apps without it ([CRAFT-INTEGRATION.md § 6](CRAFT-INTEGRATION.md#6-the-craft-web-apps-in-the-browser)).
 4. **macOS deep links:** an Apple Event (`kAEGetURL`) handler, so a `craftcloud://` click opens the file.
 5. **The command line on Windows:** try `craftcloud.com`, the MSI's PATH entry and its uninstall on Windows 11.
 6. **Files on demand,** in the stages of [FILES-ON-DEMAND.md § 6](FILES-ON-DEMAND.md#6-staged-plan).
 7. **Upstream:** the drafts in [UPSTREAM.md](UPSTREAM.md) and server-side versioning for OxiCloud, filed only after
+3. **macOS deep links:** an Apple Event (`kAEGetURL`) handler, so a `craftcloud://` click opens the file.
+4. **The command line on Windows:** a console build, so release builds print to the terminal.
+5. **Files on demand,** in the stages of [FILES-ON-DEMAND.md § 6](FILES-ON-DEMAND.md#6-staged-plan).
+6. **Upstream:** the drafts in [UPSTREAM.md](UPSTREAM.md) and server-side versioning for OxiCloud, filed only after
    they are agreed.
-8. **Unmaintained D-Bus crates:** drop the `deny.toml` ignores for zvariant, zvariant_derive and zbus_names
+7. **Unmaintained D-Bus crates:** drop the `deny.toml` ignores for zvariant, zvariant_derive and zbus_names
    (RUSTSEC-2026-0370 to 0372) once egui (accesskit) and keyring move to zbus 6.
 9. **A native NixOS deployment (M8):** today `nix/module.nix` runs the Docker image, which already holds the Craft
    web apps. A Nix derivation (`nix/apps.nix`) would read `apps.toml` with `builtins.fromTOML`, fetch each pinned
@@ -118,6 +120,21 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   default for `craftcloud://` links) and a VM test of the server module (`checks.<system>.vm-sync`): a second
   machine signs in through the device flow and syncs a file each way. The server module gains `imageFile`, to load
   the image from the Nix store.
+- 2026-11-14: Web: "Your share links" (`/links`, #19), opened from a new account menu under the person's name in
+  the header (with the number of links) and from the share sheet's "See all your share links": every link with
+  where its item is now (looked up by its id, as `craftcloud share ls`), when it expires, whether it has a
+  password, how often it was opened and when it was made; filters All, Active, Expired and No longer there with
+  counts, search, sort, COPY, and REVOKE after a confirmation (`DELETE /api/shares/{id}`; the item is never
+  touched). A link whose item is in the trash or deleted shows the name it was shared with; a lookup that fails
+  some other way says so and is not counted as gone. Built to the v2 Sharing frames; checked with egui_kittest
+  tests and screenshots, not yet against a live server.
+- 2026-11-14: Web: a "Share link" sheet in the file browser (#18), opened from a file's or folder's "…" menu
+  ("Share link…") or the selection's SHARE: the link expires never, in 1, 7 or 30 days, or at the end of a day
+  picked in a calendar (past days can't be picked), with an optional password (hidden unless SHOW, sent only in the
+  request's body), then "Link ready" with the URL, COPY and a "Link copied" notice; a refusal says why in plain
+  words and keeps the form. The expiry rules are the command line's `--expires`, now shared in `crates/core`
+  (`shares::expiry_at`). Built to the v2 Sharing frames; checked with egui_kittest tests and screenshots, not yet
+  against a live server.
 - 2026-11-14: Releases: the Release workflow install-tests every Linux package before it makes a draft
   (`package-test`): the deb on Debian 12 and Ubuntu 22.04/24.04, the rpm on Fedora 41/42 (x86_64 and aarch64),
   the Arch package, the AppImage and the tarball, each installed with its package manager, checked, signed in and
