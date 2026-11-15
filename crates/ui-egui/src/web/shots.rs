@@ -17,6 +17,8 @@ const UNINIT: &[u8] = br#"{"initialized":false,"admin_count":0,"registration_all
 const INIT: &[u8] = br#"{"initialized":true,"admin_count":1,"registration_allowed":false}"#;
 const CONFIG: &[u8] = br#"{"version":"0.1.0","web_apps":false,"public_url":"https://cloud.example.org","enabled_apps":[]}"#;
 const ROOT: &str = "root1";
+/// The link to the folder Team (`/s/tokF`).
+const SHARED_FOLDER: &[u8] = br#"{"id":"s1","item_id":"top","item_name":"Team","item_type":"folder","token":"tokF","url":"https://cloud.example.org/s/tokF","has_password":false,"created_at":"2026-11-13T09:00:00Z"}"#;
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../core/tests/fixtures/oxicloud-0.10.0").join(name);
@@ -515,6 +517,33 @@ fn scenes() -> Vec<Scene> {
             soft(&mut h, "/api/s/tok1", Ok(HttpResponse::new(401, br#"{"error":"Password required","requiresPassword":true}"#.to_vec())));
             h
         }),
+        ("share-password-wrong", |s, t| {
+            let mut h = visit("/s/tok1", None, s, t);
+            start(&mut h, INIT, false);
+            let needs = br#"{"error":"Password required","requiresPassword":true}"#;
+            soft(&mut h, "/api/s/tok1", Ok(HttpResponse::new(401, needs.to_vec())));
+            if let Some(share) = h.state_mut().share.as_mut() {
+                share.password = "wrong".into();
+            }
+            h.run();
+            click(&mut h, "OPEN");
+            soft(&mut h, "/api/s/tok1/verify", Ok(HttpResponse::new(401, needs.to_vec())));
+            h
+        }),
+        ("share-gone", |s, t| {
+            let mut h = visit("/s/gone", None, s, t);
+            start(&mut h, INIT, false);
+            soft(&mut h, "/api/s/gone", Ok(HttpResponse::new(404, Vec::new())));
+            h
+        }),
+        ("share-folder", |s, t| {
+            let mut h = visit("/s/tokF", None, s, t);
+            start(&mut h, INIT, false);
+            soft(&mut h, "/api/s/tokF", ok(SHARED_FOLDER));
+            let items = [folder("sub", "Photos"), folder("d2", "Drafts"), sample()[3].clone(), sample()[4].clone(), sample()[5].clone()];
+            soft(&mut h, "/api/folders/top/resources?limit=200", json_ok(&listing(&items)));
+            h
+        }),
         ("share-expired", |s, t| {
             let mut h = visit("/s/old", None, s, t);
             start(&mut h, INIT, false);
@@ -532,11 +561,16 @@ fn scenes() -> Vec<Scene> {
         ("share-subfolder", |s, t| {
             let mut h = visit("/s/tokF", None, s, t);
             start(&mut h, INIT, false);
-            let share = br#"{"id":"s1","item_id":"top","item_name":"Team","item_type":"folder","token":"tokF","url":"https://cloud.example.org/s/tokF","has_password":false,"created_at":"2026-11-13T09:00:00Z"}"#;
-            soft(&mut h, "/api/s/tokF", ok(share));
+            soft(&mut h, "/api/s/tokF", ok(SHARED_FOLDER));
             soft(&mut h, "/api/folders/top/resources?limit=200", json_ok(&listing(&[folder("sub", "Photos"), sample()[3].clone()])));
             click(&mut h, "Open Photos");
-            soft(&mut h, "/api/folders/sub/resources?limit=200", json_ok(&listing(&sample()[4..])));
+            let photos = [
+                folder("y26", "2026"),
+                file("p1", "Shoot-01.jpg", 6_100_000, "image/jpeg", "2026-11-12T09:00:00Z"),
+                file("p2", "Shoot-02.jpg", 5_800_000, "image/jpeg", "2026-11-12T09:01:00Z"),
+                file("p3", "Contact sheet.pdf", 2_400_000, "application/pdf", "2026-11-12T09:02:00Z"),
+            ];
+            soft(&mut h, "/api/folders/sub/resources?limit=200", json_ok(&listing(&photos)));
             h
         }),
         ("admin-users", |s, t| {

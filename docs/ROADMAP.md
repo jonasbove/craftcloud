@@ -155,6 +155,13 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   conflict copy on both sides and temporary-looking names (T-063, T-064). It checks that no other client syncs
   the account (through its sessions, for an admin account) and that the cloud and both clients end the same,
   keeps every pass's `--json` and ends with a PASS/FAIL table ([TESTING.md](TESTING.md)).
+- 2026-11-15: Web: the public share page follows the v2 Sharing frames (#20): 40 px folder rows, names cut to fit
+  on a phone, the Type fact names the format ("DOCX document"). A shared folder's subfolders open in place through
+  OxiCloud's folder listing, which accepts the link's cookie; a folder lists up to 1000 items (five pages, then "The
+  first 1000 items") and opens up to 32 levels down, never a folder already open above. A folder shows LOADING…
+  until it is listed and an error when it can't be, never "empty". Names from the server are shown without control
+  characters, a download is saved under the bare file name, and a token no link could have is "This link doesn't
+  work" without asking the server.
 - 2026-11-14: Releases: the Release workflow install-tests every Linux package before it makes a draft
   (`package-test`): the deb on Debian 12 and Ubuntu 22.04/24.04, the rpm on Fedora 41/42 (x86_64 and aarch64),
   the Arch package, the AppImage and the tarball, each installed with its package manager, checked, signed in and
