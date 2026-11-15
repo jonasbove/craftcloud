@@ -5,7 +5,9 @@
 # Usage: scripts/smoke-test [image] [host-port]     (defaults: craftcloud:dev 8093)
 #        WEB_APPS=on scripts/smoke-test craftcloud:dev-apps
 #                                                   web apps on (needs the -apps image)
-#        KEEP=1 scripts/smoke-test ...               leave the stack running afterwards
+#        KEEP=1 scripts/smoke-test ...               leave the stack running afterwards, still without an owner
+#                                                   (the release's package test makes its own; SMOKE_SIGN_IN=1 signs
+#                                                   in anyway, which creates the owner `smoke`)
 set -eu
 
 IMAGE="${1:-craftcloud:dev}"
@@ -91,23 +93,30 @@ check "settings API needs sign-in" expect "$(status "$BASE/craftcloud/api/settin
 check "the admin gate is not reachable from outside" expect "$(status "$BASE/internal/apps-gate")" 200
 check "…it is the frontend there, not the gate" sh -c "curl -fsS '$BASE/internal/apps-gate' | grep -q craftcloud_canvas"
 
-# Create the owner and sign in (the cookie jar keeps the session for the checks below).
-JAR="$(mktemp)"
-PW="smoke-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
-curl -fsS -o /dev/null -H 'Content-Type: application/json' -d "{\"username\":\"smoke\",\"email\":\"smoke@example.org\",\"password\":\"$PW\"}" "$BASE/api/setup"
-LOGIN_HEADERS="$(curl -fsS -o /dev/null -D - -c "$JAR" -H 'Content-Type: application/json' -d "{\"username\":\"smoke\",\"password\":\"$PW\"}" "$BASE/api/auth/login" | tr -d '\r')"
-CSRF="$(awk '$6=="oxicloud_csrf"{print $7}' "$JAR")"
+# Signing in creates the owner `smoke`. A server kept running (KEEP=1) stays without an owner, because whoever
+# uses it next makes the first account (the release's package test does); SMOKE_SIGN_IN=1 signs in anyway. The
+# web-apps checks below need the sign-in.
+if [ "${SMOKE_SIGN_IN:-}" = 1 ] || [ "${KEEP:-0}" != 1 ] || [ "$WEB_APPS" != off ]; then
+    # Create the owner and sign in (the cookie jar keeps the session for the checks below).
+    JAR="$(mktemp)"
+    PW="smoke-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+    curl -fsS -o /dev/null -H 'Content-Type: application/json' -d "{\"username\":\"smoke\",\"email\":\"smoke@example.org\",\"password\":\"$PW\"}" "$BASE/api/setup"
+    LOGIN_HEADERS="$(curl -fsS -o /dev/null -D - -c "$JAR" -H 'Content-Type: application/json' -d "{\"username\":\"smoke\",\"password\":\"$PW\"}" "$BASE/api/auth/login" | tr -d '\r')"
+    CSRF="$(awk '$6=="oxicloud_csrf"{print $7}' "$JAR")"
 
-# The sign-in cookie is Secure exactly when the public address is https (read from Set-Cookie, since
-# curl may not keep a Secure cookie it got over http).
-case "${PUBLIC_URL:-$BASE}" in
-    https://*) want_secure=yes ;;
-    *) want_secure=no ;;
-esac
-access_cookie="$(printf '%s\n' "$LOGIN_HEADERS" | grep -i '^set-cookie: *oxicloud_access=' | head -1)"
-check "sign-in cookie set" test -n "$access_cookie"
-if printf '%s' "$access_cookie" | grep -qi '; *secure\(;\|$\)'; then got_secure=yes; else got_secure=no; fi
-check "sign-in cookie Secure: $want_secure for ${PUBLIC_URL:-$BASE}" expect "$got_secure" "$want_secure"
+    # The sign-in cookie is Secure exactly when the public address is https (read from Set-Cookie, since
+    # curl may not keep a Secure cookie it got over http).
+    case "${PUBLIC_URL:-$BASE}" in
+        https://*) want_secure=yes ;;
+        *) want_secure=no ;;
+    esac
+    access_cookie="$(printf '%s\n' "$LOGIN_HEADERS" | grep -i '^set-cookie: *oxicloud_access=' | head -1)"
+    check "sign-in cookie set" test -n "$access_cookie"
+    if printf '%s' "$access_cookie" | grep -qi '; *secure\(;\|$\)'; then got_secure=yes; else got_secure=no; fi
+    check "sign-in cookie Secure: $want_secure for ${PUBLIC_URL:-$BASE}" expect "$got_secure" "$want_secure"
+else
+    echo "skip  sign-in cookie checks (KEEP=1 leaves the server without an owner; SMOKE_SIGN_IN=1 runs them)"
+fi
 
 if [ "$WEB_APPS" = off ]; then
     check "config says web apps off" expect "$web_apps_json" false
