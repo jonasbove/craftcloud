@@ -9,7 +9,7 @@
 pub(super) mod apps;
 pub(super) mod draw;
 mod history;
-mod model;
+pub(super) mod model;
 mod restore;
 pub(super) mod share;
 mod sheets;
