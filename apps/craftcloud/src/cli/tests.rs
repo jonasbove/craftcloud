@@ -298,3 +298,15 @@ fn files_that_failed_to_sync_are_in_the_headline() {
     assert!(words.starts_with("Up to date · 1 file couldn't sync"), "{words}");
     assert_eq!(super::account::state_words(&Status { state: "up_to_date".into(), ..Status::default() }), "Up to date.");
 }
+
+/// On Windows `craftcloud.com` relays the console through a pipe and says so, so the questions
+/// (passwords, "Delete …? [y/N]") are still asked (#4). Any other value, or none, is a pipe.
+#[test]
+fn a_relayed_console_counts_as_a_terminal() {
+    use std::ffi::OsStr;
+    assert!(super::typed_input(true, None));
+    assert!(super::typed_input(false, Some(OsStr::new("1"))));
+    assert!(!super::typed_input(false, None));
+    assert!(!super::typed_input(false, Some(OsStr::new(""))));
+    assert!(!super::typed_input(false, Some(OsStr::new("0"))));
+}

@@ -5,10 +5,12 @@
 .DESCRIPTION
   Produces, in $env:DIST (default: dist/release):
     craftcloud-<version>-windows-<arch>.msi            per-user installer with a setup wizard (WiX v5)
-    craftcloud-<version>-windows-<arch>-portable.zip   craftcloud.exe and the notices, to run from anywhere
+    craftcloud-<version>-windows-<arch>-portable.zip   craftcloud.exe, craftcloud.com and the notices, to run from anywhere
 
-  The exe keeps the name craftcloud.exe: it is also the command line (craftcloud status). It links
-  the C runtime statically (.cargo/config.toml), so neither file needs the Visual C++
+  The exe keeps the name craftcloud.exe: it is also the command line (craftcloud status). Being a
+  GUI program, it gets no console, so craftcloud.com (the craftcloud-cli package, a console
+  program) sits next to it and runs it for a terminal: Command Prompt and PowerShell try .com
+  before .exe. Both link the C runtime statically (.cargo/config.toml), so neither file needs the Visual C++
   redistributable. Signing goes through sign.ps1, which leaves the files unsigned with a warning
   when no signing secrets are set.
 
@@ -31,6 +33,7 @@ $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 
 $Pkg = 'craftcloud'   # cargo package and binary
+$CliPkg = 'craftcloud-cli'   # cargo package and binary of the terminal launcher, shipped as craftcloud.com
 $AppName = 'CraftCloud'
 
 function Invoke-Native([string] $What, [scriptblock] $Block) {
@@ -61,15 +64,17 @@ Write-Output "$AppName $Version for Windows $Arch ($Target)"
 
 if (-not $SkipBuild) {
   # .cargo/config.toml links the C runtime statically for both MSVC targets.
-  Invoke-Native "cargo build ($Target)" { cargo build --release --locked -p $Pkg --target $Target }
+  Invoke-Native "cargo build ($Target)" { cargo build --release --locked -p $Pkg -p $CliPkg --target $Target }
 }
 
 $Bin = Join-Path $TargetDir "$Target\release"
 $Exe = "$Pkg.exe"
+$Com = "$Pkg.com"
 
 # Check the PE header before packaging. Machine (COFF header) must match -Arch, so an x64 build
-# can never ship labelled arm64. Subsystem (optional header) must be 2 = Windows GUI, so no
-# console window opens with the client.
+# can never ship labelled arm64. Subsystem (optional header) must be 2 = Windows GUI for the client,
+# so no console window opens with it, and 3 = Windows console for the launcher, so a terminal waits
+# for it and shows its output.
 function Get-PeHeader([string] $Path) {
   $bytes = [System.IO.File]::ReadAllBytes($Path)
   $pe = [BitConverter]::ToInt32($bytes, 0x3C)
@@ -80,14 +85,20 @@ $h = Get-PeHeader (Join-Path $Bin $Exe)
 if ($h.Machine -ne $Machine) { throw "$Exe is for machine 0x$('{0:X}' -f $h.Machine), expected 0x$('{0:X}' -f $Machine) ($Arch)" }
 if ($h.Subsystem -ne 2) { throw "$Exe has PE subsystem $($h.Subsystem), expected 2 (Windows GUI)" }
 Write-Output "ok ${Exe}: $Arch, PE subsystem $($h.Subsystem)"
+$h = Get-PeHeader (Join-Path $Bin "$CliPkg.exe")
+if ($h.Machine -ne $Machine) { throw "$CliPkg.exe is for machine 0x$('{0:X}' -f $h.Machine), expected 0x$('{0:X}' -f $Machine) ($Arch)" }
+if ($h.Subsystem -ne 3) { throw "$CliPkg.exe has PE subsystem $($h.Subsystem), expected 3 (Windows console)" }
+Write-Output "ok ${CliPkg}.exe (as $Com): $Arch, PE subsystem $($h.Subsystem)"
 
 $Stage = Join-Path $TargetDir "windows-package\$Arch"
 Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 Copy-Item -LiteralPath (Join-Path $Root 'NOTICE') -Destination $Stage
 Copy-Item (Join-Path $Bin $Exe) $Stage
+# Windows runs a .com by its PE header, like an .exe; the name only puts it first for `craftcloud`.
+Copy-Item (Join-Path $Bin "$CliPkg.exe") (Join-Path $Stage $Com)
 
-& (Join-Path $PSScriptRoot 'sign.ps1') (Join-Path $Stage $Exe)
+& (Join-Path $PSScriptRoot 'sign.ps1') (Join-Path $Stage $Exe) (Join-Path $Stage $Com)
 
 # ---- MSI ---------------------------------------------------------------------------------------
 $Msi = Join-Path $Dist "$Pkg-$Version-windows-$Arch.msi"
@@ -107,12 +118,14 @@ Remove-Item -Force -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Ms
 & (Join-Path $PSScriptRoot 'sign.ps1') $Msi
 
 # ---- portable zip ------------------------------------------------------------------------------
-# The same exe without an installer. It keeps its settings in %APPDATA% like the installed one,
+# The same two programs without an installer (not on PATH: `craftcloud` works in that folder, or
+# add it to PATH by hand). It keeps its settings in %APPDATA% like the installed one,
 # and registers craftcloud:// links for itself when it starts.
 $Portable = Join-Path $TargetDir "windows-package\$Pkg-$Version-windows-$Arch-portable"
 Remove-Item -Recurse -Force $Portable -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Portable | Out-Null
 Copy-Item (Join-Path $Stage $Exe) $Portable
+Copy-Item (Join-Path $Stage $Com) $Portable
 foreach ($f in 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE') {
   $p = Join-Path $Root $f
   if (Test-Path $p) { Copy-Item $p $Portable }

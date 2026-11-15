@@ -116,8 +116,8 @@ server.
 
 A Cargo workspace laid out like the ArtCraft Launcher: `crates/core` (the OxiCloud API and the sync decisions),
 `crates/native` (the sync engine, keychain and settings), `crates/ui-egui` (every screen, for both the client and
-the web), `apps/craftcloud` (desktop), `apps/craftcloud-web` (web), `apps/craftcloud-admin` (the image's settings
-service) and `xtask`. Inside the image, Caddy fronts OxiCloud, the web frontend and the optional Craft web apps.
+the web), `apps/craftcloud` (desktop), `apps/craftcloud-cli` (the command line for a Windows terminal),
+`apps/craftcloud-web` (web), `apps/craftcloud-admin` (the image's settings service) and `xtask`. Inside the image, Caddy fronts OxiCloud, the web frontend and the optional Craft web apps.
 Single sign-on with an OpenID Connect provider: [docs/OIDC.md](docs/OIDC.md).
 
 More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the OxiCloud gaps CraftCloud works around, and the upstream
@@ -219,8 +219,7 @@ single sign-on, the command line, and the `craftcloud` contract the Craft apps a
 **What's missing:**
 - code-signed desktop builds (macOS and Windows ask once before the first start);
 - opening cloud files in the Craft web apps in the browser, and a sheet to create share links on the web;
-- `craftcloud://` links on macOS (they need an Apple Event handler) and command-line output from Windows release
-  builds;
+- `craftcloud://` links on macOS (they need an Apple Event handler);
 - files on demand (a [design](docs/FILES-ON-DEMAND.md) only).
 
 > [!IMPORTANT]
@@ -239,8 +238,12 @@ The builds are **not code-signed** by Apple or Microsoft yet, so your system ask
 
 | File | What it is |
 |---|---|
-| `craftcloud-<ver>-windows-{x64,arm64}.msi` | Installer, for you only (no administrator rights). SmartScreen: **More info › Run anyway** |
-| `craftcloud-<ver>-windows-{x64,arm64}-portable.zip` | The same `craftcloud.exe`, to run without installing |
+| `craftcloud-<ver>-windows-{x64,arm64}.msi` | Installer, for you only (no administrator rights). SmartScreen: **More info › Run anyway**. Puts `craftcloud` on your PATH for new terminals |
+| `craftcloud-<ver>-windows-{x64,arm64}-portable.zip` | The same `craftcloud.exe` and `craftcloud.com`, to run without installing |
+
+On Windows, `craftcloud.exe` is the app and `craftcloud.com` is the command line for a terminal: typing
+`craftcloud status` in Command Prompt or PowerShell runs the `.com`, which shows the app's output
+([docs/CLI.md › Windows](docs/CLI.md#windows)). Uninstalling takes the folder off PATH again and turns off start at login.
 
 **macOS** (11 or later, Apple silicon and Intel)
 

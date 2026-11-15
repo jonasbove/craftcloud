@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Windows: the command line prints in a terminal** (#4). `craftcloud status` in Command Prompt or PowerShell
+  showed nothing, because `craftcloud.exe` is a GUI program. The MSI and the portable zip now also hold
+  `craftcloud.com`, a console program that runs `craftcloud.exe` and shows its output; both shells pick the `.com`
+  when you type `craftcloud`. The MSI adds its folder to your PATH (for you only): open a new terminal after
+  updating. Scripts that read the output through a pipe or a file work as before.
+- **Windows: uninstalling turns off start at login.** The MSI used to leave the "Start at login" entry behind,
+  starting a program that was no longer there. Uninstalling now removes it (and takes the folder off PATH); an
+  update keeps it. If you uninstalled an earlier version with start at login on, remove the leftover entry with
+  `reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v CraftCloud /f` (or turn it off in Task Manager › Startup apps).
+
 - **Server: sign-in cookies follow the public address.** When `CRAFTCLOUD_PUBLIC_URL` starts with `https://`, the
   sign-in cookies are marked Secure on their own; `OXICLOUD_COOKIE_SECURE` is now needed only to override that.
   `.env.example` no longer sets it to `false`: if your `.env` was copied from an older one and you serve CraftCloud

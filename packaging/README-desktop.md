@@ -10,7 +10,10 @@ before the first start:
   `/Applications/CraftCloud.app/Contents/MacOS/craftcloud`.
 - **Windows** (`craftcloud-<ver>-windows-{x64,arm64}.msi`): run the installer (no administrator
   rights needed). If SmartScreen says "Windows protected your PC", click **More info → Run anyway**.
-  The `-portable.zip` holds the same `craftcloud.exe` to run without installing.
+  The `-portable.zip` holds the same files to run without installing. `craftcloud.exe` is the app;
+  `craftcloud.com` is the command line for a terminal (`craftcloud status` in Command Prompt or
+  PowerShell runs it and shows the app's output). The installer puts both on your PATH for new
+  terminals; from the zip, run them in that folder or add it to PATH yourself.
 - **Linux:** the `.deb`, `.rpm`, `.pkg.tar.zst` (Arch), `.flatpak` or `.AppImage`. From the
   `.tar.gz`: unpack it and run `./install.sh` in the folder (to `~/.local`, no root;
   `./install.sh --remove` undoes it). On NixOS, add the flake to your system config instead (see the
