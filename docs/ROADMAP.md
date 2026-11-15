@@ -91,6 +91,11 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   image build no longer needs Python. The `-apps` image serves the same files and `apps.json`.
 - 2026-11-15: Desktop: a long error detail in the Activity list is cut to its row (full text on hover) instead of
   spilling out of the panel over the time, badge and name, and "Syncing stopped" never ends a path with two full stops.
+- 2026-11-15: Sync: a Windows computer leaves alone every cloud name Windows can't have (the names the other clients
+  warn about: `< > : " | ? *`, a trailing dot or space, reserved names also with an extension), said once instead of
+  failing each pass; cloud names that differ only in case are held there, all but the one it has. One rule in
+  `core::names` (`Platform`) for the warning, the skip and the local path check. A failed download no longer leaves
+  its part file, and part files older than a day are cleaned up. Found testing 0.1.1 on Windows 11.
 - 2026-11-15: Version 0.1.1: stored HTML and SVG never run as pages, a file being saved is never overwritten by the
   sync, `sync --once` syncs a file saved just before it, and `craftcloud open` returns at once with a usual Windows path.
 - 2026-11-15: CLI: `sync --once` run right after a file was saved no longer ends "up to date" without it: it

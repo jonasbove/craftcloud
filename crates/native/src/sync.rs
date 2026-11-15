@@ -22,7 +22,7 @@ use craftcloud_core::api::dav::{self, Uploaded, Write};
 use craftcloud_core::api::resources::Kind;
 use craftcloud_core::api::{admin, files, folders, trash};
 use craftcloud_core::http::HttpResponse;
-use craftcloud_core::names;
+use craftcloud_core::names::{self, Platform};
 use craftcloud_core::reconcile::{self, Action, Known, LocalFile, RemoteFile, State, Tree};
 use craftcloud_core::sync::{
     ActivityEvent, ActivityKind, ConflictCopy, FileStatus, Keep, LeftOut, SyncPlan, SyncProgress, SyncState, folder_stats, in_plan, local_relative,
@@ -167,6 +167,8 @@ pub fn start_with(plan: SyncPlan, session: Session, device: String, waker: Waker
             recounted: None,
             refused: BTreeMap::new(),
             no_folder_move: BTreeSet::new(),
+            platform: Platform::current(),
+            parts_swept: None,
             _watcher: watcher,
         };
         engine.run(&inbox);
@@ -234,6 +236,10 @@ struct Engine {
     recounted: Option<Instant>,
     /// Folder moves (from, to) that failed: their files are synced one by one instead.
     no_folder_move: BTreeSet<(String, String)>,
+    /// The name rules of this computer's file system (`names::Platform`).
+    platform: Platform,
+    /// When leftover part files were last looked for ([`sweep_stale_parts`]).
+    parts_swept: Option<Instant>,
     /// Keeps the folder watcher alive (`None` where watching isn't possible: then the timer).
     _watcher: Option<notify::RecommendedWatcher>,
 }
@@ -444,6 +450,13 @@ impl Engine {
         if !root.is_dir() {
             return Err(Stop::Hold(SyncState::FolderMissing));
         }
+        if self.parts_swept.is_none_or(|at| at.elapsed() >= SWEEP_PARTS_EVERY) {
+            self.parts_swept = Some(Instant::now());
+            let removed = sweep_stale_parts(&root, STALE_PART);
+            if removed > 0 {
+                log::info!("removed {removed} leftover part files of downloads that never finished");
+            }
+        }
         let saved = self.load().unwrap_or_default();
         let (mut state, kept_conflicts) = (saved.state, saved.kept_conflicts);
 
@@ -452,9 +465,9 @@ impl Engine {
         let (mut local, unreadable) = scan_local(&root, &self.plan, &state, &std::mem::take(&mut self.settled));
         self.report_unreadable(&unreadable);
         self.report_unsynced(&root);
-        let refused_names = self.screen_names(&mut local, &mut remote);
+        let refused_names = self.screen_names(&mut state, &mut local, &mut remote);
         // Whatever the sync leaves alone is left alone on both sides and in the state (T-063).
-        drop_skipped(&mut state, &mut local, &mut remote);
+        drop_skipped(&mut state, &mut local, &mut remote, self.platform);
         if same_bytes_again(&root, &mut state, &local) {
             save_saved(&state_path, &Saved { server: self.plan.server.clone(), state: state.clone(), kept_conflicts: kept_conflicts.clone() })?;
         }
@@ -777,43 +790,14 @@ impl Engine {
         }
     }
 
-    /// Leaves names the cloud can't take out of the local side (they stay here, said once per
-    /// version of the file, never uploaded), and flags names a Windows computer can't have (they
-    /// still sync; said once per run).
-    ///
-    /// Such a name in the cloud (another client put it there) is left out on both sides too, so
-    /// it's never taken for one deleted here and trashed in the cloud.
-    fn screen_names(&mut self, local: &mut Tree<LocalFile>, remote: &mut Tree<RemoteFile>) -> Vec<String> {
-        let mut notes = Vec::new();
-        let refused = leave_out_refused(local, remote);
-        for (place, (why, file)) in &refused {
-            let key = match file {
-                Some(f) => format!("refused:{place}:{}:{}", f.size, f.mtime),
-                None => format!("refused:{place}"),
-            };
-            if self.reported.insert(key) {
-                notes.push(event(ActivityKind::Skipped, place, None, (*why).to_owned()));
-            }
-        }
-        let mut flagged: BTreeSet<String> = BTreeSet::new();
-        for path in local.files.keys().chain(&local.folders).chain(remote.files.keys()).chain(&remote.folders) {
-            let mut end = 0;
-            for segment in path.split('/') {
-                end += segment.len();
-                if let Some(why) = names::windows_trouble(segment) {
-                    let place = &path[..end];
-                    if flagged.insert(place.to_owned()) && self.reported.insert(format!("windows:{place}")) {
-                        notes.push(event(ActivityKind::Warning, place, None, format!("{why}; it syncs, but not to a Windows computer")));
-                    }
-                    break;
-                }
-                end += 1;
-            }
-        }
+    /// Leaves out the names the cloud or this computer can't have, and the cloud names this
+    /// computer can't keep apart (see the free [`screen_names`]), and says so once.
+    fn screen_names(&mut self, state: &mut State, local: &mut Tree<LocalFile>, remote: &mut Tree<RemoteFile>) -> Vec<String> {
+        let (notes, left_out) = screen_names(state, local, remote, self.platform, &mut self.reported);
         if !notes.is_empty() {
             self.update(|p| notes.into_iter().for_each(|e| p.record(e)));
         }
-        refused.into_keys().collect()
+        left_out
     }
 
     /// Says once (per run) which top-level things in the local folder don't sync, so nothing is
@@ -1272,13 +1256,7 @@ impl Engine {
     fn download(&mut self, root: &Path, path: &str, state: &mut State, listed: Option<&RemoteFile>) -> Result<Option<u64>, String> {
         let dest = local_relative(path).map(|rel| root.join(rel)).ok_or("name not allowed")?;
         let (part, etag, resumed) = self.fetch(path, &dest, listed)?;
-        // The last look before replacing a local file: it must still be what was last synced (or
-        // gone). A change made here meanwhile is never overwritten; the next pass sees both (#36).
-        if !replaceable(&dest, state.files.get(path)) {
-            return Err("changed here while it was downloading; it syncs in the next pass".into());
-        }
-        std::fs::rename(&part, &dest).map_err(|e| e.to_string())?;
-        let meta = local_meta(&dest).ok_or("the file disappeared")?;
+        let meta = put_in_place(part, &dest, state.files.get(path))?;
         let hash = hash_of(&dest, &meta);
         state.files.insert(path.to_owned(), Known { etag, size: meta.size, mtime: meta.mtime, hash });
         Ok(resumed)
@@ -1291,7 +1269,11 @@ impl Engine {
     /// kept when the transfer breaks off: the next try asks only for the rest (`Range`), and uses
     /// it only when the server's answer is that same version from that byte on (OxiCloud ignores
     /// `If-Range`, docs/UPSTREAM.md C13, so the ETag and `Content-Range` are checked here).
-    fn fetch(&mut self, path: &str, dest: &Path, listed: Option<&RemoteFile>) -> Result<(PathBuf, String, Option<u64>), String> {
+    ///
+    /// A part file that is no use any more is removed on every way out: only one named after its
+    /// version, whose transfer broke off (or never started), is kept to resume from; past that the
+    /// returned [`PartFile`] removes it unless it is moved into place.
+    fn fetch(&mut self, path: &str, dest: &Path, listed: Option<&RemoteFile>) -> Result<(PartFile, String, Option<u64>), String> {
         let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let part = dest.with_file_name(part_name(&name, listed.map(|r| r.etag.as_str())));
         if let Some(parent) = part.parent() {
@@ -1331,11 +1313,12 @@ impl Engine {
             }
             return Err(e);
         }
+        // Whole now: from here on any failure removes it.
+        let part = PartFile(part);
         if let Some(r) = listed
-            && std::fs::metadata(&part).map(|m| m.len()).ok() != Some(r.size)
+            && std::fs::metadata(&part.0).map(|m| m.len()).ok() != Some(r.size)
             && etag.as_deref().is_some_and(|e| e.trim_matches('"') == r.etag.trim_matches('"'))
         {
-            let _ = std::fs::remove_file(&part);
             return Err("the download came out the wrong size; trying again".into());
         }
         let etag = match etag {
@@ -1349,8 +1332,8 @@ impl Engine {
     fn conflict(&mut self, root: &Path, path: &str, state: &mut State) -> Result<Option<Done>, String> {
         let local = local_relative(path).map(|rel| root.join(rel)).ok_or("name not allowed")?;
         let (part, etag, _) = self.fetch(path, &local, None)?;
-        if same_bytes(&part, &local) {
-            let _ = std::fs::remove_file(&part);
+        if same_bytes(&part.0, &local) {
+            drop(part);
             let meta = local_meta(&local).ok_or("the file disappeared")?;
             state.files.insert(path.to_owned(), Known { etag, size: meta.size, mtime: meta.mtime, hash: None });
             return Ok(None);
@@ -1361,7 +1344,7 @@ impl Engine {
         });
         let copy_local = local_relative(&copy).map(|rel| root.join(rel)).ok_or("name not allowed")?;
         std::fs::rename(&local, &copy_local).map_err(|e| e.to_string())?;
-        std::fs::rename(&part, &local).map_err(|e| e.to_string())?;
+        std::fs::rename(&part.0, &local).map_err(|e| e.to_string())?;
         let meta = local_meta(&local).ok_or("the file disappeared")?;
         state.files.insert(path.to_owned(), Known { etag, size: meta.size, mtime: meta.mtime, hash: None });
         // The local edit goes up under its new name; a failure here is retried as a new file.
@@ -1369,6 +1352,64 @@ impl Engine {
         let name = copy.rsplit('/').next().unwrap_or(&copy).to_owned();
         Ok(Some((ActivityKind::Conflict, format!("yours kept as {name}"))))
     }
+}
+
+/// A whole download in its part file, removed when dropped unless it was moved into place first
+/// (a failed download never leaves its part file behind).
+struct PartFile(PathBuf);
+
+impl Drop for PartFile {
+    fn drop(&mut self) {
+        // Gone already when it was moved into place.
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Moves a downloaded part file to `dest`, after the last look before replacing a local file:
+/// it must still be what was last synced (`known`), or not be there. A change made here meanwhile
+/// is never overwritten; the next pass sees both (#36). On any failure the part file goes.
+fn put_in_place(part: PartFile, dest: &Path, known: Option<&Known>) -> Result<LocalFile, String> {
+    if !replaceable(dest, known) {
+        return Err("changed here while it was downloading; it syncs in the next pass".into());
+    }
+    std::fs::rename(&part.0, dest).map_err(|e| e.to_string())?;
+    local_meta(dest).ok_or_else(|| "the file disappeared".into())
+}
+
+/// Part files left this long are left over (a crash, a file gone from the cloud before its
+/// download could resume): [`sweep_stale_parts`] removes them.
+const STALE_PART: Duration = Duration::from_secs(24 * 60 * 60);
+/// How often the local folder is looked through for them.
+const SWEEP_PARTS_EVERY: Duration = Duration::from_secs(60 * 60);
+
+/// Whether a file name is one of this client's own download part files ([`part_name`]).
+fn is_part_file(name: &str) -> bool {
+    name.starts_with('.') && name.ends_with(".craftcloud-part")
+}
+
+/// Removes this client's own part files (and nothing else) last written more than `older_than`
+/// ago, anywhere in the local folder but `.craftcloud/`; symbolic links are never followed.
+/// Returns how many went.
+fn sweep_stale_parts(root: &Path, older_than: Duration) -> usize {
+    let mut removed = 0;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_dir() && name != dav::CRAFTCLOUD_DIR {
+                stack.push(entry.path());
+            } else if kind.is_file()
+                && is_part_file(&name)
+                && entry.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok()).is_some_and(|age| age > older_than)
+                && std::fs::remove_file(entry.path()).is_ok()
+            {
+                removed += 1;
+            }
+        }
+    }
+    removed
 }
 
 /// The part file a download goes to: `.<name>.<version>.craftcloud-part` when the version is
@@ -1657,31 +1698,97 @@ pub(crate) fn local_meta(path: &Path) -> Option<LocalFile> {
 /// Names that are never synced (the list is in core: `names::ignored`).
 pub use craftcloud_core::names::ignored;
 
-/// Takes the names the cloud can't take out of both sides (the top-most such place of each path:
-/// `a\b/c.txt` leaves out all of `a\b`), and returns them with why (and the local file, if it
-/// is one, to say it once per version).
-fn leave_out_refused(local: &mut Tree<LocalFile>, remote: &mut Tree<RemoteFile>) -> BTreeMap<String, (&'static str, Option<LocalFile>)> {
-    let mut refused: BTreeMap<String, (&'static str, Option<LocalFile>)> = BTreeMap::new();
-    for path in local.files.keys().chain(&local.folders).chain(remote.files.keys()).chain(&remote.folders) {
-        let mut end = 0;
-        for segment in path.split('/') {
-            end += segment.len();
-            if let Some(why) = names::server_refuses(segment) {
-                let place = &path[..end];
-                refused.entry(place.to_owned()).or_insert((why, local.files.get(place).copied()));
-                break;
-            }
-            end += 1;
+/// Leaves names the cloud can't take, names this computer can't have and cloud names it can't
+/// keep apart out of both sides and the state (they stay where they are, never uploaded,
+/// downloaded or deleted), each said once (`reported`: once per version of a local file, else
+/// once per run), and flags names a Windows computer can't have where they still sync (once per
+/// run). Returns the notes and the places left out.
+///
+/// Such a name in the cloud (another client put it there) is left out on both sides, so it's
+/// never taken for one deleted here and trashed in the cloud.
+fn screen_names(
+    state: &mut State,
+    local: &mut Tree<LocalFile>,
+    remote: &mut Tree<RemoteFile>,
+    platform: Platform,
+    reported: &mut BTreeSet<String>,
+) -> (Vec<ActivityEvent>, Vec<String>) {
+    let mut notes = Vec::new();
+    let left_out = leave_out_names(state, local, remote, platform);
+    for (place, (why, file)) in &left_out {
+        let key = match file {
+            Some(f) => format!("refused:{place}:{}:{}", f.size, f.mtime),
+            None => format!("refused:{place}"),
+        };
+        if reported.insert(key) {
+            notes.push(event(ActivityKind::Skipped, place, None, why.clone()));
         }
     }
-    for place in refused.keys() {
-        let inside = |p: &String| p == place || p.starts_with(&format!("{place}/"));
-        local.files.retain(|p, _| !inside(p));
-        local.folders.retain(|p| !inside(p));
-        remote.files.retain(|p, _| !inside(p));
-        remote.folders.retain(|p| !inside(p));
+    // What still syncs here but can't on Windows (on Windows itself, all of it was left out above).
+    let mut flagged: BTreeSet<String> = BTreeSet::new();
+    for path in local.files.keys().chain(&local.folders).chain(remote.files.keys()).chain(&remote.folders) {
+        if let Some((place, why)) = names::local_refused_in(path, Platform::Windows)
+            && flagged.insert(place.to_owned())
+            && reported.insert(format!("windows:{place}"))
+        {
+            notes.push(event(ActivityKind::Warning, place, None, format!("{why}; it syncs, but not to a Windows computer")));
+        }
     }
-    refused
+    (notes, left_out.into_keys().collect())
+}
+
+/// The top-most place in a path the cloud can't take or this computer can't have, with why.
+fn name_trouble(path: &str, platform: Platform) -> Option<(&str, String)> {
+    let mut end = 0;
+    for segment in path.split('/') {
+        end += segment.len();
+        if let Some(why) = names::server_refuses(segment) {
+            return Some((&path[..end], why.to_owned()));
+        }
+        if let Some(why) = names::local_refuses(segment, platform) {
+            return Some((&path[..end], format!("{why}; it isn't synced to or from this computer (rename it to sync it here)")));
+        }
+        end += 1;
+    }
+    None
+}
+
+/// Takes the places [`screen_names`] leaves out out of both sides and the state (the top-most
+/// such place of each path: `a\b/c.txt` leaves out all of `a\b`), and returns them with why
+/// (and the local file, if it is one, to say it once per version).
+fn leave_out_names(
+    state: &mut State,
+    local: &mut Tree<LocalFile>,
+    remote: &mut Tree<RemoteFile>,
+    platform: Platform,
+) -> BTreeMap<String, (String, Option<LocalFile>)> {
+    let mut out: BTreeMap<String, (String, Option<LocalFile>)> = BTreeMap::new();
+    for path in local.files.keys().chain(&local.folders).chain(remote.files.keys()).chain(&remote.folders) {
+        if let Some((place, why)) = name_trouble(path, platform) {
+            out.entry(place.to_owned()).or_insert((why, local.files.get(place).copied()));
+        }
+    }
+    // Two cloud names that would be one file here (Windows: `Report.txt`, `report.txt`): the one
+    // this computer has keeps syncing, the other is held, so neither is downloaded over the other.
+    let left = |p: &str| out.keys().any(|place| within(place, p));
+    let cloud: Vec<&str> = remote.files.keys().chain(&remote.folders).map(String::as_str).filter(|p| !left(p)).collect();
+    let here = |p: &str| local.files.contains_key(p) || local.folders.contains(p);
+    for (place, other) in names::clashes(cloud, here, platform) {
+        let why = format!(
+            "this computer can't keep it apart from {other} (the names differ only in upper and lower case); it stays in the cloud until one is renamed"
+        );
+        let file = local.files.get(&place).copied();
+        out.entry(place).or_insert((why, file));
+    }
+    for place in out.keys() {
+        local.files.retain(|p, _| !within(place, p));
+        local.folders.retain(|p| !within(place, p));
+        remote.files.retain(|p, _| !within(place, p));
+        remote.folders.retain(|p| !within(place, p));
+        state.files.retain(|p, _| !within(place, p));
+        state.folders.retain(|p| !within(place, p));
+    }
+    out
 }
 
 /// Why a symbolic link isn't synced (it is never followed).
@@ -1699,13 +1806,13 @@ fn mid_save(unreadable: &[Unreadable]) -> Vec<String> {
 /// Takes every path the sync leaves alone (`names::skipped`) out of the state and both sides, so
 /// nothing is planned for it: no download, no upload, no delete either way (T-063). A file that
 /// another device uploads under such a name stays in the cloud; one here stays here.
-fn drop_skipped(state: &mut State, local: &mut Tree<LocalFile>, remote: &mut Tree<RemoteFile>) {
-    state.files.retain(|p, _| !names::skipped(p, true));
-    state.folders.retain(|p| !names::skipped(p, false));
-    local.files.retain(|p, _| !names::skipped(p, true));
-    local.folders.retain(|p| !names::skipped(p, false));
-    remote.files.retain(|p, _| !names::skipped(p, true));
-    remote.folders.retain(|p| !names::skipped(p, false));
+fn drop_skipped(state: &mut State, local: &mut Tree<LocalFile>, remote: &mut Tree<RemoteFile>, platform: Platform) {
+    state.files.retain(|p, _| !names::skipped(p, true, platform));
+    state.folders.retain(|p| !names::skipped(p, false, platform));
+    local.files.retain(|p, _| !names::skipped(p, true, platform));
+    local.folders.retain(|p| !names::skipped(p, false, platform));
+    remote.files.retain(|p, _| !names::skipped(p, true, platform));
+    remote.folders.retain(|p| !names::skipped(p, false, platform));
 }
 
 /// The local side. Symlinks are not followed. A file written in the last two seconds counts as
@@ -1951,7 +2058,8 @@ fn save_saved(path: &Path, saved: &Saved) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{bring_back, leave_out_refused, part_name, range_continues, resume_from, same_bytes_again, split_deletes};
+    use super::{bring_back, leave_out_names, part_name, range_continues, resume_from, same_bytes_again, split_deletes};
+    use craftcloud_core::names::Platform;
 
     #[test]
     fn a_name_the_cloud_cant_take_is_never_deleted_from_it() {
@@ -1967,7 +2075,7 @@ mod tests {
         let mut remote: Tree<RemoteFile> = Tree::default();
         remote.files.insert(path.clone(), RemoteFile { etag: "e".into(), size: 1 });
         remote.folders.insert("Docs".into());
-        let out = leave_out_refused(&mut local, &mut remote);
+        let out = leave_out_names(&mut state, &mut local, &mut remote, Platform::current());
         assert_eq!(out.keys().collect::<Vec<_>>(), [&path]);
         let plan = reconcile::reconcile(&state, &local, &remote, false).unwrap();
         assert!(!plan.iter().any(super::is_delete), "{plan:?}");
@@ -2359,7 +2467,7 @@ mod tests {
         for folder in ["t37", ".craftcloud", ".craftcloud/versions", ".craftcloud/versions/a"] {
             remote.folders.insert(folder.into());
         }
-        drop_skipped(&mut state, &mut local, &mut remote);
+        drop_skipped(&mut state, &mut local, &mut remote, Platform::current());
         let actions = reconcile::reconcile(&state, &local, &remote, false).unwrap();
         for a in &actions {
             for p in super::action_paths(a) {
@@ -2405,7 +2513,7 @@ mod tests {
                 remote.folders.extend(["smoke-2".to_owned(), "smoke-2/projekt.tmp".to_owned()]);
                 remote.files.insert("smoke-2/projekt.tmp/inside.txt".into(), RemoteFile { etag: "\"e1\"".into(), size: meta.size });
                 let (mut local, unreadable) = scan_local(root, &plan, &state, &BTreeSet::new());
-                drop_skipped(&mut state, &mut local, &mut remote);
+                drop_skipped(&mut state, &mut local, &mut remote, Platform::current());
                 let actions = hold_unreadable(reconcile::reconcile(&state, &local, &remote, false).unwrap(), &unreadable);
                 assert!(actions.is_empty(), "{side}, pass {pass}: {actions:?}");
                 assert!(local.folders.contains("smoke-2/projekt.tmp"), "{side}, pass {pass}: the folder is seen here");
@@ -2472,6 +2580,149 @@ mod tests {
         }
         for name in ["report.docx", ".env", "notes.md", "part.txt"] {
             assert!(!ignored(name), "{name}");
+        }
+    }
+
+    /// The names a Windows 11 test of 0.1.1 met in the cloud, as the five files of `Weird/`.
+    fn weird_cloud() -> Tree<RemoteFile> {
+        let mut remote: Tree<RemoteFile> = Tree::default();
+        remote.folders.insert("Weird".into());
+        for (i, name) in ["a:b.txt", "what?.md", "CON.txt", "trailing.", "trailing"].iter().enumerate() {
+            remote.files.insert(format!("Weird/{name}"), RemoteFile { etag: format!("\"e{i}\""), size: 1 });
+        }
+        remote
+    }
+
+    /// One pass's plan the way `try_cycle` makes it: names screened, skipped names dropped.
+    fn plan_pass(
+        state: &mut State,
+        local: &mut Tree<LocalFile>,
+        remote: &mut Tree<RemoteFile>,
+        platform: Platform,
+        reported: &mut BTreeSet<String>,
+    ) -> (Vec<Action>, Vec<craftcloud_core::sync::ActivityEvent>) {
+        let (notes, _) = super::screen_names(state, local, remote, platform, reported);
+        drop_skipped(state, local, remote, platform);
+        (reconcile::reconcile(state, local, remote, false).unwrap(), notes)
+    }
+
+    /// On Windows, every name the other computers warn about is left alone: not downloaded (no
+    /// per-pass error), not deleted on either side, said once. `trailing` itself still syncs, and
+    /// never collides with `trailing.`. Elsewhere all five download, with a warning each.
+    #[test]
+    fn names_windows_cant_have_are_left_alone_on_windows() {
+        let bad = ["Weird/a:b.txt", "Weird/what?.md", "Weird/CON.txt", "Weird/trailing."];
+        let mut state = State::default();
+        let mut reported = BTreeSet::new();
+        // An older client made `CON.txt` on Windows 11 and recorded it as synced.
+        state.files.insert("Weird/CON.txt".into(), Known { etag: "\"e2\"".into(), size: 1, mtime: 1, hash: None });
+        state.folders.insert("Weird".into());
+        let mut local: Tree<LocalFile> = Tree::default();
+        local.folders.insert("Weird".into());
+        local.files.insert("Weird/CON.txt".into(), LocalFile { size: 1, mtime: 1 });
+        for pass in 1..=3 {
+            let (mut s, mut l, mut r) = (state.clone(), local.clone(), weird_cloud());
+            let (actions, notes) = plan_pass(&mut s, &mut l, &mut r, Platform::Windows, &mut reported);
+            for a in &actions {
+                for p in super::action_paths(a) {
+                    assert!(!bad.contains(&p), "pass {pass}: nothing planned for {p}: {a:?}");
+                }
+                assert!(!matches!(a, Action::DeleteRemote { .. } | Action::DeleteLocal(_) | Action::DeleteRemoteFolder { .. }), "{a:?}");
+            }
+            assert!(actions.iter().any(|a| matches!(a, Action::Download(p) if p == "Weird/trailing")), "pass {pass}: {actions:?}");
+            if pass == 1 {
+                let said: BTreeSet<&str> = notes.iter().map(|n| n.path.as_str()).collect();
+                assert_eq!(said, bad.into_iter().collect(), "each said once: {notes:?}");
+                assert!(notes.iter().all(|n| n.kind == craftcloud_core::sync::ActivityKind::Skipped), "{notes:?}");
+            } else {
+                assert!(notes.is_empty(), "pass {pass}: said again: {notes:?}");
+            }
+        }
+        // Linux and macOS keep syncing them all, with a warning for the four.
+        let (mut s, mut l, mut r) = (State::default(), Tree::default(), weird_cloud());
+        let (actions, notes) = plan_pass(&mut s, &mut l, &mut r, Platform::Other, &mut BTreeSet::new());
+        let downloads = actions.iter().filter(|a| matches!(a, Action::Download(_))).count();
+        assert_eq!(downloads, 5, "{actions:?}");
+        assert_eq!(notes.iter().filter(|n| n.kind == craftcloud_core::sync::ActivityKind::Warning).count(), 4, "{notes:?}");
+    }
+
+    /// Two cloud names that are one file on Windows: the one this computer has keeps syncing, the
+    /// other is held (never downloaded over it), and nothing is deleted on either side.
+    #[test]
+    fn cloud_names_windows_cant_keep_apart_are_held() {
+        let mut state = State::default();
+        state.files.insert("Docs/Report.txt".into(), Known { etag: "\"r1\"".into(), size: 1, mtime: 1, hash: None });
+        state.folders.insert("Docs".into());
+        let mut local: Tree<LocalFile> = Tree::default();
+        local.folders.insert("Docs".into());
+        local.files.insert("Docs/Report.txt".into(), LocalFile { size: 1, mtime: 1 });
+        let mut remote: Tree<RemoteFile> = Tree::default();
+        remote.folders.insert("Docs".into());
+        remote.files.insert("Docs/Report.txt".into(), RemoteFile { etag: "\"r2\"".into(), size: 2 });
+        remote.files.insert("Docs/report.txt".into(), RemoteFile { etag: "\"x\"".into(), size: 3 });
+        let mut reported = BTreeSet::new();
+        let (actions, notes) = plan_pass(&mut state.clone(), &mut local.clone(), &mut remote.clone(), Platform::Windows, &mut reported);
+        assert_eq!(actions, [Action::Download("Docs/Report.txt".into())], "only the one this computer has");
+        assert_eq!(notes.iter().map(|n| n.path.as_str()).collect::<Vec<_>>(), ["Docs/report.txt"]);
+        assert!(notes[0].detail.contains("Docs/Report.txt"), "{notes:?}");
+        // A new pair, neither here: both held.
+        let mut remote2 = remote.clone();
+        remote2.files.insert("Docs/Notes.md".into(), RemoteFile { etag: "\"n1\"".into(), size: 1 });
+        remote2.files.insert("Docs/NOTES.md".into(), RemoteFile { etag: "\"n2\"".into(), size: 1 });
+        let (actions, _) = plan_pass(&mut state.clone(), &mut local.clone(), &mut remote2, Platform::Windows, &mut reported);
+        assert!(!actions.iter().any(|a| super::action_paths(a).iter().any(|p| p.eq_ignore_ascii_case("Docs/notes.md"))), "{actions:?}");
+        // Elsewhere both sync.
+        let (actions, _) = plan_pass(&mut state, &mut local, &mut remote, Platform::Other, &mut BTreeSet::new());
+        assert!(actions.contains(&Action::Download("Docs/report.txt".into())), "{actions:?}");
+    }
+
+    /// A download that can't be put in place leaves no part file behind (seen as
+    /// `Weird/.trailing..<version>.craftcloud-part` on Windows).
+    #[test]
+    fn a_failed_download_leaves_no_part_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("trailing");
+        std::fs::write(&dest, "changed here").unwrap();
+        let part = dir.path().join(".trailing..44c77418e27569db-1794748821.craftcloud-part");
+        std::fs::write(&part, "cloud bytes").unwrap();
+        let known = Known { etag: "\"e\"".into(), size: 1, mtime: 1, hash: None };
+        let failed = super::put_in_place(super::PartFile(part.clone()), &dest, Some(&known));
+        assert!(failed.is_err());
+        assert!(!part.exists(), "the part file is gone");
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "changed here", "never overwritten");
+        // And when it can be put in place, it is.
+        std::fs::write(&part, "cloud bytes").unwrap();
+        std::fs::remove_file(&dest).unwrap();
+        assert!(super::put_in_place(super::PartFile(part.clone()), &dest, None).is_ok());
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "cloud bytes");
+        assert!(!part.exists());
+    }
+
+    /// Leftover part files are cleaned up: only this client's own, only old ones, never inside
+    /// `.craftcloud/`.
+    #[test]
+    fn stale_part_files_are_swept() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("Weird")).unwrap();
+        std::fs::create_dir_all(root.join(".craftcloud")).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 24 * 60 * 60);
+        let files = [
+            ("Weird/.trailing..44c77418e27569db-1794748821.craftcloud-part", true, true),
+            ("Weird/.fresh.bin.e-1.craftcloud-part", false, false),
+            ("Weird/movie.part", true, false),
+            ("Weird/notes.craftcloud-part", true, false),
+            (".craftcloud/.x.craftcloud-part", true, false),
+        ];
+        for (f, aged, _) in files {
+            std::fs::write(root.join(f), "x").unwrap();
+            if aged {
+                std::fs::File::options().write(true).open(root.join(f)).unwrap().set_modified(old).unwrap();
+            }
+        }
+        assert_eq!(super::sweep_stale_parts(root, super::STALE_PART), 1);
+        for (f, _, gone) in files {
+            assert_eq!(root.join(f).exists(), !gone, "{f}");
         }
     }
 }

@@ -70,12 +70,16 @@ The desktop client keeps chosen server folders in a local folder, two ways.
   of its name (or a synced file by a folder) on one side, while the other side is unchanged since the last sync, is a
   replacement, not a conflict: the old one is removed there (a folder as one trash item), then the new one follows.
 - **Names**: one the cloud can't take (a backslash, a control character) is never sent and is listed once as not
-  synced; one a Windows computer can't have (`<>:"|?*`, a trailing dot or space, CON, NUL, COM1 …) syncs with a
-  warning. An upload the cloud refuses (a 4xx) waits until the file changes.
+  synced; one a Windows computer can't have (`<>:"|?*`, a trailing dot or space, CON, NUL, COM1 …, also with an
+  extension) syncs with a warning on Linux and macOS, and is left alone on Windows (never downloaded, uploaded or
+  taken as deleted; listed once as not synced). One rule decides both (`core::names::windows_trouble`, through
+  `names::Platform`). On Windows, cloud names that differ only in case are held, all but the one the computer has.
+  An upload the cloud refuses (a 4xx) waits until the file changes.
 - **Never synced**: lock, swap and temporary files of apps and editors (`.~lock.*#`, `~$*`, `*.swp`, `.#*`, `#*#`, `*~`, `*.tmp`, `.DS_Store`,
   `Thumbs.db`, `desktop.ini`, …; the list is `core::names::ignored`). Symbolic links are not followed and are
   listed once as not synced. File permissions (the executable bit) are not synced: OxiCloud keeps none.
 - **An interrupted download** resumes where it stopped (HTTP `Range`) when the cloud still has the same version.
+  Any other failed download removes its part file, and part files older than a day are cleaned up.
 - **Mass deletes wait** for a decision (delete them, or bring the files back) while everything else syncs.
 - **A missing sync folder** (moved, deleted, an unplugged drive) holds the sync; it is never made again on its own,
   only when the person chooses "Download everything again" (or sets the client up again).

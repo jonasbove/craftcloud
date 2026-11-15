@@ -1,6 +1,28 @@
 //! File names the sync has to be careful with: names it never syncs ([`ignored`]), names the
-//! server can't take (never uploaded, said once), and names another computer can't have
-//! (Windows), which still sync but are flagged.
+//! server can't take (never uploaded, said once), and names Windows can't have
+//! ([`windows_trouble`]): left alone by a Windows client ([`Platform::Windows`]), flagged but
+//! synced by the others. Two cloud names one Windows folder can't hold apart ([`clashes`]) are
+//! held there too.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+/// The kind of computer the sync runs on, for the rules that differ by file system. A parameter
+/// rather than a `cfg`, so both sets of rules are tested everywhere.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Platform {
+    /// Windows: no `< > : " | ? *`, no name ending in a dot or a space, no reserved device
+    /// names, and names that differ only in case are one file.
+    Windows,
+    /// Linux, macOS and the rest: any name the cloud takes.
+    Other,
+}
+
+impl Platform {
+    /// The computer this program is built for.
+    pub const fn current() -> Self {
+        if cfg!(windows) { Self::Windows } else { Self::Other }
+    }
+}
 
 /// Whether a file or folder name is never synced (in either direction), wherever it is:
 ///
@@ -36,10 +58,93 @@ pub fn ignored_always(name: &str) -> bool {
 /// always-ignored folder, an always-ignored name, or a FILE with a temporary-looking name. The
 /// local scan, the cloud listing and the saved state all go through this one rule, so an ignored
 /// name is never downloaded, never uploaded, and never counts as "deleted here".
-pub fn skipped(path: &str, is_file: bool) -> bool {
+///
+/// On Windows it also leaves alone every path with a name Windows can't have
+/// ([`local_refuses`]), file or folder: such a name can't be made here, so it is never
+/// downloaded, and must never read as "deleted here" either.
+pub fn skipped(path: &str, is_file: bool, platform: Platform) -> bool {
     let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let Some((last, parents)) = parts.split_last() else { return false };
-    parents.iter().any(|s| ignored_always(s)) || ignored_always(last) || (is_file && temporary(last))
+    parents.iter().any(|s| ignored_always(s))
+        || ignored_always(last)
+        || (is_file && temporary(last))
+        || parts.iter().any(|s| local_refuses(s, platform).is_some())
+}
+
+/// Why this computer can't have this name (one path segment), if it can't: on Windows, whatever
+/// [`windows_trouble`] says (the same rule the other computers warn with); elsewhere nothing.
+pub fn local_refuses(name: &str, platform: Platform) -> Option<&'static str> {
+    match platform {
+        Platform::Windows => windows_trouble(name),
+        Platform::Other => None,
+    }
+}
+
+/// The first place in a cloud path this computer can't have (`Weird/trailing./a.txt` →
+/// `Weird/trailing.`), with why.
+pub fn local_refused_in(path: &str, platform: Platform) -> Option<(&str, &'static str)> {
+    let mut end = 0;
+    for segment in path.split('/') {
+        end += segment.len();
+        if let Some(why) = local_refuses(segment, platform) {
+            return Some((&path[..end], why));
+        }
+        end += 1;
+    }
+    None
+}
+
+/// What a path is called on this computer's file system, for telling whether two cloud names
+/// would be one file here: on Windows, case doesn't count (`Report.txt` is `report.txt`).
+pub fn same_file_key(path: &str, platform: Platform) -> String {
+    match platform {
+        Platform::Windows => path.chars().flat_map(char::to_lowercase).collect(),
+        Platform::Other => path.to_owned(),
+    }
+}
+
+/// Cloud places this computer can't keep apart (on Windows: names that differ only in case,
+/// `Docs/Report.txt` and `Docs/report.txt`), each with the name it clashes with.
+///
+/// Of each such group only the one this computer already has (`here`, by its exact name) keeps
+/// syncing; the others are held, and when none is here, all of them are. Only the top-most place
+/// is returned (a held folder holds everything in it). `cloud` is every cloud file and folder
+/// path; their parent folders count too.
+pub fn clashes<'a>(cloud: impl IntoIterator<Item = &'a str>, here: impl Fn(&str) -> bool, platform: Platform) -> BTreeMap<String, String> {
+    let mut held: BTreeMap<String, String> = BTreeMap::new();
+    if platform == Platform::Other {
+        return held;
+    }
+    // Every place, by depth, so a folder is settled before what is in it.
+    let mut by_depth: BTreeMap<usize, BTreeSet<String>> = BTreeMap::new();
+    for path in cloud {
+        let mut end = 0;
+        for (depth, segment) in path.split('/').enumerate() {
+            end += segment.len();
+            by_depth.entry(depth).or_default().insert(path[..end].to_owned());
+            end += 1;
+        }
+    }
+    for places in by_depth.values() {
+        let mut groups: BTreeMap<String, Vec<&String>> = BTreeMap::new();
+        for place in places {
+            let inside_held = held.keys().any(|h| place.strip_prefix(h.as_str()).is_some_and(|rest| rest.starts_with('/')));
+            if !inside_held {
+                groups.entry(same_file_key(place, platform)).or_default().push(place);
+            }
+        }
+        for group in groups.into_values().filter(|g| g.len() > 1) {
+            let keeper = group.iter().find(|p| here(p.as_str()));
+            for place in &group {
+                if Some(place) == keeper {
+                    continue;
+                }
+                let other = keeper.or_else(|| group.iter().find(|p| *p != place)).map_or_else(String::new, |p| (*p).clone());
+                held.insert((*place).clone(), other);
+            }
+        }
+    }
+    held
 }
 
 /// A FILE name that looks like an app's temporary, lock or backup file (not synced; shown as
@@ -74,8 +179,14 @@ pub fn refused_in(path: &str) -> Option<(&str, &'static str)> {
     path.split('/').find_map(|segment| server_refuses(segment).map(|why| (segment, why)))
 }
 
-/// Why Windows can't have this name (one path segment), if it can't: it still syncs here and in
-/// the cloud, but a Windows computer syncing the same folder can't make it.
+/// Why Windows can't have this name (one path segment), if it can't. A Windows client leaves it
+/// alone ([`local_refuses`]); the others sync it and warn that a Windows computer can't.
+///
+/// Reserved device names count with an extension too (`CON.txt`, `nul.log`): Windows 11 lets
+/// most programs make them, but Windows 10, older programs and some Explorer actions still take
+/// them for the device, so a file of that name could be made on one Windows computer and be
+/// unreadable or undeletable on the next. Leaving it in the cloud is the side that can be undone
+/// (rename it, and it syncs).
 pub fn windows_trouble(name: &str) -> Option<&'static str> {
     if name.contains(['<', '>', ':', '"', '|', '?', '*']) {
         return Some("Windows can't have < > : \" | ? * in a name");
@@ -126,6 +237,8 @@ mod tests {
             ".craftcloud",
             ".report.1234-1.craft_tmp",
             ".a.docx.craftcloud-part",
+            ".trailing..44c77418e27569db-1794748821.craftcloud-part",
+            ".ccpart-0123456789abcdef01234567.craftcloud-part",
             "x.part",
             "~WRL0001.tmp",
             "~$report.docx",
@@ -171,6 +284,50 @@ mod tests {
         }
         assert_eq!(refused_in("Docs/a\\b/c.txt").map(|(s, _)| s), Some("a\\b"));
         assert_eq!(refused_in("Docs/ok.txt"), None);
+    }
+
+    /// The Windows test names: what a Windows client leaves alone is exactly what the others warn
+    /// about, and the others keep syncing it.
+    #[test]
+    fn windows_leaves_alone_what_the_others_warn_about() {
+        use super::{Platform, local_refused_in, local_refuses, skipped};
+        let weird = ["Weird/a:b.txt", "Weird/what?.md", "Weird/CON.txt", "Weird/trailing.", "Weird/trailing ", "Weird/con", "Weird/Nul.log"];
+        for path in weird {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            assert!(windows_trouble(name).is_some(), "{path}: warned about");
+            assert_eq!(local_refuses(name, Platform::Windows), windows_trouble(name), "{path}: the same rule on Windows");
+            assert!(skipped(path, true, Platform::Windows), "{path}: left alone on Windows");
+            assert!(!skipped(path, true, Platform::Other), "{path}: synced elsewhere");
+            assert_eq!(local_refuses(name, Platform::Other), None, "{path}");
+        }
+        // A folder Windows can't have holds everything in it, on Windows only.
+        assert!(skipped("Weird/trailing./inside.txt", true, Platform::Windows));
+        assert!(skipped("Weird/what?", false, Platform::Windows));
+        assert!(!skipped("Weird/trailing./inside.txt", true, Platform::Other));
+        assert_eq!(local_refused_in("Weird/trailing./inside.txt", Platform::Windows).map(|(p, _)| p), Some("Weird/trailing."));
+        assert_eq!(local_refused_in("Weird/trailing./inside.txt", Platform::Other), None);
+        for fine in ["Weird/trailing", "Weird/CONFIG.sys", "Weird/notes.md"] {
+            assert!(!skipped(fine, true, Platform::Windows), "{fine}");
+        }
+    }
+
+    #[test]
+    fn names_windows_cant_keep_apart_are_held() {
+        use super::{Platform, clashes};
+        let cloud = ["Docs", "Docs/Report.txt", "Docs/report.txt", "Docs/other.txt", "Weird", "Weird/trailing"];
+        // This computer has `Docs/Report.txt`: it keeps syncing, the other one is held.
+        let here = |p: &str| ["Docs", "Docs/Report.txt"].contains(&p);
+        let held = clashes(cloud, here, Platform::Windows);
+        assert_eq!(held.into_iter().collect::<Vec<_>>(), [("Docs/report.txt".to_owned(), "Docs/Report.txt".to_owned())]);
+        // Neither is here yet: both are held, so neither lands on the other.
+        let held = clashes(cloud, |_| false, Platform::Windows);
+        assert_eq!(held.keys().collect::<Vec<_>>(), ["Docs/Report.txt", "Docs/report.txt"]);
+        // Folders: the held one holds what's in it; what's in the kept one still syncs.
+        let cloud = ["Photos", "Photos/a.jpg", "photos", "photos/a.jpg", "photos/b.jpg"];
+        let held = clashes(cloud, |p| p == "Photos", Platform::Windows);
+        assert_eq!(held.keys().collect::<Vec<_>>(), ["photos"]);
+        // Elsewhere case counts: nothing clashes.
+        assert!(clashes(["Docs/Report.txt", "Docs/report.txt"], |_| false, Platform::Other).is_empty());
     }
 
     #[test]

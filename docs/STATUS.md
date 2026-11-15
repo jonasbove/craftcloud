@@ -40,6 +40,12 @@ on Linux for every push to `main` and every pull request. The live tests need a 
   debug build, until a console build ships.
 - **Windows: the tray's Show doesn't bring back a minimized window.** Seen on a Windows 11 VM; click the taskbar
   button instead. The idle CPU cost of an open window there is still to be measured on real hardware.
+- **Names Windows can't have don't sync to a Windows computer.** A cloud name with `< > : " | ? *`, a trailing dot
+  or space, or a reserved name (`CON`, `NUL.txt`, `COM1.log`, also with an extension) stays in the cloud there and
+  is reported once; Linux and macOS sync it and warn. Cloud names that differ only in case are held on Windows
+  except the one the computer already has. macOS is usually case-insensitive too, but has no such check yet: there
+  the download guard keeps the second name from replacing the first, and it is retried each pass. Checked by unit
+  tests on Linux with the Windows rules (`names::Platform`); not yet on Windows itself.
 - **A file saved in the last two seconds waits for the next pass** (an app may still be writing it).
   `craftcloud sync --once` waits that out once and syncs it in a second pass; a file still being written after
   that is listed as `waiting` (and in the headline), and the exit code stays 0.
