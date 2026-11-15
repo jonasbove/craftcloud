@@ -13,6 +13,7 @@
 
 let
   cfg = config.services.craftcloud;
+  pgReady = if config.systemd.services ? postgresql-setup then "postgresql-setup.service" else "postgresql.service";
 in
 {
   options.services.craftcloud = {
@@ -24,6 +25,23 @@ in
       description = ''
         The image to run. The `-apps` tag bundles the Craft web apps. A plain-HTTP registry needs
         `virtualisation.docker.daemon.settings.insecure-registries` (or podman's registries.conf).
+      '';
+    };
+
+    imageFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.package;
+      default = null;
+      example = lib.literalExpression ''
+        pkgs.dockerTools.pullImage {
+          imageName = "ghcr.io/jonasbove/craftcloud";
+          imageDigest = "sha256:…";
+          hash = "sha256-…";
+          finalImageTag = "0.1.0";
+        }
+      '';
+      description = ''
+        The image as a file in the Nix store, loaded instead of pulled from a registry (a machine
+        without registry access; the flake's VM test). Its name and tag must match `image`.
       '';
     };
 
@@ -88,8 +106,11 @@ in
     # Give the database user the password from the environment file, and the extensions.
     systemd.services.craftcloud-db-setup = {
       description = "CraftCloud: database password and extensions";
-      after = [ "postgresql.service" ];
-      requires = [ "postgresql.service" ];
+      # NixOS 25.11 and later create the database and the user (ensureDatabases, ensureUsers) in
+      # postgresql-setup, after postgresql.service is up; before it has run, "database craftcloud
+      # does not exist". Older NixOS does it in postgresql.service itself.
+      after = [ pgReady ];
+      requires = [ pgReady ];
       before = [ "${config.virtualisation.oci-containers.backend}-craftcloud.service" ];
       wantedBy = [ "multi-user.target" ];
       serviceConfig = {
@@ -112,6 +133,7 @@ in
 
     virtualisation.oci-containers.containers.craftcloud = {
       image = cfg.image;
+      inherit (cfg) imageFile;
       # Host networking: the container reaches PostgreSQL on 127.0.0.1, and Caddy inside listens
       # on listenAddress:port directly.
       extraOptions = [ "--network=host" ];
