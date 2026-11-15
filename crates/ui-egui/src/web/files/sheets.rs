@@ -44,6 +44,8 @@ pub enum Sheet {
     RestoreTaken(Box<Item>),
     /// A file's kept versions.
     Versions(Box<super::versions::History>),
+    /// Make a share link (drawn by [`super::share`]).
+    Share(Box<super::share::ShareSheet>),
 }
 
 enum Choice {
@@ -55,6 +57,10 @@ enum Choice {
 
 impl Files {
     pub(super) fn sheet_ui(&mut self, ui: &mut Ui, area: Rect, backend: &mut dyn Backend) {
+        if matches!(self.sheet, Some(Sheet::Share(_))) {
+            self.share_ui(ui, area, backend);
+            return;
+        }
         let t = Tokens::get(ui.ctx());
         let busy = self.net.is_waiting(&Key::Sheet);
         let error = self.sheet_error.clone();
@@ -84,6 +90,7 @@ impl Files {
             Sheet::EmptyTrash => ("Empty the trash?".into(), "Trash".into(), egui::vec2(520.0, 280.0)),
             Sheet::RestoreTaken(item) => (format!("“{}” is already there", item.name), item.path.clone(), egui::vec2(560.0, 320.0)),
             Sheet::Versions(h) => (format!("Versions of {}", h.item.name), super::versions::place(&h.item.path), egui::vec2(720.0, 600.0)),
+            Sheet::Share(_) => return,
         };
         let mut open_folder: Option<usize> = None;
         let mut up_to: Option<usize> = None;
@@ -182,6 +189,7 @@ impl Files {
                 }
                 (Sheet::Versions(h), chrome::Part::Body) => version_pick = super::versions::body(ui, h, clock),
                 (Sheet::Versions(_), chrome::Part::ActionsLeft) => {}
+                (Sheet::Share(_), chrome::Part::Body) => {}
                 (Sheet::Clash { .. }, chrome::Part::ActionsLeft) => {
                     if chrome::button(ui, "Skip", ButtonKind::Secondary, None, true).clicked() {
                         choice = Choice::Other(2);
@@ -240,6 +248,7 @@ impl Files {
                             choice = Choice::Cancel;
                         }
                     }
+                    Sheet::Share(_) => {}
                 },
                 (_, chrome::Part::HeroRight) => {}
             },
@@ -355,7 +364,7 @@ impl Files {
                 let after = Self::history_gone(self.trash_all.iter().map(|i| i.path.clone()));
                 self.change_then(backend, vec![req], "Emptied the trash".into(), None, after);
             }
-            Some(other @ (Sheet::Clash { .. } | Sheet::Versions(_))) => self.sheet = Some(other),
+            Some(other @ (Sheet::Clash { .. } | Sheet::Versions(_) | Sheet::Share(_))) => self.sheet = Some(other),
             None => {}
         }
     }

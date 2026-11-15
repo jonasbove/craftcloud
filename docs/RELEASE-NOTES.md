@@ -2,6 +2,65 @@
 
 ## Unreleased
 
+- **Windows: the command line prints in a terminal** (#4). `craftcloud status` in Command Prompt or PowerShell
+  showed nothing, because `craftcloud.exe` is a GUI program. The MSI and the portable zip now also hold
+  `craftcloud.com`, a console program that runs `craftcloud.exe` and shows its output; both shells pick the `.com`
+  when you type `craftcloud`. The MSI adds its folder to your PATH (for you only): open a new terminal after
+  updating. Scripts that read the output through a pipe or a file work as before.
+- **Windows: uninstalling turns off start at login.** The MSI used to leave the "Start at login" entry behind,
+  starting a program that was no longer there. Uninstalling now removes it (and takes the folder off PATH); an
+  update keeps it. If you uninstalled an earlier version with start at login on, remove the leftover entry with
+  `reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v CraftCloud /f` (or turn it off in Task Manager › Startup apps).
+
+- **Server: sign-in cookies follow the public address.** When `CRAFTCLOUD_PUBLIC_URL` starts with `https://`, the
+  sign-in cookies are marked Secure on their own; `OXICLOUD_COOKIE_SECURE` is now needed only to override that.
+  `.env.example` no longer sets it to `false`: if your `.env` was copied from an older one and you serve CraftCloud
+  over https, delete the `OXICLOUD_COOKIE_SECURE=false` line (or set it to `true`).
+- **Server: https stays https.** When `CRAFTCLOUD_PUBLIC_URL` starts with `https://`, every answer carries
+  `Strict-Transport-Security: max-age=15552000` (180 days, this host only, no preload), so browsers keep using https
+  for your CraftCloud. On plain http nothing changes. If your reverse proxy already sends this header, browsers see
+  it twice with the same meaning; you can drop it there.
+- **Server: stricter settings writes.** A change to the server settings (Admin › Server) is refused with 413 above
+  4 KiB, and with 400 when it carries a field other than `web_apps` and `disabled_apps`, instead of ignoring it.
+  The web frontend sends only those two, so nothing changes for people using it; a script that writes the settings
+  must send just these fields.
+- **Sync on Windows: names Windows can't have are left alone. Upgrade all devices together.** A Windows computer
+  no longer tries to download a cloud file or folder whose name Windows can't have (`< > : " | ? *`, a name that
+  ends in a dot or a space, or a reserved name such as `CON`, `NUL.txt` or `COM1.log`): it stays in the cloud, is
+  never taken as deleted, and the activity list says so once instead of failing on every pass. Linux and macOS keep
+  syncing these names and warn, as before. Two cloud names that differ only in upper and lower case (`Report.txt`,
+  `report.txt`) can't both live in one Windows folder: the one the computer already has keeps syncing and the
+  other is held in the cloud until one is renamed. A `CON.txt` an older Windows client made stays on that computer
+  but no longer syncs; rename it to sync it. This changes what the sync skips, so update every Windows computer
+  together: an older one keeps retrying these names.
+- **Sync: a failed download leaves no part file.** A download that couldn't be put in place used to leave its
+  hidden `.<name>.<version>.craftcloud-part` file in the sync folder. It is removed now on every failure but a
+  broken-off transfer (kept to resume from), and part files left for more than a day (after a crash) are cleaned up.
+
+## 0.1.1
+
+Fixes for 0.1.0. **Update the server and every desktop client.** The sync fix (a file being saved is never
+overwritten) protects only the devices that run 0.1.1, so update them all. Nothing in your settings or data needs
+changing.
+
+- **`craftcloud open` hands over and returns.** The app it opens no longer inherits the command's output, so a
+  script that reads that output (`path=$(craftcloud open …)`) gets it at once instead of waiting until the app
+  quits (#6). On Windows it prints and opens the usual `C:\…` form of the path instead of `\\?\C:\…` (#5).
+- **Server: files opened in the browser stay files.** HTML, SVG and XML that people store are served with a
+  sandbox policy, so they never run as pages on your CraftCloud's address. WebDAV names with a backslash are refused
+  (as the desktop client already does).
+- **Sync: a file you're saving is never overwritten.** A file changed in the last two seconds waits for the next
+  pass instead of looking unchanged, so a change made in the cloud at the same time now ends in a conflict copy
+  rather than replacing your edit (#36). A download also checks the local file one last time before replacing it.
+- **`craftcloud sync --once` no longer says "up to date" while a file waits.** A file written in the two seconds
+  before it ran was held for the next pass, yet the result said `up_to_date` (#15). Now `--once` waits those two
+  seconds once and syncs the file in a second pass; anything still being written after that is listed in the new
+  `waiting` field (also in `status --json`) and in the headline ("1 file is still being saved"). The exit code
+  stays 0: the file waits for time, not for you.
+- **Desktop notifications on Linux** for a conflict, a sign-in that ran out and a sync that can't go on; clicking
+  one opens the window. **Starting CraftCloud again while it runs** (from the app launcher, say, after closing the
+  window) shows its window instead of starting a second copy that couldn't sync. A device removed on the server
+  now shows "Signed out" (sign in again) instead of the error "Session not found".
 - **Building the server image yourself on an arm64 machine works** (a Raspberry Pi, an Apple Silicon Mac):
   `docker compose build` stopped in the web frontend step there. The published images were not affected.
 

@@ -4,6 +4,8 @@
   #   nix run github:jonasbove/craftcloud                                       # the desktop client
   #   nix develop                                                                # a shell for cargo
   #   nixosModules.default                                                       # services.craftcloud (server)
+  #   homeManagerModules.default                                                 # programs.craftcloud (desktop client)
+  #   nix build .#checks.x86_64-linux.vm-sync -L                                 # the server module and a client, in VMs
   description = "CraftCloud: desktop client, server module and tools";
 
   inputs = {
@@ -13,13 +15,22 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Only for the Home Manager module's check; a user's own Home Manager evaluates the module.
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay }:
+  outputs = { self, nixpkgs, flake-utils, rust-overlay, home-manager }:
     {
       # The server: the CraftCloud image plus NixOS's PostgreSQL (nix/module.nix).
       nixosModules.default = import ./nix/module.nix;
       nixosModules.craftcloud = self.nixosModules.default;
+
+      # The desktop client for Home Manager (nix/home-manager.nix).
+      homeManagerModules.default = import ./nix/home-manager.nix self;
+      homeManagerModules.craftcloud = self.homeManagerModules.default;
     } //
     flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (system:
       let
@@ -136,5 +147,40 @@
             }
           ];
         }).config.system.build.toplevel;
+
+        # The server module in a VM, and a second VM signing in and syncing a file each way
+        # (nix/vm-test.nix).
+        checks.vm-sync = import ./nix/vm-test.nix {
+          inherit pkgs;
+          serverModule = self.nixosModules.default;
+          client = self.packages.${system}.default;
+        };
+
+        # The Home Manager module must evaluate and write what it promises: the client installed,
+        # the client's own autostart entry with --hidden, and the craftcloud:// default. Nothing
+        # is built (the package is only named).
+        checks.home-manager =
+          let
+            home = (home-manager.lib.homeManagerConfiguration {
+              inherit pkgs;
+              modules = [
+                self.homeManagerModules.default
+                {
+                  home.username = "john";
+                  home.homeDirectory = "/home/john";
+                  home.stateVersion = "25.11";
+                  programs.craftcloud = { enable = true; startAtLogin = true; };
+                }
+              ];
+            }).config;
+            entry = home.xdg.configFile."autostart/io.github.jonasbove.craftcloud.desktop";
+          in
+          assert builtins.elem self.packages.${system}.default home.home.packages;
+          assert lib.hasInfix "Exec=\"craftcloud\" --hidden\n" entry.text;
+          assert home.xdg.mimeApps.enable;
+          assert home.xdg.mimeApps.defaultApplications."x-scheme-handler/craftcloud" == [ "io.github.jonasbove.craftcloud.desktop" ];
+          # Forces the whole configuration to evaluate without building it.
+          pkgs.writeText "craftcloud-home-manager-check"
+            (builtins.unsafeDiscardStringContext home.home.activationPackage.drvPath);
       });
 }

@@ -1,7 +1,9 @@
 ## What and why
 
 <!-- What does this change, and why? Link the issue if there is one. The title is the commit
-message: plain English, what changed for the person or developer. -->
+message: plain English, what changed for the person or developer. A gitmoji in front is added for
+you if it is missing. An automated review by Claude follows as a comment; a maintainer decides on
+merging. -->
 
 ## How it was tested
 

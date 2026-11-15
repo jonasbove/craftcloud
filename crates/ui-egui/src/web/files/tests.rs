@@ -914,6 +914,17 @@ fn the_details_more_button_opens_the_files_menu() {
 }
 
 #[test]
+fn the_details_share_button_opens_the_share_sheet_for_that_file() {
+    let mut h = report_details();
+    h.get_by_label("SHARE…").click();
+    h.run();
+    match &h.state().files.sheet {
+        Some(super::Sheet::Share(s)) => assert_eq!(s.item.id, "f1"),
+        other => panic!("expected the share sheet, got {other:?}"),
+    }
+}
+
+#[test]
 fn the_details_star_stars_the_file() {
     let mut h = report_details();
     h.get_by_label("Star").click();
@@ -984,4 +995,176 @@ fn a_hostile_name_and_history_stay_inside_the_details() {
     h.state_mut().backend.answer(&format!("/webdav/{history}"), Ok(HttpResponse::new(207, odd)));
     h.run();
     h.get_by_label("CURRENT");
+}
+
+// ─── Share links (#18) ──────────────────────────────────────────────────────────────────────────
+
+/// Files with "Q3 report.docx" and the folder "Reports", at 2026-11-14 13:32 UTC, seen at UTC+1.
+fn sharing() -> App {
+    let mut h = files_page(&[file("f1", "Q3 report.docx", 248_000), folder("d1", "Reports")]);
+    h.state_mut().backend.wall = Some(crate::backend::WallClock { unix: 1_794_663_120.0, utc_offset_minutes: 60 });
+    h.run();
+    h
+}
+
+fn share_body(h: &App) -> Value {
+    let req = h.state().backend.last_to("/api/shares");
+    assert_eq!(req.method, Method::Post);
+    serde_json::from_slice(&req.body).unwrap()
+}
+
+fn share_sheet(h: &mut App) -> &mut super::share::ShareSheet {
+    match &mut h.state_mut().files.sheet {
+        Some(super::Sheet::Share(s)) => s,
+        other => panic!("no share sheet: {other:?}"),
+    }
+}
+
+#[test]
+fn the_menu_shares_a_file_for_seven_days() {
+    let mut h = sharing();
+    h.get_by_label("More for Q3 report.docx").click();
+    h.run();
+    h.get_by_label("Share link…").click();
+    h.run();
+    h.get_by_label("Share link");
+    h.get_by_label("DOCX document · 248 KB · in My files");
+    h.get_by_label("The link stops working on 21 Nov 2026 at 14:32.");
+    h.get_by_label("CREATE LINK").click();
+    h.run();
+    assert_eq!(
+        share_body(&h),
+        json!({"item_id": "f1", "item_type": "file", "item_name": "Q3 report.docx", "expires_at": "2026-11-21T13:32:00Z"}),
+        "seven days by default, as the command line's --expires 7d"
+    );
+    h.state_mut().backend.answer("/api/shares", Ok(HttpResponse::new(201, fixture("share-create.json"))));
+    h.run();
+    h.get_by_label("Link ready");
+    let url = "http://127.0.0.1:8095/s/aeddf06a-4200-4b05-ad1c-272cf305e350";
+    h.get_by_label(url);
+    h.get_by_label("On · it isn't shown again");
+    assert!(h.state().files.items.iter().any(|i| i.id == "f1" && i.shared), "the list marks it shared");
+    h.get_by_label("COPY").click();
+    h.step();
+    let copied = h.output().platform_output.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == url));
+    assert!(copied, "the link goes to the clipboard");
+    h.run();
+    h.get_by_label("COPIED");
+    h.get_by_label("Link copied");
+    h.get_by_label("DONE").click();
+    h.run();
+    assert!(h.state().files.sheet.is_none());
+}
+
+#[test]
+fn the_selection_shares_a_folder_and_every_expiry_is_sent_as_oxicloud_takes_it() {
+    let mut h = sharing();
+    h.get_by_label("Reports").click();
+    h.run();
+    h.get_by_label("SHARE").click();
+    h.run();
+    h.get_by_label("Folder · in My files");
+    let create = |h: &mut App, cell: &str| -> Value {
+        h.get_by_label(cell).click();
+        h.run();
+        match h.query_by_label("CREATE LINK") {
+            Some(button) => button.click(),
+            None => h.get_by_label("TRY AGAIN").click(),
+        }
+        h.run();
+        let body = share_body(h);
+        // Refused, so the form stays for the next choice.
+        h.state_mut().backend.answer("/api/shares", Ok(HttpResponse::new(500, br#"{"error":"Internal error"}"#.to_vec())));
+        h.run();
+        body
+    };
+    let never = create(&mut h, "NEVER");
+    assert_eq!(never, json!({"item_id": "d1", "item_type": "folder", "item_name": "Reports"}), "no expires_at: the link never ends");
+    assert_eq!(create(&mut h, "1 DAY")["expires_at"], "2026-11-15T13:32:00Z");
+    assert_eq!(create(&mut h, "7 DAYS")["expires_at"], "2026-11-21T13:32:00Z");
+    assert_eq!(create(&mut h, "30 DAYS")["expires_at"], "2026-12-14T13:32:00Z");
+    // On a date: the picker opens at this month; past days can't be picked.
+    h.get_by_label("ON A DATE…").click();
+    h.run();
+    h.get_by_label("Past days can't be picked.");
+    assert!(egui_kittest::kittest::NodeT::accesskit_node(&h.get_by_label("13 Nov 2026")).is_disabled());
+    h.get_by_label("28 Nov 2026").click();
+    h.run();
+    h.get_by_label("The link stops working at the end of 28 Nov 2026.");
+    h.get_by_label("TRY AGAIN").click();
+    h.run();
+    assert_eq!(share_body(&h)["expires_at"], "2026-11-28T23:00:00Z", "the end of that day where the person is (UTC+1)");
+}
+
+#[test]
+fn the_password_is_sent_but_shown_only_on_show() {
+    let mut h = sharing();
+    h.get_by_label("Q3 report.docx").click();
+    h.run();
+    h.get_by_label("SHARE").click();
+    h.run();
+    share_sheet(&mut h).password.0 = "maple-harbour-41".into();
+    h.run();
+    assert!(h.query_by_value("maple-harbour-41").is_none(), "hidden, also from screen readers");
+    h.get_by_role(egui::accesskit::Role::PasswordInput);
+    h.get_by_label("SHOW").click();
+    h.run();
+    assert!(h.query_all_by_value("maple-harbour-41").next().is_some(), "shown as typed");
+    h.get_by_label("HIDE").click();
+    h.run();
+    assert!(h.query_by_value("maple-harbour-41").is_none());
+    h.get_by_label("CREATE LINK").click();
+    h.run();
+    let req = h.state().backend.last_to("/api/shares");
+    assert!(!req.url.contains("maple"), "never in a URL");
+    assert_eq!(share_body(&h)["password"], "maple-harbour-41");
+    assert!(!format!("{:?}", h.state().files.sheet).contains("maple"), "never in debug output");
+}
+
+#[test]
+fn a_late_answer_never_lands_in_another_items_sheet() {
+    let mut h = sharing();
+    h.get_by_label("More for Q3 report.docx").click();
+    h.run();
+    h.get_by_label("Share link…").click();
+    h.run();
+    h.get_by_label("CREATE LINK").click();
+    h.run();
+    h.get_by_label("CANCEL").click();
+    h.run();
+    h.get_by_label("More for Reports").click();
+    h.run();
+    h.get_by_label("Share link…").click();
+    h.run();
+    h.state_mut().backend.answer("/api/shares", Ok(HttpResponse::new(201, fixture("share-create.json"))));
+    h.run();
+    let s = share_sheet(&mut h);
+    assert_eq!((s.item.id.as_str(), s.created.is_none()), ("d1", true), "the folder's sheet still asks");
+    h.get_by_label("Share link");
+}
+
+#[test]
+fn a_refused_link_says_why_in_plain_words_and_keeps_the_form() {
+    let mut h = sharing();
+    h.get_by_label("More for Q3 report.docx").click();
+    h.run();
+    h.get_by_label("Share link…").click();
+    h.run();
+    h.get_by_label("30 DAYS").click();
+    h.run();
+    h.get_by_label("CREATE LINK").click();
+    h.run();
+    h.state_mut().backend.answer("/api/shares", Ok(HttpResponse::new(403, br#"{"error":"Access denied"}"#.to_vec())));
+    h.run();
+    h.get_by_label("NOT MADE");
+    h.get_by_label(
+        "The server didn't make the link: you don't have permission to share this file. Nothing was shared. Try again, or ask your admin.",
+    );
+    assert_eq!(share_sheet(&mut h).expiry, super::share::Expiry::Days(30), "what was chosen stays");
+    h.get_by_label("TRY AGAIN").click();
+    h.run();
+    assert_eq!(h.state().backend.sent_to("/api/shares"), 2);
+    h.state_mut().backend.answer("/api/shares", Err("connection refused".into()));
+    h.run();
+    h.get_by_label("The server couldn't be reached (connection refused). Nothing was shared. Try again.");
 }

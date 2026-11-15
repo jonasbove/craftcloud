@@ -1,7 +1,6 @@
 # Allow-list: only what the Dockerfile copies goes into the build context.
 *
 !apps.toml
-!scripts/fetch-apps
 !docker/
 !Cargo.toml
 !Cargo.lock

@@ -16,6 +16,17 @@
   The setup wizard is WiX's own (WixUI_InstallDir without the licence page: the code is MIT OR
   Apache-2.0, so there is nothing to accept). Its Finish page offers to start CraftCloud.
 
+  The command line: craftcloud.exe is a GUI program, so Windows gives it no console. Next to it,
+  craftcloud.com (apps/craftcloud-cli) is a console program that runs it with the same arguments
+  and passes its output through. Command Prompt and PowerShell try .com before .exe (PATHEXT), so
+  `craftcloud status` in a terminal runs craftcloud.com; the shortcut, the start at login and
+  craftcloud:// links name craftcloud.exe. The install folder goes at the end of the user's PATH
+  and comes off it on uninstall.
+
+  Uninstalling also removes the client's own "Start at login" value (HKCU\...\Run, CraftCloud,
+  written by crates/native/src/login.rs), which would otherwise start a deleted program. An update
+  keeps it.
+
   Per-user packages can't use a file as a component's KeyPath (ICE38), so each component is keyed
   on an HKCU value, and the folders it creates are removed on uninstall (ICE64).
 
@@ -85,6 +96,21 @@
     <Property Id="WixShellExecTarget" Value="[#CraftCloudExe]" />
     <!-- Runs in the wizard's own process, so CraftCloud starts as the person, not elevated. -->
     <CustomAction Id="LaunchCraftCloud" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixShellExec" Impersonate="yes" Return="ignore" />
+
+    <!-- "Start at login" is the client's own HKCU Run value, made when the person turns it on, so
+         no component owns it and Windows Installer would leave it behind. Remove it on an uninstall
+         only: when a newer version replaces this one (MajorUpgrade), this package is removed with
+         REMOVE="ALL" too, but with UPGRADINGPRODUCTCODE set, so an update keeps it. WixQuietExec runs reg.exe without a
+         window; Return="ignore", because the value is often not there. Deferred and impersonated,
+         so it runs as the person, in whose HKCU the value is. -->
+    <SetProperty Id="CraftCloudRemoveLoginStart" Sequence="execute" Before="CraftCloudRemoveLoginStart"
+        Value="&quot;[System64Folder]reg.exe&quot; delete &quot;HKCU\Software\Microsoft\Windows\CurrentVersion\Run&quot; /v CraftCloud /f" />
+    <CustomAction Id="CraftCloudRemoveLoginStart" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
+        Execute="deferred" Impersonate="yes" Return="ignore" />
+    <InstallExecuteSequence>
+      <Custom Action="CraftCloudRemoveLoginStart" Before="RemoveRegistryValues"
+          Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
   </Package>
 
   <Fragment>
@@ -98,6 +124,14 @@
         <RegistryValue Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\craftcloud.exe" Value="[#CraftCloudExe]" Type="string" />
         <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
         <RemoveFolder Id="RemoveLocalProgramsFolder" Directory="LocalProgramsFolder" On="uninstall" />
+      </Component>
+
+      <!-- The command line in a terminal: craftcloud.com, with the install folder on the user's
+           PATH (appended; uninstall takes off just that part). New terminals see it. -->
+      <Component Id="CraftCloudCommandLine" Directory="INSTALLFOLDER" Guid="5AA4BE4A-412A-40D7-8F1A-61EE5553C2EC">
+        <File Id="CraftCloudCom" Source="$(var.BinDir)\craftcloud.com" KeyPath="no" />
+        <Environment Id="CraftCloudPath" Name="PATH" Value="[INSTALLFOLDER]" Action="set" Part="last" System="no" Permanent="no" />
+        <RegistryValue Root="HKCU" Key="Software\CraftCloud" Name="CommandLine" Value="1" Type="integer" KeyPath="yes" />
       </Component>
 
       <!-- craftcloud:// links start this client (the values url_scheme.rs writes). -->

@@ -1,6 +1,7 @@
 //! The running desktop client's control channel, for `craftcloud status|sync|pause|resume`, for
 //! `craftcloud://` links opened while a client runs (the link is handed over, see [`send_link`]),
-//! and for `craftcloud files` (the synced files here, from the client's local view, see [`files`]).
+//! for `craftcloud files` (the synced files here, from the client's local view, see [`files`]), and
+//! for starting the app again while it runs in the tray (its window comes up, see [`show_window`]).
 //!
 //! The client listens on a loopback TCP port (any free one) and writes the port and a random
 //! secret to `control.json` in its settings folder, readable only by the user. A command connects,
@@ -52,6 +53,8 @@ pub enum Request {
         #[serde(default)]
         extensions: Vec<String>,
     },
+    /// Show the desktop client's window: the app was started again while it runs.
+    Show,
 }
 
 /// The client's state, as `craftcloud status --json` prints it.
@@ -91,6 +94,10 @@ pub struct Status {
     /// Doesn't change `state` or the exit code.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed: Vec<String>,
+    /// Files the last pass held because they were written moments before (an app may still be
+    /// saving them); the next pass syncs them. Doesn't change `state` or the exit code.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting: Vec<String>,
     /// The latest activity, oldest first.
     pub activity: Vec<Activity>,
 }
@@ -235,6 +242,7 @@ impl Status {
                 .collect(),
             no_room: p.no_room.clone(),
             failed: p.unsynced.iter().filter(|(_, s)| **s == craftcloud_core::sync::FileStatus::Error).map(|(path, _)| path.clone()).collect(),
+            waiting: p.waiting.clone(),
             activity: p.activity[skip..].iter().map(Activity::from).collect(),
         }
     }
@@ -293,6 +301,9 @@ pub struct Attached {
 
 pub type Slot = Arc<Mutex<Option<Attached>>>;
 
+/// Brings up the desktop client's window (asked for by [`Request::Show`]).
+pub type ShowWindow = Arc<dyn Fn() + Send + Sync>;
+
 /// Keeps the channel open; dropping it removes `control.json` (when it is still ours).
 pub struct Server {
     file: PathBuf,
@@ -309,6 +320,15 @@ impl Drop for Server {
 
 /// Starts listening for commands; `dir` is the settings folder.
 pub fn serve(dir: &Path, slot: Slot) -> Result<Server, String> {
+    serve_with(dir, slot, None)
+}
+
+/// [`serve`] for the desktop client, whose window [`Request::Show`] brings up.
+pub fn serve_window(dir: &Path, slot: Slot, show: ShowWindow) -> Result<Server, String> {
+    serve_with(dir, slot, Some(show))
+}
+
+fn serve_with(dir: &Path, slot: Slot, show: Option<ShowWindow>) -> Result<Server, String> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).map_err(|e| format!("can't open the control channel: {e}"))?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     let secret = new_secret();
@@ -320,8 +340,10 @@ pub fn serve(dir: &Path, slot: Slot) -> Result<Server, String> {
         .name("craftcloud-control".into())
         .spawn(move || {
             for stream in listener.incoming().flatten() {
-                let (slot, secret, tickets) = (Arc::clone(&slot), secret.clone(), Arc::clone(&tickets));
-                let _ = std::thread::Builder::new().name("craftcloud-control-conn".into()).spawn(move || answer(stream, &slot, &secret, &tickets));
+                let (slot, secret, tickets, show) = (Arc::clone(&slot), secret.clone(), Arc::clone(&tickets), show.clone());
+                let _ = std::thread::Builder::new()
+                    .name("craftcloud-control-conn".into())
+                    .spawn(move || answer(stream, &slot, &secret, &tickets, show.as_ref()));
             }
         })
         .map_err(|e| e.to_string())?;
@@ -336,7 +358,7 @@ fn new_secret() -> String {
         .collect()
 }
 
-fn answer(stream: TcpStream, slot: &Slot, secret: &str, tickets: &AtomicU64) {
+fn answer(stream: TcpStream, slot: &Slot, secret: &str, tickets: &AtomicU64, show: Option<&ShowWindow>) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let mut line = String::new();
     let Ok(read) = stream.try_clone() else { return };
@@ -344,7 +366,7 @@ fn answer(stream: TcpStream, slot: &Slot, secret: &str, tickets: &AtomicU64) {
         return;
     }
     let reply = match serde_json::from_str::<Envelope>(&line) {
-        Ok(env) if same(&env.secret, secret) => handle(&env.request, slot, tickets),
+        Ok(env) if same(&env.secret, secret) => handle(&env.request, slot, tickets, show),
         Ok(_) => Answer::error("refused: wrong secret"),
         Err(e) => Answer::error(format!("unreadable request: {e}")),
     };
@@ -368,7 +390,13 @@ fn same(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-fn handle(request: &Request, slot: &Slot, tickets: &AtomicU64) -> Answer {
+fn handle(request: &Request, slot: &Slot, tickets: &AtomicU64, show: Option<&ShowWindow>) -> Answer {
+    if *request == Request::Show {
+        // `craftcloud daemon` has no window: the sender starts its own.
+        let Some(show) = show else { return Answer::error("this CraftCloud has no window") };
+        show();
+        return Answer::status(Status::default());
+    }
     let attached = slot.lock().unwrap_or_else(PoisonError::into_inner).clone();
     if let Request::Link { url } = request {
         // Not syncing: the sender handles the link itself.
@@ -389,8 +417,8 @@ fn handle(request: &Request, slot: &Slot, tickets: &AtomicU64) -> Answer {
     };
     let snapshot = |a: &Attached| Status::from_progress(&a.progress.lock().unwrap_or_else(PoisonError::into_inner), &a.server, &a.local_folder);
     match request {
-        // (Links and file lists are answered above.)
-        Request::Status | Request::Link { .. } | Request::Files { .. } => {}
+        // (Links, file lists and Show are answered above.)
+        Request::Status | Request::Link { .. } | Request::Files { .. } | Request::Show => {}
         Request::Pause | Request::Resume => {
             let _ = a.commands.send(Command::Pause(matches!(request, Request::Pause)));
             let _ = a.commands.send(Command::SyncNow);
@@ -530,6 +558,12 @@ pub fn send_link(dir: &Path, url: &str) -> LinkHandoff {
     }
 }
 
+/// Asks the running desktop client to show its window; `false` when none takes it (none runs, or
+/// it is `craftcloud daemon` or a version that doesn't know the request).
+pub fn show_window(dir: &Path) -> bool {
+    matches!(exchange(dir, &Request::Show), Ok(Answer { error: None, .. }))
+}
+
 /// The synced files in the running client's local folder with one of these extensions (any case,
 /// with or without the dot; empty: all), from its local view: no server round trip.
 /// [`SendError::NotRunning`] when no client runs; [`SendError::Failed`] when it isn't signed in or
@@ -564,7 +598,7 @@ fn exchange(dir: &Path, request: &Request) -> Result<Answer, SendError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Attached, LinkHandoff, Request, SendError, Slot, files, send, send_link, serve};
+    use super::{Attached, LinkHandoff, Request, SendError, Slot, files, send, send_link, serve, serve_window, show_window};
     use crate::open::OpenError;
     use crate::sync::Command;
     use craftcloud_core::sync::{FileStatus, SyncPlan, SyncProgress, SyncState};
@@ -609,6 +643,26 @@ mod tests {
 
         let empty = tempfile::tempdir().unwrap();
         assert_eq!(send_link(empty.path(), link), LinkHandoff::NotTaken, "no client running");
+    }
+
+    #[test]
+    fn starting_again_shows_the_running_clients_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let shown = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&shown);
+        let show = Arc::new(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        let server = serve_window(dir.path(), Arc::new(Mutex::new(None)), show).unwrap();
+        assert!(show_window(dir.path()), "signed in or not, the window comes up");
+        assert_eq!(shown.load(std::sync::atomic::Ordering::SeqCst), 1);
+        drop(server);
+        assert!(!show_window(dir.path()), "none running: the new start opens its own window");
+
+        // `craftcloud daemon` has no window to show.
+        let _daemon = serve(dir.path(), Arc::new(Mutex::new(None))).unwrap();
+        assert!(!show_window(dir.path()));
+        assert_eq!(serde_json::to_value(Request::Show).unwrap(), serde_json::json!({"cmd": "show"}));
     }
 
     #[test]

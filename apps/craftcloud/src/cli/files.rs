@@ -3,7 +3,7 @@
 //! Bytes, folders, moves and copies go over WebDAV, by path; the trash, stars, recent and search
 //! are REST, by id (found by walking the path from the root).
 
-use std::io::{IsTerminal, Write as _};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use craftcloud_core::api::dav::{self, Uploaded, Write};
@@ -436,7 +436,7 @@ fn restore(remote: &mut Remote, found: &TrashItem, path: &str, to: Option<&str>,
 
 /// Asks yes/no on the terminal; without one, refuses (pass --yes).
 pub fn confirm(question: &str) -> Result<()> {
-    if !std::io::stdin().is_terminal() {
+    if !super::stdin_is_terminal() {
         return Err(CliError::usage(format!("{question} Pass --yes to confirm.")));
     }
     eprint!("{question} [y/N] ");

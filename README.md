@@ -14,6 +14,13 @@
   a small desktop client for Linux, Windows and macOS.
 </p>
 
+> [!CAUTION]
+> 🚧 **Early alpha: not ready for production.** CraftCloud hasn't had a security review and hasn't been tested
+> in real use for long. Don't put it on the open internet with anything you can't afford to lose or have seen,
+> and keep backups of everything in it. Try it on a private network, with test data. Report problems as
+> [issues](https://github.com/jonasbove/craftcloud/issues), and security problems privately, as
+> [SECURITY.md](SECURITY.md) says.
+
 <p align="center">
   <img alt="Written in Rust" src="https://img.shields.io/badge/written%20in-Rust-4a5e3a?style=flat-square&logo=rust&logoColor=white">
   <img alt="Server: Docker · NixOS" src="https://img.shields.io/badge/server-Docker%20%C2%B7%20NixOS-5e7a48?style=flat-square">
@@ -109,8 +116,8 @@ server.
 
 A Cargo workspace laid out like the ArtCraft Launcher: `crates/core` (the OxiCloud API and the sync decisions),
 `crates/native` (the sync engine, keychain and settings), `crates/ui-egui` (every screen, for both the client and
-the web), `apps/craftcloud` (desktop), `apps/craftcloud-web` (web), `apps/craftcloud-admin` (the image's settings
-service) and `xtask`. Inside the image, Caddy fronts OxiCloud, the web frontend and the optional Craft web apps.
+the web), `apps/craftcloud` (desktop), `apps/craftcloud-cli` (the command line for a Windows terminal),
+`apps/craftcloud-web` (web), `apps/craftcloud-admin` (the image's settings service) and `xtask`. Inside the image, Caddy fronts OxiCloud, the web frontend and the optional Craft web apps.
 Single sign-on with an OpenID Connect provider: [docs/OIDC.md](docs/OIDC.md).
 
 More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the OxiCloud gaps CraftCloud works around, and the upstream
@@ -138,7 +145,7 @@ docker compose up -d        # pulls ghcr.io/jonasbove/craftcloud (amd64 and arm6
 | `CRAFTCLOUD_PUBLIC_URL` | The address people type, e.g. `https://cloud.example.org` |
 | `CRAFTCLOUD_BIND` | `127.0.0.1` behind a reverse proxy; a LAN or VPN address to reach it directly |
 | `CRAFTCLOUD_HOST_PORT` | The host port (default `8086`) |
-| `OXICLOUD_COOKIE_SECURE` | `true` when served over HTTPS |
+| `OXICLOUD_COOKIE_SECURE` | Leave unset: sign-in cookies are marked Secure when `CRAFTCLOUD_PUBLIC_URL` starts with `https://`. Set `true` or `false` only to override that |
 | `CRAFTCLOUD_WEB_APPS` | `on` to run the Craft apps in the browser (needs the `-apps` image) |
 
 Then open the public URL and follow the setup, or create the owner from the terminal:
@@ -154,7 +161,7 @@ forwards to `CRAFTCLOUD_BIND:CRAFTCLOUD_HOST_PORT`.
 **Images:** every release publishes `ghcr.io/jonasbove/craftcloud:<ver>` and `:latest` (slim), and `:<ver>-apps`
 and `:latest-apps` with the Craft apps for the browser (about 770 MB to download, 2.1 GB on disk). The same
 images are on Docker Hub as `jonasbove/craftcloud` (`docker.io/jonasbove/craftcloud:<ver>`). To choose
-when you update, pin a version in `.env`: `CRAFTCLOUD_IMAGE=ghcr.io/jonasbove/craftcloud:0.1.0`. Each image
+when you update, pin a version in `.env`: `CRAFTCLOUD_IMAGE=ghcr.io/jonasbove/craftcloud:0.1.1`. Each image
 carries a signed build-provenance attestation:
 `gh attestation verify oci://ghcr.io/jonasbove/craftcloud:<ver> --repo jonasbove/craftcloud`.
 
@@ -197,11 +204,21 @@ inputs.craftcloud = {
 ```
 
 `image` defaults to `ghcr.io/jonasbove/craftcloud:latest`; set `services.craftcloud.image` to a pinned version
+(`ghcr.io/jonasbove/craftcloud:0.1.1`), the `-apps` image, or your own registry's.
 (`ghcr.io/jonasbove/craftcloud:0.1.0`), the `-apps` image, or your own registry's.
+`imageFile` loads the image from the Nix store instead of a registry (a `pkgs.dockerTools.pullImage` pinned by
+digest, for a machine that can't reach one).
+
+The flake's VM test boots this module in one virtual machine and a desktop client in another, signs the client in
+through the device flow and syncs a file each way (`nix/vm-test.nix`; it needs KVM):
+
+```sh
+nix build .#checks.x86_64-linux.vm-sync -L
+```
 
 ## Status
 
-CraftCloud is in **early alpha**: version 0.1.0 is the first release. [**docs/ROADMAP.md**](docs/ROADMAP.md) has
+CraftCloud is in **early alpha**: version 0.1.1 is the current release (fixes for 0.1.0, the first). [**docs/ROADMAP.md**](docs/ROADMAP.md) has
 where each part stands, the milestones and what's next; [docs/STATUS.md](docs/STATUS.md) what works, how it was
 checked, and the known limits.
 
@@ -212,6 +229,9 @@ single sign-on, the command line, and the `craftcloud` contract the Craft apps a
 **What's missing:**
 - code-signed desktop builds (macOS and Windows ask once before the first start);
 - opening cloud files in the Craft web apps in the browser, and a sheet to create share links on the web;
+- `craftcloud://` links on macOS (they need an Apple Event handler);
+- opening cloud files in the Craft web apps in the browser, and a page listing your share links on the web;
+- opening cloud files in the Craft web apps in the browser;
 - `craftcloud://` links on macOS (they need an Apple Event handler) and command-line output from Windows release
   builds;
 - files on demand (a [design](docs/FILES-ON-DEMAND.md) only).
@@ -232,8 +252,12 @@ The builds are **not code-signed** by Apple or Microsoft yet, so your system ask
 
 | File | What it is |
 |---|---|
-| `craftcloud-<ver>-windows-{x64,arm64}.msi` | Installer, for you only (no administrator rights). SmartScreen: **More info › Run anyway** |
-| `craftcloud-<ver>-windows-{x64,arm64}-portable.zip` | The same `craftcloud.exe`, to run without installing |
+| `craftcloud-<ver>-windows-{x64,arm64}.msi` | Installer, for you only (no administrator rights). SmartScreen: **More info › Run anyway**. Puts `craftcloud` on your PATH for new terminals |
+| `craftcloud-<ver>-windows-{x64,arm64}-portable.zip` | The same `craftcloud.exe` and `craftcloud.com`, to run without installing |
+
+On Windows, `craftcloud.exe` is the app and `craftcloud.com` is the command line for a terminal: typing
+`craftcloud status` in Command Prompt or PowerShell runs the `.com`, which shows the app's output
+([docs/CLI.md › Windows](docs/CLI.md#windows)). Uninstalling takes the folder off PATH again and turns off start at login.
 
 **macOS** (11 or later, Apple silicon and Intel)
 
@@ -259,9 +283,24 @@ cd craftcloud-<ver>-linux-x86_64
 ```
 
 CraftCloud then shows up in your app launcher. It lives in the tray (StatusNotifierItem): KDE, Xfce, Cinnamon and
-most desktops show it; on GNOME install the AppIndicator extension, on Hyprland or Sway add Waybar's `tray` module.
-**Settings › Start at login** writes an XDG autostart entry, which GNOME, KDE and Xfce run; on Hyprland use
-`exec-once = craftcloud --hidden` (Sway: `exec craftcloud --hidden`).
+most desktops show it; on GNOME install the AppIndicator extension. **Settings › Start at login** writes an XDG
+autostart entry, which GNOME, KDE and Xfce run. It tells you about conflicts, a sign-in that ran out and a sync
+that can't go on with a desktop notification; clicking one opens the window.
+
+**Hyprland and Sway** have no tray of their own: your bar's tray module is the tray host (Waybar's `tray`, Wayle's
+`systray`, …), and notifications need a notification service (mako, dunst, SwayNC, or one built into the bar).
+Then a left click on the icon opens the window and a right click its menu. Closing the window (Hyprland's
+`killactive`, Sway's `kill`) leaves CraftCloud syncing in the tray; starting it again from the launcher brings the
+window back instead of starting a second copy. These compositors run XDG autostart entries only through a
+session manager that does (UWSM, or systemd's `xdg-desktop-autostart.target`); otherwise start it from the
+compositor's config, which opens no window and shows the icon once the bar is up, whichever starts first:
+
+```sh
+exec-once = craftcloud --hidden     # ~/.config/hypr/hyprland.conf
+exec craftcloud --hidden            # ~/.config/sway/config
+```
+
+If both start it, the second start sees the first and ends.
 
 FreeBSD (`craftcloud-<ver>-freebsd-{x86_64,aarch64}.tar.gz`) and Linux riscv64 (`.deb`, `.rpm`, `.tar.gz`) builds are
 attempted too, but CraftCloud has never been tried there; a release may come without them.
@@ -301,6 +340,26 @@ To keep it installed and updatable, add the flake input above and install the pa
 (`inputs.craftcloud.packages.${pkgs.stdenv.hostPlatform.system}.default`, in `environment.systemPackages` or
 Home Manager's `home.packages`). It brings its own menu entry and icons. Update with
 `nix flake update craftcloud` and a rebuild.
+
+With [Home Manager](https://github.com/nix-community/home-manager), the flake's module installs it, makes it the
+default for `craftcloud://` links and can start it in the tray when you log in:
+
+```nix
+# home.nix (with extraSpecialArgs = { inherit inputs; })
+{ inputs, ... }: {
+  imports = [ inputs.craftcloud.homeManagerModules.default ];
+  programs.craftcloud = {
+    enable = true;
+    startAtLogin = true;     # craftcloud --hidden, from ~/.config/autostart
+    # defaultForLinks = true; (x-scheme-handler/craftcloud in mimeapps.list, turns on xdg.mimeApps)
+    # package = …;            (defaults to the flake's own build)
+  };
+}
+```
+
+`startAtLogin` writes the same autostart entry as **Settings › Start at login**, so the setting shows it as on and
+CraftCloud never starts twice; turning it off in the app lasts until the next switch. Left off, the app's setting
+decides.
 
 ### Connect a computer
 
@@ -345,7 +404,8 @@ the server image builds it for you. `nix develop` gives a shell with everything.
 CraftCloud is made for the **Craft App Suite**, the free, open-source creative apps from the
 [ArtCraft](https://getartcraft.com/) team, installed with the [ArtCraft Launcher](https://github.com/storytold/craft-launcher).
 Every one of them works with CraftCloud through the sync folder. The `-apps` image bundles their web builds at the
-versions pinned in [`apps.toml`](apps.toml), which also says which app opens which files.
+versions pinned in [`apps.toml`](apps.toml), which also says which app opens which files (`cargo xtask bump-apps`
+moves the pins to each app's latest release).
 
 | App | What it's for | Opens by default | Web build pinned | Code |
 |:----|:--------------|:-----------------|:----------|:-----|

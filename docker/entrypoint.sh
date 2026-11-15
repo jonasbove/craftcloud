@@ -27,6 +27,14 @@ export OXICLOUD_SERVER_PORT=8087
 : "${OXICLOUD_BASE_URL:=${CRAFTCLOUD_PUBLIC_URL%/}}"
 export CRAFTCLOUD_PUBLIC_URL OXICLOUD_BASE_URL
 
+# Sign-in cookies are marked Secure when people reach CraftCloud over https, so the browser sends them
+# only over https. An explicit OXICLOUD_COOKIE_SECURE (true or false) still wins.
+case "$CRAFTCLOUD_PUBLIC_URL" in
+    https://*) : "${OXICLOUD_COOKIE_SECURE:=true}" ;;
+    *) : "${OXICLOUD_COOKIE_SECURE:=false}" ;;
+esac
+export OXICLOUD_COOKIE_SECURE
+
 # Every request reaches OxiCloud from Caddy on 127.0.0.1. Without trusting that hop, OxiCloud's per-IP
 # limits (10 sign-ins a minute, 20 token refreshes) counted the whole server as one client. Caddy
 # replaces X-Forwarded-For from untrusted clients, so only the real client address arrives.
@@ -61,6 +69,13 @@ if [ "$seed" = on ] && [ ! -f /srv/craftcloud/craftcloud/apps.json ]; then
     echo "craftcloud: CRAFTCLOUD_WEB_APPS=on, but this image has no web apps (use the -apps image)" >&2
 fi
 export CRAFTCLOUD_BLOCKED_PATHS="${blocked:-/__craftcloud_nothing_blocked__}"
+# Browsers that reached CraftCloud over https keep using https for it (180 days, this host only). Plain
+# http sends no Strict-Transport-Security header at all (docker/Caddyfile).
+case "$CRAFTCLOUD_PUBLIC_URL" in
+    https://*) CRAFTCLOUD_HSTS="max-age=15552000" ;;
+    *) CRAFTCLOUD_HSTS="" ;;
+esac
+export CRAFTCLOUD_HSTS
 export CRAFTCLOUD_PORT CRAFTCLOUD_VERSION="${CRAFTCLOUD_VERSION:-dev}"
 
 # Caddy keeps nothing on disk (no TLS, no admin API); point its dirs at /tmp anyway.

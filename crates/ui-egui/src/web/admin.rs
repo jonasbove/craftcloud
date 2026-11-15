@@ -127,6 +127,19 @@ impl SsoForm {
     }
 }
 
+/// The last "Test connection" answer.
+#[derive(Clone, PartialEq, Eq)]
+struct SsoTest {
+    /// The server reached the provider and read its OpenID configuration.
+    ok: bool,
+    /// What happened, in plain words.
+    text: String,
+    /// The server's own words, under a failure.
+    server_said: String,
+    /// The issuer URL it was for (trimmed): a later edit makes it stale.
+    issuer: String,
+}
+
 /// The admin pages' state.
 #[derive(Default)]
 pub(super) struct Admin {
@@ -149,8 +162,9 @@ pub(super) struct Admin {
     sso: SsoForm,
     sso_error: Option<String>,
     sso_note: Option<String>,
-    /// The last "Test connection" answer: whether the server reached the provider, and its words.
-    sso_test: Option<(bool, String)>,
+    sso_test: Option<SsoTest>,
+    /// The issuer URL "Test connection" is asking about.
+    sso_testing: String,
 }
 
 impl Admin {
@@ -313,11 +327,15 @@ impl<B: Backend> WebApp<B> {
                 Err(e) => a.sso_error = Some(e.to_string()),
             },
             Key::TestOidc => match oidc::parse_test(&resp) {
-                Ok(t) if t.success => {
-                    let issuer = t.issuer.unwrap_or_default();
-                    a.sso_test = Some((true, format!("The server reached the provider ({issuer}).")));
+                Ok(t) => {
+                    let issuer = std::mem::take(&mut a.sso_testing);
+                    let (text, server_said) = if t.success {
+                        (format!("The server reached the provider ({}).", t.issuer.unwrap_or_default()), String::new())
+                    } else {
+                        oidc::test_failure_text(&issuer, &t.message)
+                    };
+                    a.sso_test = Some(SsoTest { ok: t.success, text, server_said, issuer });
                 }
-                Ok(t) => a.sso_test = Some((false, format!("The server can't use this issuer URL: {}", t.message))),
                 Err(e) => a.sso_error = Some(e.to_string()),
             },
         }
@@ -1295,6 +1313,7 @@ impl<B: Backend> WebApp<B> {
         );
         ui.add_space(12.0);
         let busy = self.admin.net.is_busy();
+        let testing = self.admin.net.is_waiting(&Key::TestOidc);
         let original = SsoForm::from_settings(&saved);
         let dirty = self.admin.sso != original;
         let mut save = false;
@@ -1338,12 +1357,15 @@ impl<B: Backend> WebApp<B> {
                     ("Password sign-in", &mut f.password_login, "disable_password_login", "DISABLE_PASSWORD_LOGIN"),
                 ] {
                     let locked = env_hint(field, env);
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(label).size(14.0));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if let Some(i) = kit::cells(ui, &["Off", "On"], Some(usize::from(*value)), locked.is_none()) {
-                                *value = i == 1;
-                            }
+                    // An id per row: the three switches have the same labels.
+                    ui.push_id(field, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(label).size(14.0));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if let Some(i) = kit::cells(ui, &["Off", "On"], Some(usize::from(*value)), locked.is_none()) {
+                                    *value = i == 1;
+                                }
+                            });
                         });
                     });
                     if let Some(l) = locked {
@@ -1374,49 +1396,78 @@ impl<B: Backend> WebApp<B> {
             );
             ui.add_space(12.0);
             // "Test connection" answers on a line of its own: the server's words can be long.
-            match &self.admin.sso_test {
-                Some((true, note)) => {
-                    ui.label(RichText::new(note).size(13.0).color(t.good));
-                    ui.add_space(8.0);
+            if testing {
+                let host = oidc::issuer_host(&self.admin.sso_testing);
+                chrome::hud(ui, &format!("Asking {host} for its OpenID configuration…"), t.accent_ink);
+                ui.add_space(8.0);
+            } else if let Some(test) = &self.admin.sso_test {
+                if test.ok {
+                    ui.label(RichText::new(&test.text).size(13.0).color(t.good));
+                } else {
+                    error_line(ui, &test.text);
+                    if !test.server_said.is_empty() {
+                        ui.add_space(4.0);
+                        let said = format!("Server said: {}", test.server_said);
+                        ui.label(RichText::new(said).monospace().size(11.5).color(t.muted));
+                    }
                 }
-                Some((false, why)) => {
-                    error_line(ui, why);
-                    ui.add_space(8.0);
-                }
-                None => {}
+                ui.add_space(8.0);
             }
-            ui.horizontal(|ui| {
-                if let Some(e) = &self.admin.sso_error {
-                    error_line(ui, e);
-                } else if let Some(n) = self.admin.sso_note.as_ref().filter(|_| !dirty) {
-                    ui.label(RichText::new(n).size(13.0).color(t.good));
-                } else if dirty {
-                    ui.label(RichText::new("Not saved yet.").size(13.0).color(t.warn));
+            let status = if let Some(e) = &self.admin.sso_error {
+                Some((e.clone(), t.bad))
+            } else if let Some(n) = self.admin.sso_note.as_ref().filter(|_| !dirty) {
+                Some((n.clone(), t.good))
+            } else {
+                dirty.then(|| ("Not saved yet.".to_owned(), t.warn))
+            };
+            let issuer = !self.admin.sso.issuer_url.trim().is_empty();
+            let mut buttons = |ui: &mut Ui| {
+                if chrome::button(ui, "Save single sign-on", Kind::Primary, Some(Icon::Check), dirty && !busy).clicked() {
+                    save = true;
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if chrome::button(ui, "Save single sign-on", Kind::Primary, Some(Icon::Check), dirty && !busy).clicked() {
-                        save = true;
+                let label = if testing { "Testing…" } else { "Test connection" };
+                if chrome::button(ui, label, Kind::Secondary, None, issuer && !busy).clicked() {
+                    test = true;
+                }
+                if dirty && chrome::button(ui, "Undo", Kind::Secondary, None, !busy).clicked() {
+                    self.admin.sso = original.clone();
+                    self.admin.sso_error = None;
+                }
+            };
+            if wide {
+                ui.horizontal(|ui| {
+                    if let Some((text, color)) = &status {
+                        ui.label(RichText::new(text).size(13.0).color(*color));
                     }
-                    let issuer = !self.admin.sso.issuer_url.trim().is_empty();
-                    if chrome::button(ui, "Test connection", Kind::Secondary, None, issuer && !busy).clicked() {
-                        test = true;
-                    }
-                    if dirty && chrome::button(ui, "Undo", Kind::Secondary, None, !busy).clicked() {
-                        self.admin.sso = original.clone();
-                        self.admin.sso_error = None;
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| buttons(ui));
                 });
-            });
+            } else {
+                // On a phone the line goes above the buttons, which wrap.
+                if let Some((text, color)) = &status {
+                    ui.label(RichText::new(text).size(13.0).color(*color));
+                    ui.add_space(8.0);
+                }
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.y = 8.0;
+                    buttons(ui);
+                });
+            }
         });
         if test {
             self.admin.sso_error = None;
             self.admin.sso_test = None;
+            self.admin.sso_testing = self.admin.sso.issuer_url.trim().to_owned();
             let req = oidc::test_connection(&self.server, &self.admin.sso.issuer_url);
             self.admin_send(Key::TestOidc, req);
         }
         if save {
-            self.admin.sso_test = None;
             let f = &self.admin.sso;
+            // Password sign-in goes off (or stays off under a new issuer URL) only after Test
+            // connection worked for this issuer URL: with the provider out of reach, nobody could
+            // sign in.
+            let issuer = f.issuer_url.trim();
+            let tested = self.admin.sso_test.as_ref().is_some_and(|t| t.ok && t.issuer == issuer);
+            let goes_off = !saved.disable_password_login || issuer != saved.issuer_url.trim();
             let has_secret = saved.client_secret_set || !f.client_secret.is_empty();
             if f.enabled && (f.issuer_url.trim().is_empty() || f.client_id.trim().is_empty() || !has_secret) {
                 self.admin.sso_error = Some("To switch it on, fill in the issuer URL, the client ID and the client secret.".into());
@@ -1424,9 +1475,13 @@ impl<B: Backend> WebApp<B> {
                 self.admin.sso_error = Some("The issuer URL starts with https://".into());
             } else if !f.password_login && !f.enabled {
                 self.admin.sso_error = Some("Password sign-in can only be switched off while sign-in with the provider is on.".into());
+            } else if !f.password_login && goes_off && !tested {
+                self.admin.sso_error =
+                    Some("Password sign-in stays on until Test connection works: with the provider out of reach, nobody could sign in.".into());
             } else {
                 self.admin.sso_error = None;
                 self.admin.sso_note = None;
+                self.admin.sso_test = None;
                 let req = oidc::save_settings(&self.server, &f.to_save());
                 self.admin.sso.client_secret.clear();
                 self.admin_send(Key::SaveOidc, req);
@@ -1644,6 +1699,19 @@ pub(super) fn civil_from_days(z: i64) -> (i64, i64, i64) {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     (if m <= 2 { yoe + era * 400 + 1 } else { yoe + era * 400 }, m, d)
+}
+
+/// For the web shots: the single sign-on form as an admin filled it in.
+#[cfg(all(test, feature = "shots"))]
+impl Admin {
+    pub(super) fn fill_sso(&mut self, enabled: bool, issuer_url: &str, client_secret: &str, password_login: bool) {
+        let f = &mut self.sso;
+        (f.enabled, f.issuer_url, f.client_secret, f.password_login) = (enabled, issuer_url.into(), client_secret.into(), password_login);
+        if f.provider_name.is_empty() {
+            (f.provider_name, f.client_id, f.admin_groups) = ("Example ID".into(), "craftcloud".into(), "craftcloud-admins".into());
+            f.scopes = "openid profile email groups".into();
+        }
+    }
 }
 
 #[cfg(test)]

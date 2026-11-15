@@ -162,6 +162,15 @@ pub(super) fn state_words(s: &Status) -> String {
             let n = unreadable(s);
             format!("Up to date · {n} {} can't be read (see `not synced` below; fix the permissions to sync {}).", if n == 1 { "place" } else { "places" }, if n == 1 { "it" } else { "them" })
         }
+        "up_to_date" if !s.waiting.is_empty() => {
+            let n = s.waiting.len();
+            format!(
+                "Up to date · {n} {} still being saved: {} sync{} in the next pass.",
+                if n == 1 { "file is" } else { "files are" },
+                if n == 1 { "it" } else { "they" },
+                if n == 1 { "s" } else { "" }
+            )
+        }
         "up_to_date" if !s.no_room.is_empty() => {
             let n = s.no_room.len();
             format!("Up to date · {n} not synced (no room in the cloud: free some, or empty the trash).")

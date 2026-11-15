@@ -17,6 +17,8 @@ const UNINIT: &[u8] = br#"{"initialized":false,"admin_count":0,"registration_all
 const INIT: &[u8] = br#"{"initialized":true,"admin_count":1,"registration_allowed":false}"#;
 const CONFIG: &[u8] = br#"{"version":"0.1.0","web_apps":false,"public_url":"https://cloud.example.org","enabled_apps":[]}"#;
 const ROOT: &str = "root1";
+/// The link to the folder Team (`/s/tokF`).
+const SHARED_FOLDER: &[u8] = br#"{"id":"s1","item_id":"top","item_name":"Team","item_type":"folder","token":"tokF","url":"https://cloud.example.org/s/tokF","has_password":false,"created_at":"2026-11-13T09:00:00Z"}"#;
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../core/tests/fixtures/oxicloud-0.10.0").join(name);
@@ -170,6 +172,62 @@ fn answer_versions(h: &mut H) {
     }
 }
 
+/// The share sheet for "Q3 report.docx", opened from its menu.
+fn share_sheet(s: egui::Vec2, t: egui::Theme) -> H {
+    let mut h = files(s, t, &sample());
+    click(&mut h, "More for Q3 report.docx");
+    click(&mut h, "Share link…");
+    h
+}
+
+/// The share sheet with a password typed (hidden: screenshots never show one).
+fn share_with_password(s: egui::Vec2, t: egui::Theme) -> H {
+    let mut h = share_sheet(s, t);
+    if let Some(super::files::Sheet::Share(sheet)) = &mut h.state_mut().files.sheet {
+        sheet.password.0 = "x".repeat(16);
+    }
+    h.run();
+    h
+}
+
+/// "Link ready" for "Q3 report.docx", seven days, with a password.
+fn share_ready(s: egui::Vec2, t: egui::Theme) -> H {
+    let mut h = share_with_password(s, t);
+    click(&mut h, "CREATE LINK");
+    let made = json!({"id": "s1", "item_id": "f4", "item_name": "Q3 report.docx", "item_type": "file", "token": "aeddf06a-4200-4b05-ad1c-272cf305e350",
+        "url": "https://cloud.example.org/s/aeddf06a-4200-4b05-ad1c-272cf305e350", "has_password": true, "expires_at": "2026-11-21T10:00:00Z",
+        "created_at": "2026-11-14T10:00:00Z", "access_count": 0});
+    soft(&mut h, "/api/shares", Ok(HttpResponse::new(201, made.to_string().into_bytes())));
+    h
+}
+
+/// "Your share links" with the design frame's five links (one gone, one expired), at 2026-11-14
+/// 13:32 UTC seen at UTC+1.
+fn share_links(s: egui::Vec2, t: egui::Theme) -> H {
+    let mut h = visit("/links", None, s, t);
+    h.state_mut().backend.wall = Some(crate::backend::WallClock { unix: 1_794_663_120.0, utc_offset_minutes: 60 });
+    start(&mut h, INIT, true);
+    let link = |id: &str, item: &str, kind: &str, name: &str, pw: bool, expires: Option<&str>, made: &str, opened: u64| {
+        json!({"id": id, "item_id": item, "item_name": name, "item_type": kind, "token": format!("tok-{id}"),
+            "url": format!("https://cloud.example.org/s/tok-{id}"), "has_password": pw, "expires_at": expires, "created_at": made, "access_count": opened})
+    };
+    let list = json!({"items": [
+        link("s1", "f1", "file", "Q3 report.docx", true, Some("2026-11-21T13:32:00Z"), "2026-11-14T13:32:00Z", 3),
+        link("s2", "d1", "folder", "Team", false, None, "2026-11-10T09:00:00Z", 12),
+        link("s3", "f3", "file", "Board pitch.pptx", true, Some("2026-12-14T08:05:00Z"), "2026-11-14T08:05:00Z", 0),
+        link("s4", "f4", "file", "Poster.psd", false, None, "2026-11-02T10:00:00Z", 7),
+        link("s5", "f5", "file", "Budget 2026.xlsx", false, Some("2026-11-02T12:00:00Z"), "2026-10-26T10:00:00Z", 5),
+    ], "pagination": {"page": 1, "has_next": false}});
+    soft(&mut h, "/api/shares?page=1&per_page=100", json_ok(&list));
+    let at = |id: &str, path: &str| json_ok(&json!({"id": id, "name": path.rsplit('/').next(), "path": format!("/Personal/{path}"), "size": 1000}));
+    soft(&mut h, "/api/files/f1?metadata=true", at("f1", "Documents/Reports/Q3 report.docx"));
+    soft(&mut h, "/api/folders/d1", at("d1", "Projects/Team"));
+    soft(&mut h, "/api/files/f3?metadata=true", at("f3", "Clients/North/Board pitch.pptx"));
+    soft(&mut h, "/api/files/f4?metadata=true", Ok(HttpResponse::new(404, br#"{"error":"Not found"}"#.to_vec())));
+    soft(&mut h, "/api/files/f5?metadata=true", at("f5", "Finance/Budget 2026.xlsx"));
+    h
+}
+
 /// The device approval page, after `button` and the server's `status` answer.
 fn device_answered(s: egui::Vec2, t: egui::Theme, button: &str, status: &str) -> H {
     let mut h = visit("/device", Some("7KQ-4XM"), s, t);
@@ -180,6 +238,53 @@ fn device_answered(s: egui::Vec2, t: egui::Theme, button: &str, status: &str) ->
     h
 }
 
+/// The sign-in page of a server with single sign-on: `password` keeps the password form, and
+/// `error` is the `login_error` key the provider round trip came back with.
+fn login_sso(s: egui::Vec2, t: egui::Theme, password: bool, error: Option<&str>) -> H {
+    let mut h = visit("/login", None, s, t);
+    h.state_mut().oidc_return(None, error.map(String::from));
+    start(&mut h, INIT, false);
+    let mut providers = String::from_utf8(fixture("oidc-providers-on.json")).unwrap();
+    if !password {
+        providers = providers.replace("\"password_login_enabled\": true", "\"password_login_enabled\": false");
+    }
+    soft(&mut h, "/api/auth/oidc/providers", ok(providers.as_bytes()));
+    h.state_mut().form.name = "john".into();
+    h.run();
+    h
+}
+
+/// Admin › Server on the slim image, with `oidc` as the single sign-on settings, on a canvas tall
+/// enough to show the single sign-on panel under the web apps.
+fn admin_sso(s: egui::Vec2, t: egui::Theme, oidc: &[u8]) -> H {
+    let mut h = visit("/admin/server", None, s, t);
+    start(&mut h, INIT, true);
+    h.set_size(egui::vec2(s.x, s.y + if s.x < 600.0 { 1500.0 } else { 700.0 }));
+    soft(&mut h, "/craftcloud/apps.json", Ok(HttpResponse::new(404, Vec::new())));
+    soft(&mut h, "/craftcloud/api/settings", ok(br#"{"web_apps":false,"disabled_apps":[]}"#));
+    soft(&mut h, "/api/admin/settings/oidc", ok(oidc));
+    h
+}
+
+/// A fresh server's single sign-on, filled in and tested; `answer` is the server's answer, if any.
+fn admin_sso_tested(s: egui::Vec2, t: egui::Theme, answer: Option<&str>) -> H {
+    let mut h = admin_sso(s, t, &fixture("oidc-settings.json"));
+    h.state_mut().admin.fill_sso(true, "https://id.example.org/realms/test", "s3cret", true);
+    h.run();
+    click(&mut h, "TEST CONNECTION");
+    if let Some(answer) = answer {
+        soft(&mut h, "/api/admin/settings/oidc/test", ok(&fixture(answer)));
+    }
+    h
+}
+
+fn saved_sso(env: &str) -> Vec<u8> {
+    String::from_utf8(fixture("oidc-settings-saved.json"))
+        .unwrap()
+        .replace("\"env_overrides\": []", &format!("\"env_overrides\": [{env}]"))
+        .replace("http://127.0.0.1:8097", "https://cloud.example.org")
+        .into_bytes()
+}
 type Scene = (&'static str, fn(egui::Vec2, egui::Theme) -> H);
 
 fn setup_at(step: u8) -> fn(egui::Vec2, egui::Theme) -> H {
@@ -250,6 +355,28 @@ fn scenes() -> Vec<Scene> {
         ("login", |s, t| {
             let mut h = visit("/", None, s, t);
             start(&mut h, INIT, false);
+            h
+        }),
+        ("login-sso", |s, t| login_sso(s, t, true, None)),
+        ("login-sso-only", |s, t| login_sso(s, t, false, None)),
+        ("login-sso-busy", |s, t| {
+            let mut h = login_sso(s, t, true, None);
+            click(&mut h, "SIGN IN WITH EXAMPLE ID");
+            h
+        }),
+        ("login-sso-error", |s, t| login_sso(s, t, true, Some("provider_unreachable"))),
+        ("login-sso-callback-denied", |s, t| login_sso(s, t, true, Some("callback_denied"))),
+        ("login-sso-provider-denied", |s, t| login_sso(s, t, true, Some("provider_denied"))),
+        ("login-sso-callback-failed", |s, t| login_sso(s, t, true, Some("callback_failed"))),
+        ("login-sso-email", |s, t| login_sso(s, t, true, Some("email_not_verified_at_idp"))),
+        ("login-sso-expired", |s, t| {
+            let mut h = visit("/login", None, s, t);
+            h.state_mut().oidc_return(Some("stale".into()), None);
+            start(&mut h, INIT, false);
+            soft(&mut h, "/api/auth/oidc/exchange", Ok(HttpResponse::new(403, fixture("oidc-exchange-invalid.json"))));
+            soft(&mut h, "/api/auth/oidc/providers", ok(&fixture("oidc-providers-on.json")));
+            h.state_mut().form.name = "john".into();
+            h.run();
             h
         }),
         ("login-device", |s, t| {
@@ -326,6 +453,61 @@ fn scenes() -> Vec<Scene> {
             answer_versions(&mut h);
             h
         }),
+        ("files-share-create", share_with_password),
+        ("files-share-create-date", |s, t| {
+            let mut h = share_sheet(s, t);
+            click(&mut h, "ON A DATE…");
+            click(&mut h, "28 Nov 2026");
+            click(&mut h, "Pick a day");
+            h
+        }),
+        ("files-share-create-error", |s, t| {
+            let mut h = share_with_password(s, t);
+            click(&mut h, "CREATE LINK");
+            soft(&mut h, "/api/shares", Ok(HttpResponse::new(403, br#"{"error":"Access denied"}"#.to_vec())));
+            h
+        }),
+        ("files-share-created", share_ready),
+        ("files-share-created-copied", |s, t| {
+            let mut h = share_ready(s, t);
+            click(&mut h, "COPY");
+            h
+        }),
+        ("share-links", share_links),
+        ("share-links-copied", |s, t| {
+            use egui_kittest::kittest::Queryable;
+            let mut h = share_links(s, t);
+            h.query_all_by_label("COPY").next().unwrap_or_else(|| panic!("no COPY")).click();
+            h.run();
+            h
+        }),
+        ("share-links-revoke", |s, t| {
+            use egui_kittest::kittest::Queryable;
+            let mut h = share_links(s, t);
+            h.query_all_by_label("REVOKE").next().unwrap_or_else(|| panic!("no REVOKE")).click();
+            h.run();
+            h
+        }),
+        ("share-links-empty", |s, t| {
+            let mut h = visit("/links", None, s, t);
+            start(&mut h, INIT, true);
+            soft(&mut h, "/api/shares?page=1&per_page=100", json_ok(&json!({"items": [], "pagination": {"page": 1, "has_next": false}})));
+            h
+        }),
+        ("share-account-menu", |s, t| {
+            let mut h = visit("/", None, s, t);
+            start(&mut h, INIT, true);
+            soft(&mut h, "/api/auth/device/devices", ok(&fixture("device-devices.json")));
+            click(&mut h, "Account: john");
+            let five: Vec<Value> = (1..=5)
+                .map(|i| {
+                    json!({"id": format!("s{i}"), "item_id": format!("f{i}"), "item_type": "file", "token": format!("t{i}"),
+                    "url": format!("https://cloud.example.org/s/t{i}"), "has_password": false, "created_at": "2026-11-13T09:00:00Z"})
+                })
+                .collect();
+            soft(&mut h, "/api/shares?page=1&per_page=100", json_ok(&json!({"items": five, "pagination": {"page": 1, "has_next": false}})));
+            h
+        }),
         ("home", |s, t| {
             let mut h = visit("/", None, s, t);
             start(&mut h, INIT, true);
@@ -374,6 +556,33 @@ fn scenes() -> Vec<Scene> {
             soft(&mut h, "/api/s/tok1", Ok(HttpResponse::new(401, br#"{"error":"Password required","requiresPassword":true}"#.to_vec())));
             h
         }),
+        ("share-password-wrong", |s, t| {
+            let mut h = visit("/s/tok1", None, s, t);
+            start(&mut h, INIT, false);
+            let needs = br#"{"error":"Password required","requiresPassword":true}"#;
+            soft(&mut h, "/api/s/tok1", Ok(HttpResponse::new(401, needs.to_vec())));
+            if let Some(share) = h.state_mut().share.as_mut() {
+                share.password = "wrong".into();
+            }
+            h.run();
+            click(&mut h, "OPEN");
+            soft(&mut h, "/api/s/tok1/verify", Ok(HttpResponse::new(401, needs.to_vec())));
+            h
+        }),
+        ("share-gone", |s, t| {
+            let mut h = visit("/s/gone", None, s, t);
+            start(&mut h, INIT, false);
+            soft(&mut h, "/api/s/gone", Ok(HttpResponse::new(404, Vec::new())));
+            h
+        }),
+        ("share-folder", |s, t| {
+            let mut h = visit("/s/tokF", None, s, t);
+            start(&mut h, INIT, false);
+            soft(&mut h, "/api/s/tokF", ok(SHARED_FOLDER));
+            let items = [folder("sub", "Photos"), folder("d2", "Drafts"), sample()[3].clone(), sample()[4].clone(), sample()[5].clone()];
+            soft(&mut h, "/api/folders/top/resources?limit=200", json_ok(&listing(&items)));
+            h
+        }),
         ("share-expired", |s, t| {
             let mut h = visit("/s/old", None, s, t);
             start(&mut h, INIT, false);
@@ -391,11 +600,16 @@ fn scenes() -> Vec<Scene> {
         ("share-subfolder", |s, t| {
             let mut h = visit("/s/tokF", None, s, t);
             start(&mut h, INIT, false);
-            let share = br#"{"id":"s1","item_id":"top","item_name":"Team","item_type":"folder","token":"tokF","url":"https://cloud.example.org/s/tokF","has_password":false,"created_at":"2026-11-13T09:00:00Z"}"#;
-            soft(&mut h, "/api/s/tokF", ok(share));
+            soft(&mut h, "/api/s/tokF", ok(SHARED_FOLDER));
             soft(&mut h, "/api/folders/top/resources?limit=200", json_ok(&listing(&[folder("sub", "Photos"), sample()[3].clone()])));
             click(&mut h, "Open Photos");
-            soft(&mut h, "/api/folders/sub/resources?limit=200", json_ok(&listing(&sample()[4..])));
+            let photos = [
+                folder("y26", "2026"),
+                file("p1", "Shoot-01.jpg", 6_100_000, "image/jpeg", "2026-11-12T09:00:00Z"),
+                file("p2", "Shoot-02.jpg", 5_800_000, "image/jpeg", "2026-11-12T09:01:00Z"),
+                file("p3", "Contact sheet.pdf", 2_400_000, "application/pdf", "2026-11-12T09:02:00Z"),
+            ];
+            soft(&mut h, "/api/folders/sub/resources?limit=200", json_ok(&listing(&photos)));
             h
         }),
         ("admin-users", |s, t| {
@@ -404,6 +618,27 @@ fn scenes() -> Vec<Scene> {
             soft(&mut h, "/api/admin/users?limit=500&offset=0", ok(&fixture("admin-users-three.json")));
             h
         }),
+        ("admin-sso", |s, t| admin_sso(s, t, &saved_sso(""))),
+        ("admin-sso-testing", |s, t| admin_sso_tested(s, t, None)),
+        ("admin-sso-works", |s, t| admin_sso_tested(s, t, Some("oidc-test-ok.json"))),
+        ("admin-sso-fails", |s, t| admin_sso_tested(s, t, Some("oidc-test-unreachable.json"))),
+        ("admin-sso-guard", |s, t| {
+            let mut h = admin_sso(s, t, &saved_sso(""));
+            h.state_mut().admin.fill_sso(false, "https://id.example.org", "", false);
+            h.run();
+            click(&mut h, "SAVE SINGLE SIGN-ON");
+            h
+        }),
+        ("admin-sso-guard-untested", |s, t| {
+            let mut h = admin_sso(s, t, &saved_sso(""));
+            h.state_mut().admin.fill_sso(true, "https://id.example.org", "", false);
+            h.run();
+            click(&mut h, "TEST CONNECTION");
+            soft(&mut h, "/api/admin/settings/oidc/test", ok(&fixture("oidc-test-unreachable.json")));
+            click(&mut h, "SAVE SINGLE SIGN-ON");
+            h
+        }),
+        ("admin-sso-env", |s, t| admin_sso(s, t, &saved_sso(r#""issuer_url", "client_id", "client_secret", "auto_provision""#))),
         ("admin-server", |s, t| {
             let mut h = visit("/admin/server", None, s, t);
             start(&mut h, INIT, true);

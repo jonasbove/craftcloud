@@ -1,5 +1,5 @@
 //! The details panel beside the list: for the one file selected, a preview, its name and star,
-//! what kind of file it is and which Craft app opens it, DOWNLOAD and the "…" menu, where it is,
+//! what kind of file it is and which Craft app opens it, DOWNLOAD, SHARE… and the "…" menu, where it is,
 //! and its last versions (each to restore, or ALL VERSIONS… for the whole history).
 //!
 //! It shows on wide pages only (the list keeps room for its MODIFIED column), for files (not
@@ -8,7 +8,7 @@
 //!
 //! Not here yet: "Open in <app>", because opening a cloud file in a Craft web app needs the page
 //! that frames the app and passes the file over `craft-web-host` (docs/CRAFT-INTEGRATION.md § 6),
-//! which isn't built; and "Share…", which comes with the share sheet.
+//! which isn't built. SHARE… opens the share sheet ([`super::share`]).
 
 use craftcloud_core::api::versions::{self, Version};
 use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
@@ -174,12 +174,20 @@ impl Files {
         ui.add(egui::Label::new(egui::RichText::new(kind_line(item)).size(12.5).color(t.muted)).wrap());
     }
 
-    /// DOWNLOAD across the panel, then the "…" menu.
+    /// DOWNLOAD and SHARE… across the panel, then the "…" menu.
     fn details_actions(&mut self, ui: &mut Ui, backend: &mut dyn Backend, w: f32, index: usize) {
         let (row, _) = ui.allocate_exact_size(vec2(w, chrome::CONTROL_H), Sense::hover());
-        let button = Rect::from_min_max(row.min, pos2(row.right() - chrome::CONTROL_H - 8.0, row.bottom()));
-        if wide_button(ui, button, Glyph::Down, "Download").clicked() {
+        let gap = 8.0;
+        let half = ((row.width() - chrome::CONTROL_H - 2.0 * gap) / 2.0).max(0.0);
+        let download = Rect::from_min_size(row.min, vec2(half, row.height()));
+        if wide_button(ui, download, Glyph::Down, "Download").clicked() {
             self.download(backend, &[index]);
+        }
+        let share = Rect::from_min_size(pos2(download.right() + gap, row.top()), vec2(half, row.height()));
+        if wide_button(ui, share, Glyph::Link, "Share…").clicked()
+            && let Some(item) = self.items.get(index)
+        {
+            self.start_share(item.clone());
         }
         let more = Rect::from_min_size(pos2(row.right() - chrome::CONTROL_H, row.top()), vec2(chrome::CONTROL_H, chrome::CONTROL_H));
         let resp = ui.put(more, |ui: &mut Ui| draw::icon_button(ui, Glyph::More, "More actions", false, true));

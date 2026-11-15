@@ -220,6 +220,9 @@ pub struct SyncProgress {
     pub not_synced: Vec<String>,
     /// Why each of [`Self::not_synced`] is left out.
     pub left_out: std::collections::BTreeMap<String, LeftOut>,
+    /// Files the last cycle held because they were written moments before (an app may still be
+    /// saving them): untouched by that cycle, synced by the next one.
+    pub waiting: Vec<String>,
 }
 
 /// Why a local place is left out of the sync ([`SyncProgress::left_out`]).
@@ -230,7 +233,8 @@ pub enum LeftOut {
     Unreadable,
     /// A symbolic link: never followed, on purpose.
     Symlink,
-    /// A name the cloud can't take; it syncs once renamed.
+    /// A name the cloud or this computer can't have, or a cloud name this computer can't keep
+    /// apart from another (differing only in case on Windows); it syncs once renamed.
     Name,
     /// A file whose name looks like an app's temporary, lock or backup file; never synced.
     Temporary,
@@ -357,11 +361,18 @@ pub fn top_folder(path: &str) -> Option<&str> {
     path.split_once('/').map(|(first, _)| first)
 }
 
-/// A cloud path as a path below the local folder, refusing anything that could escape it.
+/// A cloud path as a path below the local folder, refusing anything that could escape it, and
+/// any name this computer can't have (`names::local_refuses`: on Windows also `C:`-style and
+/// stream names, reserved names, a trailing dot).
 pub fn local_relative(path: &str) -> Option<std::path::PathBuf> {
+    local_relative_on(path, crate::names::Platform::current())
+}
+
+/// [`local_relative`] with that computer's name rule.
+pub fn local_relative_on(path: &str, platform: crate::names::Platform) -> Option<std::path::PathBuf> {
     let mut out = std::path::PathBuf::new();
     for part in path.split('/').filter(|p| !p.is_empty()) {
-        if part == "." || part == ".." || part.contains('\\') || part.contains('\0') || (cfg!(windows) && part.contains(':')) {
+        if part == "." || part == ".." || part.contains('\\') || part.contains('\0') || crate::names::local_refuses(part, platform).is_some() {
             return None;
         }
         out.push(part);
@@ -445,5 +456,16 @@ mod tests {
         assert_eq!(local_relative("Documents/../../etc/passwd"), None);
         assert_eq!(local_relative("a\\..\\b"), None);
         assert_eq!(local_relative(""), None);
+    }
+
+    #[test]
+    fn local_paths_follow_this_computers_name_rule() {
+        use super::local_relative_on;
+        use crate::names::Platform;
+        for name in ["Weird/a:b.txt", "Weird/what?.md", "Weird/CON.txt", "Weird/trailing.", "Weird/trailing./in.txt", "C:/x"] {
+            assert_eq!(local_relative_on(name, Platform::Windows), None, "{name}");
+            assert!(local_relative_on(name, Platform::Other).is_some(), "{name}");
+        }
+        assert!(local_relative_on("Weird/trailing", Platform::Windows).is_some());
     }
 }

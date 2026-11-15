@@ -74,7 +74,7 @@ and work without one.
 | `sync [--no-wait]` | Syncs now through the running client, and waits until that sync is done (unless `--no-wait`). When no client runs, it does one sync pass itself, like `sync --once` |
 | `sync --confirm-deletes` | Carries out the deletions a mass-delete hold waits on (see below), then waits for that sync. It says how many (`Deleting 3000 files…` on stderr, then `Deleted 3000 files.`). A folder deleted whole goes to the cloud's trash as one item (one activity line, `Deleted t14/many (folder with 3000 files, to the cloud trash)`). With `--once`, in this process |
 | `sync --discard-deletes` | Brings back the files a mass-delete hold would delete instead: downloaded again where they were deleted on this computer; where they were deleted in the cloud, put back from the cloud's trash (the same files and folders, so their links, stars and versions stay), and uploaded again only when they aren't in the trash any more |
-| `sync --once` | One full sync pass in this process, with the saved settings and sign-in, then exits. Refused (code 5) while the desktop client or a daemon syncs the folder |
+| `sync --once` | One full sync pass in this process, with the saved settings and sign-in, then exits. A file written in the 2 seconds before is held by that pass (an app may still be saving it), so `--once` then waits those seconds once and runs a second pass for it. Refused (code 5) while the desktop client or a daemon syncs the folder |
 | `daemon` | The sync engine without a window or tray, until stopped (Ctrl+C or a signal). Logs activity to stderr (JSON lines on stdout with `--json`), and answers `status`, `sync`, `pause` and `resume` like the desktop client. Refused (code 5) when one already runs |
 | `pause`, `resume` | Pauses or resumes syncing |
 
@@ -134,7 +134,12 @@ What the ArtCraft Launcher and the Craft apps call to list and save CraftCloud f
 | `share ls [PATH]` | Your links, or the links to one file or folder, each with where its file or folder is now (looked up by its id, one request per link; a link whose item is gone shows the name it was shared with) |
 | `share rm LINK` | Removes a link, by its id, its URL, or every link to a path |
 
-OxiCloud can't remove a link's expiry once it has one; make a new link instead.
+OxiCloud can't remove a link's expiry once it has one; make a new link instead. The web's "Share link" sheet
+reads expiries by the same rules (its 1, 7 and 30 days are `1d`, `7d` and `30d`), except that a day picked there
+lasts to the end of that day in the browser's time zone rather than in UTC. The web's "Your share links" page
+(`/links`, from the menu under your name) lists links as `share ls` does and revokes them as `share rm` does; there a
+link whose item is in the trash or deleted is "No longer there", and one whose lookup failed otherwise is not
+counted as gone.
 
 ### Versions
 
@@ -233,12 +238,17 @@ is always `false` there (the client doesn't know stars).
 `state` is one of `idle`, `scanning`, `downloading`, `up_to_date`, `paused`, `offline`, `signed_out`,
 `mass_delete`, `folder_missing`, `failed`; `error` is set for `offline` and `failed`, `pending_deletes` (the files
 whose deletion waits) for `mass_delete`. `not_synced` lists places in synced folders that the last pass left out, as `{"path", "reason"}`; `reason` is `unreadable` (a folder or a file that can't be read, such as one without read permission: it, and anything under it, isn't synced or deleted until it can be), `symlink` (a symbolic link, never followed), `name` (a name the cloud can't take; it syncs once renamed) or `temporary` (a FILE whose name looks like an app's temporary, lock or backup file: `*.tmp`, `*.part`, `*~`, `#*#`, `.#*`, `~$*`, `*.swp`; folders with such names sync normally), and `activity` says more. It doesn't change `state`. A place that can't be read needs you, so `status` (and `sync` through a client, and `sync --once`) then say "Up to date · N places can't be read" and exit with code 9; symbolic links, names and temporary files are left out for good and don't change the exit code. `status` prints each as `not synced PATH  (why)`. `no_room` lists files that don't fit in the cloud (its quota is full); they are tried again once there is room, the
-headline says "Up to date · N not synced (no room …)", and the exit code doesn't change. `syncing` is `false` (and
+headline says "Up to date · N not synced (no room …)", and the exit code doesn't change. `waiting` lists files the last pass held
+because they were written in the 2 seconds before it (an app may still be saving them); the next pass syncs them, the
+headline says "Up to date · N files are still being saved", and neither `state` nor the exit code changes. `syncing` is `false` (and
 `state` `signed_out`) while the client waits for a sign-in. `activity`
 holds the latest 10 events; `kind` is `up`, `down`, `deleted`, `conflict`, `error`, `moved` (renamed or moved, `detail` says from where) `skipped` (left out on purpose, e.g. a folder switched off, or a name the cloud can't take) or `warning` (synced, but e.g. a name a Windows computer can't have).
 
-**`sync --once`**: `{"state", "error", "pending_deletes", "files_done", "files_total", "conflicts", "not_synced", "activity"}`,
-with every event of that pass. It exits 0 when the pass ended up to date, 3 when signed out, 8 when offline, 9 when held
+**`sync --once`**: `{"state", "error", "pending_deletes", "files_done", "files_total", "conflicts", "not_synced", "waiting", "activity"}`,
+with every event of that run. When the first pass held a file being saved, a second pass follows 2.5 seconds later and
+the result is that pass's (`files_done` and `files_total` count it alone; `activity` has both). `waiting` lists what is
+still being saved after it (empty when nothing waits): a script tells "synced" from "a file still waits" by it. It
+exits 0 when the run ended up to date (with or without `waiting`), 3 when signed out, 8 when offline, 9 when held
 (or a place can't be read), 1 otherwise.
 
 **`daemon --json`** prints one line per event: `{"event": "started", "local_folder": …}`,
@@ -272,9 +282,25 @@ with every event of that pass. It exits 0 when the pass ended up to date, 3 when
 
 ## Windows
 
-The desktop client is a GUI program on Windows, so in release builds the command line's output doesn't reach the
-console it was started from (Rust's `windows_subsystem`; attaching to the parent console needs `unsafe`, which
-this workspace forbids). Until a console build ships, use the command line on Linux or macOS, or a debug build.
+The desktop client, `craftcloud.exe`, is a GUI program on Windows (no console window opens with it), so Windows
+gives it no console and on its own its output can't reach a terminal (attaching to one needs `unsafe`, which this
+workspace forbids). Next to it the installer and the portable zip put **`craftcloud.com`**, a small console program
+(`apps/craftcloud-cli`) that runs `craftcloud.exe` with the same arguments, passes the input and output through,
+and exits with its exit code. Command Prompt and PowerShell try `.com` before `.exe`, so `craftcloud status` typed
+in a terminal runs it. The Start menu shortcut, start at login and `craftcloud://` links run `craftcloud.exe`.
+
+- **PATH:** the installer adds its folder to your PATH (for you only; uninstalling takes it off again). A terminal
+  opened before the install doesn't see it yet: open a new one. From the portable zip, run it in that folder
+  (`.\craftcloud status` in PowerShell, `craftcloud status` in Command Prompt) or add the folder to PATH yourself.
+- `craftcloud` without a command opens the window and gives the terminal back at once.
+- **Ctrl+C** stops the command. Windows sends it only to programs attached to the console, which `craftcloud.exe`
+  isn't, so `craftcloud.com` stops it; the exit code is then Windows' usual one for Ctrl+C (`-1073741510`).
+- Questions still work (passwords, `trash empty`'s "[y/N]"): the input reaches `craftcloud.exe` through a pipe, and
+  `craftcloud.com` tells it a person is typing (`CRAFTCLOUD_STDIN_CONSOLE=1`). A password shows as you type, as
+  it always did on Windows.
+- Output sent to a file or another program (`craftcloud ls > files.txt`, `craftcloud ls | findstr txt`) is handed on
+  unchanged, as it was before. A program that starts `craftcloud` itself and reads its output (Rust's
+  `Command::new("craftcloud")` looks for `craftcloud.exe`) gets the client directly; that has always worked.
 
 ## Tests
 

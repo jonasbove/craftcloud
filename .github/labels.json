@@ -1,0 +1,266 @@
+[
+  {
+    "name": "🐛 bug",
+    "group": "type",
+    "color": "d73a4a",
+    "description": "Something isn't working"
+  },
+  {
+    "name": "✨ enhancement",
+    "group": "type",
+    "color": "a2eeef",
+    "description": "New feature or request"
+  },
+  {
+    "name": "💬 question",
+    "group": "type",
+    "color": "d876e3",
+    "description": "Further information is requested"
+  },
+  {
+    "name": "📝 documentation",
+    "group": "type",
+    "color": "0075ca",
+    "description": "Improvements or additions to documentation"
+  },
+  {
+    "name": "⏪ regression",
+    "group": "type",
+    "color": "ededed",
+    "description": ""
+  },
+  {
+    "name": "🪟 windows",
+    "group": "platform",
+    "color": "ededed",
+    "description": "Windows desktop client and packaging"
+  },
+  {
+    "name": "🍎 macos",
+    "group": "platform",
+    "color": "ededed",
+    "description": ""
+  },
+  {
+    "name": "🐧 linux",
+    "group": "platform",
+    "color": "ededed",
+    "description": ""
+  },
+  {
+    "name": "😈 freebsd",
+    "group": "platform",
+    "color": "ededed",
+    "description": ""
+  },
+  {
+    "name": "♿ accessibility",
+    "group": "area",
+    "color": "f143ab",
+    "description": "Barrier affecting people with disabilities"
+  },
+  {
+    "name": "⬆️ dependencies",
+    "group": "area",
+    "color": "0366d6",
+    "description": "Dependency updates (Cargo, GitHub Actions, lockfile)"
+  },
+  {
+    "name": "📦 install",
+    "group": "area",
+    "color": "ededed",
+    "description": ""
+  },
+  {
+    "name": "⚡ performance",
+    "group": "area",
+    "color": "d93f0b",
+    "description": ""
+  },
+  {
+    "name": "🔒 security",
+    "group": "area",
+    "color": "d73a4a",
+    "description": "Security advisories and supply-chain hardening"
+  },
+  {
+    "name": "🦺 reliability",
+    "group": "area",
+    "color": "b60205",
+    "description": ""
+  },
+  {
+    "name": "💄 ui",
+    "group": "area",
+    "color": "c5def5",
+    "description": ""
+  },
+  {
+    "name": "🌐 web",
+    "group": "area",
+    "color": "ededed",
+    "description": ""
+  },
+  {
+    "name": "🔧 infra",
+    "group": "area",
+    "color": "bfdadc",
+    "description": "Tests, CI, docs, build, packaging, tooling"
+  },
+  {
+    "name": "👷 github_actions",
+    "group": "area",
+    "color": "000000",
+    "description": "Pull requests that update GitHub Actions code"
+  },
+  {
+    "name": "🦀 rust",
+    "group": "area",
+    "color": "000000",
+    "description": "Pull requests that update rust code"
+  },
+  {
+    "name": "📄 file-compat",
+    "group": "area",
+    "color": "1d76db",
+    "description": ""
+  },
+  {
+    "name": "⌨️ cli",
+    "group": "area",
+    "color": "1d76db",
+    "description": "The craftcloud command line"
+  },
+  {
+    "name": "🔄 sync",
+    "group": "area",
+    "color": "1d76db",
+    "description": "The sync engine: what is uploaded, downloaded, kept or deleted"
+  },
+  {
+    "name": "🗃️ server",
+    "group": "area",
+    "color": "1d76db",
+    "description": "The server image, its web frontend and craftcloud-admin"
+  },
+  {
+    "name": "🌱 good first issue",
+    "group": "state",
+    "color": "7057ff",
+    "description": "Good for newcomers"
+  },
+  {
+    "name": "👯 duplicate",
+    "group": "state",
+    "color": "cfd3d7",
+    "description": "This issue or pull request already exists"
+  },
+  {
+    "name": "🗑️ invalid",
+    "group": "state",
+    "color": "e4e669",
+    "description": "This doesn't seem right"
+  },
+  {
+    "name": "🙅 wontfix",
+    "group": "state",
+    "color": "ffffff",
+    "description": "This will not be worked on"
+  },
+  {
+    "name": "🙋 help wanted",
+    "group": "state",
+    "color": "008672",
+    "description": "Extra attention is needed"
+  },
+  {
+    "name": "🗂️ backlog",
+    "group": "state",
+    "color": "ededed",
+    "description": ""
+  },
+  {
+    "name": "✔️ fixed",
+    "group": "state",
+    "color": "ededed",
+    "description": ""
+  },
+  {
+    "name": "🚧 in progress",
+    "group": "state",
+    "color": "ededed",
+    "description": ""
+  },
+  {
+    "name": "❓ needs info",
+    "group": "state",
+    "color": "ededed",
+    "description": ""
+  },
+  {
+    "name": "🙆 no action needed",
+    "group": "state",
+    "color": "ededed",
+    "description": ""
+  },
+  {
+    "name": "🤔 needs decision",
+    "group": "state",
+    "color": "284c7a",
+    "description": "Held for a maintainer decision: don't merge, close or replace until a maintainer removes this label"
+  },
+  {
+    "name": "🛟 support",
+    "group": "state",
+    "color": "ededed",
+    "description": ""
+  },
+  {
+    "name": "⏳ waiting on author",
+    "group": "state",
+    "color": "fbca04",
+    "description": "Review asked for changes; waiting on the author. Closed after 14 days without reply"
+  },
+  {
+    "name": "✅ ready to merge",
+    "group": "state",
+    "color": "0e8a16",
+    "description": "Reviewed: correct, complete and tested; waiting for a maintainer to merge"
+  },
+  {
+    "name": "🚮 spam",
+    "group": "state",
+    "color": "ededed",
+    "description": ""
+  },
+  {
+    "name": "🧪 needs testing",
+    "group": "state",
+    "color": "fbca04",
+    "description": "Built but never run on a real system: check it there before it counts as working"
+  },
+  {
+    "name": "🔥 priority: critical",
+    "group": "priority",
+    "color": "ededed",
+    "description": ""
+  },
+  {
+    "name": "🔸 priority: medium",
+    "group": "priority",
+    "color": "ededed",
+    "description": ""
+  },
+  {
+    "name": "🔺 priority: high",
+    "group": "priority",
+    "color": "ededed",
+    "description": ""
+  },
+  {
+    "name": "🔹 priority: low",
+    "group": "priority",
+    "color": "ededed",
+    "description": ""
+  }
+]

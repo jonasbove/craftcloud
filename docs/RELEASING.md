@@ -76,4 +76,8 @@ confirmation.
 - Immutable releases, secret scanning with push protection, Dependabot alerts, private vulnerability reporting
   ([SECURITY.md](../SECURITY.md)).
 - Workflows from outside contributors' pull requests wait for approval; `GITHUB_TOKEN` is read-only by default.
+  The Claude checks (`claude-pr.yml`, `claude-issues.yml`) run on `pull_request_target` and `issues` without
+  that approval, from `main`'s copy of the workflow and without the pull request's code, and need the repository
+  secret `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`, on the maintainer's Claude subscription). The
+  labels they may add are the ones in `.github/labels.json`; keep that file in step when labels change on GitHub.
 - Every pull request, from anyone, is merged on GitHub by a maintainer's explicit confirmation (AGENTS.md).

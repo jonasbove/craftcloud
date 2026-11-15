@@ -52,6 +52,8 @@ if [[ -f /etc/makepkg.conf ]]; then source /etc/makepkg.conf; fi
 CARCH=$ARCH
 CHOST=$ARCH-unknown-linux-gnu
 PKGEXT='.pkg.tar.zst'
+# Who built it (pacman -Qi shows it); PACKAGER in the environment wins.
+PACKAGER='${PACKAGER:-jonasbove <31095576+jonasbove@users.noreply.github.com>}'
 COMPRESSZST=(zstd -c -T0 -19 -)
 EOF
 

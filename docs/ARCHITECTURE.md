@@ -42,9 +42,10 @@ Laid out like the ArtCraft Launcher:
 | `crates/native` | Desktop-only parts: HTTP, the keychain, settings, start at login, and the sync engine |
 | `crates/ui-egui` | Every screen, for both the desktop client and the web frontend, drawn with egui in the launcher's look |
 | `apps/craftcloud` | The desktop client (window, tray) and the command line ([CLI.md](CLI.md)) |
+| `apps/craftcloud-cli` | `craftcloud.com` on Windows: a console program that runs `craftcloud.exe` (a GUI program) for a terminal and passes its output through ([CLI.md › Windows](CLI.md#windows)) |
 | `apps/craftcloud-web` | The web frontend, built with Trunk |
 | `apps/craftcloud-admin` | The image's settings service |
-| `xtask` | `cargo xtask ci`: fmt, clippy, tests and the wasm build |
+| `xtask` | `cargo xtask ci`: fmt, clippy, tests and the wasm build. `fetch-apps` downloads, checks (sha256), unpacks and precompresses the Craft web builds for the `-apps` image; `bump-apps` updates their pins in `apps.toml` |
 
 ## Sync
 
@@ -70,12 +71,16 @@ The desktop client keeps chosen server folders in a local folder, two ways.
   of its name (or a synced file by a folder) on one side, while the other side is unchanged since the last sync, is a
   replacement, not a conflict: the old one is removed there (a folder as one trash item), then the new one follows.
 - **Names**: one the cloud can't take (a backslash, a control character) is never sent and is listed once as not
-  synced; one a Windows computer can't have (`<>:"|?*`, a trailing dot or space, CON, NUL, COM1 …) syncs with a
-  warning. An upload the cloud refuses (a 4xx) waits until the file changes.
+  synced; one a Windows computer can't have (`<>:"|?*`, a trailing dot or space, CON, NUL, COM1 …, also with an
+  extension) syncs with a warning on Linux and macOS, and is left alone on Windows (never downloaded, uploaded or
+  taken as deleted; listed once as not synced). One rule decides both (`core::names::windows_trouble`, through
+  `names::Platform`). On Windows, cloud names that differ only in case are held, all but the one the computer has.
+  An upload the cloud refuses (a 4xx) waits until the file changes.
 - **Never synced**: lock, swap and temporary files of apps and editors (`.~lock.*#`, `~$*`, `*.swp`, `.#*`, `#*#`, `*~`, `*.tmp`, `.DS_Store`,
   `Thumbs.db`, `desktop.ini`, …; the list is `core::names::ignored`). Symbolic links are not followed and are
   listed once as not synced. File permissions (the executable bit) are not synced: OxiCloud keeps none.
 - **An interrupted download** resumes where it stopped (HTTP `Range`) when the cloud still has the same version.
+  Any other failed download removes its part file, and part files older than a day are cleaned up.
 - **Mass deletes wait** for a decision (delete them, or bring the files back) while everything else syncs.
 - **A missing sync folder** (moved, deleted, an unplugged drive) holds the sync; it is never made again on its own,
   only when the person chooses "Download everything again" (or sets the client up again).
@@ -85,7 +90,8 @@ The desktop client keeps chosen server folders in a local folder, two ways.
 Optional and off by default (`-apps` image plus the setting). The Craft web builds sit in a same-origin iframe and
 talk to the host through `craft-web-host` (`ready`, `open`, `save`, `dirty`, `failed`). For apps without that bridge,
 the image injects `craftcloud-shim.js`, which speaks the same protocol on the app's behalf; those apps are marked
-experimental. `apps.toml` pins each app's version and checksum and sets its bridge and file types.
+experimental. `apps.toml` pins each app's version and checksum and sets its bridge and file types; `cargo xtask bump-apps`
+moves the pins to each app's latest release, and `cargo xtask fetch-apps` builds the image's app tree from them.
 
 **Status:** the image serves the web builds and gates each file per app; the page that frames an app and the shim
 are not built yet ([ROADMAP.md](ROADMAP.md)).

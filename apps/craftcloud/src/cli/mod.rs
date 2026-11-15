@@ -560,11 +560,25 @@ fn run(ctx: &mut Ctx, command: Cmd) -> Result<()> {
     }
 }
 
+/// Set to `1` by `craftcloud.com`, the Windows terminal launcher (`apps/craftcloud-cli`), when it
+/// relays a console to our stdin: a pipe, but a person types into it.
+const STDIN_CONSOLE: &str = "CRAFTCLOUD_STDIN_CONSOLE";
+
+/// Whether a person types our input, so a question may be asked: a terminal, or a Windows console
+/// that `craftcloud.com` relays.
+pub fn stdin_is_terminal() -> bool {
+    typed_input(std::io::IsTerminal::is_terminal(&std::io::stdin()), std::env::var_os(STDIN_CONSOLE).as_deref())
+}
+
+fn typed_input(is_terminal: bool, relayed_console: Option<&std::ffi::OsStr>) -> bool {
+    is_terminal || relayed_console.is_some_and(|v| v == "1")
+}
+
 /// Reads a secret: from the terminal without echo, or the first line of stdin when it isn't one.
 pub fn read_secret(prompt: &str) -> Result<String> {
-    use std::io::{BufRead, IsTerminal};
+    use std::io::BufRead;
     let stdin = std::io::stdin();
-    let tty = stdin.is_terminal();
+    let tty = stdin_is_terminal();
     if tty {
         eprint!("{prompt}: ");
         echo(false);

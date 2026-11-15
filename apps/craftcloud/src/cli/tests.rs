@@ -200,6 +200,21 @@ fn a_held_sync_is_its_own_exit_code_and_says_what_to_run() {
     assert!(super::account::failed(&Status { state: "up_to_date".into(), ..Status::default() }).is_ok());
 }
 
+/// #15: a file still being saved after `sync --once`'s second pass is said, in the headline and the
+/// JSON, without the exit code of a hold (it waits for time, not for the person).
+#[test]
+fn a_file_being_saved_is_said() {
+    use craftcloud_core::sync::{SyncProgress, SyncState};
+    use craftcloud_native::control::Status;
+    let p = SyncProgress { state: SyncState::UpToDate, waiting: vec!["Documents/notes.md".into()], ..SyncProgress::default() };
+    let s = Status::from_progress(&p, "https://cloud.example.org", "/home/john/CraftCloud");
+    assert_eq!(super::account::state_words(&s), "Up to date · 1 file is still being saved: it syncs in the next pass.");
+    assert_eq!(serde_json::to_value(&s).unwrap()["waiting"], serde_json::json!(["Documents/notes.md"]));
+    assert!(super::account::failed(&s).is_ok());
+    let none = Status::from_progress(&SyncProgress { state: SyncState::UpToDate, ..SyncProgress::default() }, "", "");
+    assert!(serde_json::to_value(&none).unwrap().get("waiting").is_none(), "left out when nothing waits");
+}
+
 /// T-049: storage use says how much the kept versions take, in the same (decimal) units; a file
 /// that doesn't fit is said in the headline, without changing the exit code.
 #[test]
@@ -282,4 +297,16 @@ fn files_that_failed_to_sync_are_in_the_headline() {
     let words = super::account::state_words(&s);
     assert!(words.starts_with("Up to date · 1 file couldn't sync"), "{words}");
     assert_eq!(super::account::state_words(&Status { state: "up_to_date".into(), ..Status::default() }), "Up to date.");
+}
+
+/// On Windows `craftcloud.com` relays the console through a pipe and says so, so the questions
+/// (passwords, "Delete …? [y/N]") are still asked (#4). Any other value, or none, is a pipe.
+#[test]
+fn a_relayed_console_counts_as_a_terminal() {
+    use std::ffi::OsStr;
+    assert!(super::typed_input(true, None));
+    assert!(super::typed_input(false, Some(OsStr::new("1"))));
+    assert!(!super::typed_input(false, None));
+    assert!(!super::typed_input(false, Some(OsStr::new(""))));
+    assert!(!super::typed_input(false, Some(OsStr::new("0"))));
 }

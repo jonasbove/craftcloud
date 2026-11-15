@@ -25,5 +25,10 @@ This project includes or adapts work from:
 - OxiCloud (https://github.com/AtalayaLabs/OxiCloud), Copyright (c) 2025 OxiCloud Contributors, MIT.
   The server image runs the upstream OxiCloud image unmodified.
 
+- gitmoji (https://github.com/carloscuesta/gitmoji), Copyright (c) 2016-2022 Carlos Cuesta, MIT.
+  .github/gitmojis.json is packages/gitmojis/src/gitmojis.json from commit
+  4774b049ef57eee985e71bf3dd33a30110f3cd86, unmodified, with its licence in .github/gitmojis.LICENSE;
+  the pull request workflow checks the gitmoji it adds to a title against it.
+
 - Inter, Archivo and Geist Mono, SIL Open Font License 1.1; the licences are next to the font files
   in crates/ui-egui/assets/fonts/.

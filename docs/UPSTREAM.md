@@ -271,9 +271,13 @@ fix below would remove some of that glue.
 >   in `GET /api/folders/{id}/resources`.
 > - WebDAV `DELETE` deletes for good while the REST deletes move to the trash; a sync client that deletes over
 >   WebDAV bypasses the trash. A WebDAV client has no way to ask for the trash.
+> - `POST /api/auth/refresh` with a refresh token whose session is gone (the device was removed, or the session
+>   ended) answers 404 "Session not found", where a client expects 401. CraftCloud treats that 404 as signed
+>   out.
 >
 > Ask: one shape per answer, a 404 for an unknown trash id, complete records after rename/move, one path
-> convention, and WebDAV deletes that go to the trash (as Nextcloud's do) or a header to choose.
+> convention, WebDAV deletes that go to the trash (as Nextcloud's do) or a header to choose, and a 401 for a
+> refresh token that is no longer valid.
 
 ### C11. Storage use doesn't drop when the trash is emptied
 

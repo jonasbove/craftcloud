@@ -488,6 +488,51 @@ fn the_activity_list_shows_files_on_their_way_and_opens_files() {
     assert_eq!(h.state().host.opened_files, ["Documents/a.md"]);
 }
 
+/// A Windows error for a name the disk can't take, as the engine reports it.
+pub(super) const LONG_DETAIL: &str = "couldn't download Weird/what?.md: can't write C:\\Users\\john\\CraftCloud\\Weird\\.what?.md.44c77418e27569db-1794748821.craftcloud-part: The filename, directory name, or volume label syntax is incorrect. (os error 123)";
+
+#[test]
+fn a_long_error_detail_stays_inside_its_activity_row() {
+    use craftcloud_core::sync::{ActivityEvent, ActivityKind};
+    for width in [960.0, 640.0] {
+        let mut h = signed_in();
+        let mut p = SyncProgress { state: SyncState::UpToDate, ..SyncProgress::default() };
+        p.record(ActivityEvent {
+            at: 0,
+            time: "14:32".into(),
+            date: "2026-11-13".into(),
+            kind: ActivityKind::Error,
+            path: "Weird/what?.md".into(),
+            size: None,
+            detail: LONG_DETAIL.into(),
+        });
+        h.state_mut().host.progress = p;
+        h.set_size(egui::vec2(width, 640.0));
+        h.run();
+        let row = h.get_by_label("Open Weird/what?.md").rect();
+        let path = h.get_by_label("Weird/what?.md").rect();
+        let detail = h.get_by_label(LONG_DETAIL).rect();
+        let badge = h.get_by_label("ERROR").rect();
+        assert!(row.left() >= 0.0 && row.right() <= width, "{width}: the row {row:?} is in the window");
+        assert!(detail.left() >= row.left() && detail.right() <= row.right() + 0.5, "{width}: the detail {detail:?} stays in the row {row:?}");
+        assert!(detail.left() >= path.right(), "{width}: the detail {detail:?} doesn't cover the name {path:?}");
+        assert!(path.left() >= badge.right(), "{width}: the name {path:?} doesn't cover the badge {badge:?}");
+        assert!(path.width() > 20.0, "{width}: the name keeps some room: {path:?}");
+    }
+}
+
+#[test]
+fn a_failed_sync_never_says_two_full_stops() {
+    let h = with_state(SyncState::Failed(
+        "Another CraftCloud (the desktop client or `craftcloud daemon`) is already syncing C:\\Users\\john\\CraftCloud.".into(),
+    ));
+    h.get_by_label(
+        "Another CraftCloud (the desktop client or `craftcloud daemon`) is already syncing C:\\Users\\john\\CraftCloud. It's tried again at the next cycle.",
+    );
+    let h = with_state(SyncState::Failed("the disk is full".into()));
+    h.get_by_label("the disk is full. It's tried again at the next cycle.");
+}
+
 #[test]
 fn the_folders_tab_counts_files_and_flags_errors() {
     use craftcloud_core::sync::FolderStats;

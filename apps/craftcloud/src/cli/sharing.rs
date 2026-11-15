@@ -65,27 +65,16 @@ impl Link {
 }
 
 /// `7d`, `12h`, `2w`, `2027-01-31` (to the end of that day, UTC) or an RFC 3339 time → RFC 3339,
-/// in the future.
+/// in the future. The rules are the web share sheet's too (`shares::expiry_at`).
 pub fn parse_expiry(text: &str, now: jiff::Timestamp) -> Result<String> {
     let text = text.trim();
-    let bad = || CliError::usage(format!("--expires {text}: use a date (2027-01-31), a time (2027-01-31T18:00:00Z) or a duration (12h, 7d, 2w)"));
-    let when = if let Some(unit) = text.chars().last().filter(|c| matches!(c, 'h' | 'd' | 'w')) {
-        let n: i64 = text[..text.len() - 1].parse().map_err(|_| bad())?;
-        let hours = match unit {
-            'h' => n,
-            'd' => n * 24,
-            _ => n * 24 * 7,
-        };
-        now.checked_add(jiff::SignedDuration::from_hours(hours)).map_err(|_| bad())?
-    } else if let Ok(date) = text.parse::<jiff::civil::Date>() {
-        date.tomorrow().and_then(|d| d.to_zoned(jiff::tz::TimeZone::UTC)).map_err(|_| bad())?.timestamp()
-    } else {
-        text.parse::<jiff::Timestamp>().map_err(|_| bad())?
-    };
-    if when <= now {
-        return Err(CliError::usage(format!("--expires {text}: that is in the past")));
+    match shares::expiry_at(text, now, jiff::tz::Offset::UTC) {
+        Ok(when) => Ok(shares::expiry_text(when)),
+        Err(shares::ExpiryError::Past) => Err(CliError::usage(format!("--expires {text}: that is in the past"))),
+        Err(shares::ExpiryError::Unreadable) => {
+            Err(CliError::usage(format!("--expires {text}: use a date (2027-01-31), a time (2027-01-31T18:00:00Z) or a duration (12h, 7d, 2w)")))
+        }
     }
-    Ok(when.strftime("%Y-%m-%dT%H:%M:%SZ").to_string())
 }
 
 fn all_shares(remote: &mut Remote) -> Result<Vec<Share>> {

@@ -103,7 +103,7 @@ has the map.
    it was checked). Unless the user gives you a task, pick work from the roadmap.
 2. Read the doc for the area you touch: [ARCHITECTURE](docs/ARCHITECTURE.md), [CLI](docs/CLI.md),
    [CRAFT-INTEGRATION](docs/CRAFT-INTEGRATION.md), [OIDC](docs/OIDC.md), [FILES-ON-DEMAND](docs/FILES-ON-DEMAND.md),
-   [UPSTREAM](docs/UPSTREAM.md), [RELEASE-NOTES](docs/RELEASE-NOTES.md), [RELEASING](docs/RELEASING.md), [BACKUP](docs/BACKUP.md), and `design/README.md` for screens.
+   [UPSTREAM](docs/UPSTREAM.md), [RELEASE-NOTES](docs/RELEASE-NOTES.md), [RELEASING](docs/RELEASING.md), [BACKUP](docs/BACKUP.md), [TESTING](docs/TESTING.md), and `design/README.md` for screens.
    People contributing by hand start at [CONTRIBUTING.md](CONTRIBUTING.md).
 3. `PLAN.md` and `docs/RESEARCH.md` are an optional gitignored notebook, and `CLAUDE.local.md` holds one machine's
    facts. Do not ask for them and do not stop when they are absent.
@@ -161,7 +161,9 @@ has the map.
   `<gitmoji> Area: what changed for the person`, with the tester's task id when there is one (`(T-064)`).
   Examples: `🐛 Sync: …` (a bug fix), `✨ Web: …` (a feature), `📝 Docs: …`, `👷 CI: …`, `📦 Releases: …`,
   `🔒️ Security: …`, `⬆️ Deps: …`, `♻️ …` (a refactor), `✅ …` (tests), `🙈 …` (`.gitignore`). One gitmoji per
-  commit, the one that fits its main change.
+  commit, the one that fits its main change. A pull request's title follows the same form, since it becomes the
+  merge commit's subject; contributors needn't know gitmoji, because the **Claude pull request check** adds one
+  to a title that has none.
 
 ## Running and looking at the app
 - **Desktop client:** `cargo run --release -p craftcloud` (window and tray); `craftcloud --hidden` starts in the tray.
@@ -182,6 +184,11 @@ has the map.
   `docker compose -p craftcloud-<name> down -v`.
 - **Live sync tests** against that server (never in CI; on a fresh server they create the owner first):
   `CRAFTCLOUD_TEST_SERVER=http://127.0.0.1:<port> CRAFTCLOUD_TEST_USER=john CRAFTCLOUD_TEST_PASSWORD=… CRAFTCLOUD_HTTP_IDLE_SECS=5 cargo test -p craftcloud-native --test live -- --test-threads 1`.
+- **The two-client smoke test** (any server, a test account; never in CI): the same variables, then
+  `cargo xtask e2e-sync` (`--bin PATH` for another build, `--keep` to look afterwards). Two scratch clients sync a
+  fresh folder pass by pass through every case in [docs/TESTING.md](docs/TESTING.md), and it ends with a PASS/FAIL
+  table; every pass's `--json` stays in `target/e2e-sync/<run>/passes/`. With an admin account it stops when another
+  client is signed in to it (a stray client syncing it makes the results meaningless); with others it warns.
 - **Server facts to rely on** (OxiCloud v0.10.0; recorded answers in `crates/core/tests/fixtures/oxicloud-0.10.0/`):
   - First run: `GET /api/auth/status` says `initialized:false`; `POST /api/setup {username, email, password}` without
     auth creates the owner. Sign-in: `POST /api/auth/login`, renewal `/api/auth/refresh`. A Bearer token works on
@@ -252,7 +259,26 @@ README's Status section in step.
 - `.github/workflows/dockerhub-page.yml` (**Docker Hub page**): the Docker Hub description and overview, from
   `docker/DOCKERHUB.md`, on a push that changes it and by hand.
 - `.github/workflows/packaging-lint.yml` (**Packaging lint**): actionlint, shellcheck on `packaging/`, and the
-  desktop entry, AppStream file, Info.plist and MSI sources.
+  desktop entry, AppStream file, Info.plist and MSI sources; shellcheck and the tests for `.github/scripts/`.
+- `.github/workflows/claude-pr.yml` (**Claude pull request check**): on every pull request that isn't a draft or a
+  bot's (`pull_request_target`), Claude adds a gitmoji to a title without an emoji, adds type, platform and area
+  labels, and writes one automated review comment, updated on every push (does it do what it says, risky or
+  malicious changes, the house rules, must fix and could be better). A maintainer still decides on every merge.
+  The pull request's code is never checked out or run: Claude reads the diff from the API, can only read, and
+  answers in JSON; a separate job without Claude's token applies only a gitmoji from `.github/gitmojis.json` and
+  labels from `.github/labels.json` (`.github/scripts/claude-bot.sh`). Claude's file tools are confined to the
+  workspace (`blockReadsOutsideWorkingDirectories` plus deny rules for `/proc`, `~/.claude`, `.git` and the like),
+  and an answer that looks like it holds a credential is never posted: the review becomes a fixed notice and the
+  job fails. Claude's answers reach the apply job as a scanned one-day artifact, never through env or outputs,
+  which GitHub prints in the public log.
+- `.github/workflows/claude-issues.yml` (**Claude issue labels**): on a new, edited or reopened issue, Claude adds
+  type, platform and area labels, and `❓ needs info` when a bug report lacks steps, version or system. It posts no
+  comment; a possible duplicate goes in the run's summary, labelled `👯 duplicate` only when it names an open
+  issue it is identical to.
+- Both need the `CLAUDE_CODE_OAUTH_TOKEN` secret (from `claude setup-token`) and skip with a notice without it.
+  `.github/labels.json` is the one list of the repository's labels, with their colours, descriptions and group;
+  the workflows never create labels, add only type, platform and area labels (and those two on issues), never
+  remove one, and never re-add one a person removed.
 - One app id everywhere: `io.github.jonasbove.craftcloud` (window app id, desktop entry, icons, AppStream, Flatpak,
   macOS bundle, start-at-login entries). `packaging/icons.sh` regenerates every packaging icon from the logo.
 - Don't add or change CI in a feature or fix change. Moving the workflows to `storytold/craft-common-actions` is its
