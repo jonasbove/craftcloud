@@ -592,7 +592,12 @@ fn a_rename_and_a_move_take_the_kept_versions_along() {
     h.run();
     h.get_by_label("RENAME").click();
     h.run();
-    assert_eq!(h.state().backend.sent.iter().filter(|(_, r)| r.url.contains("/.craftcloud/")).count(), 0, "nothing moves before the rename worked");
+    // (The details panel lists the kept versions: a PROPFIND, which moves nothing.)
+    assert_eq!(
+        h.state().backend.sent.iter().filter(|(_, r)| r.url.contains("/.craftcloud/") && r.method != Method::Propfind).count(),
+        0,
+        "nothing moves before the rename worked"
+    );
     h.state_mut().backend.answer("/api/files/f1/rename", ok(fixture("file-rename.json")));
     h.run();
     answer_mkcols(&mut h);
@@ -810,4 +815,173 @@ fn a_restored_version_closes_the_sheet_and_says_so() {
     h.run();
     assert!(h.state().files.sheet.is_none());
     h.get_by_label("Restored the version from Today 09:00");
+}
+
+// ─── The details panel ──────────────────────────────────────────────────────────────────────────
+
+const REPORT_HISTORY: &str = ".craftcloud/versions/Reports/report.docx/";
+
+/// Reports with a folder, `report.docx` and `plan.txt`, and `report.docx` clicked.
+fn report_details() -> App {
+    let mut h = in_reports(&[folder("d2", "Drafts"), file("f1", "report.docx", 248_000), file("f2", "plan.txt", 8)]);
+    h.state_mut().backend.wall = Some(crate::backend::WallClock { unix: 1_794_608_247.123, utc_offset_minutes: 0 });
+    h.get_by_label("report.docx").click();
+    h.run();
+    h
+}
+
+fn details_shown(h: &App) -> bool {
+    h.query_by_label("Close details").is_some()
+}
+
+#[test]
+fn a_selected_file_shows_its_details() {
+    let mut h = report_details();
+    assert!(details_shown(&h));
+    assert_eq!(h.get_all_by_label("report.docx").count(), 2, "the row and the panel's name");
+    h.get_by_label("DOCX document · 248 KB · opens in WordCraft");
+    h.get_by_label("Modified: Today 11:42");
+    h.get_by_label("Location: My files/Reports");
+    h.get_by_label("Owner: john");
+    h.get_by_label("Shared: Not shared");
+    // No "Open in WordCraft": the page that frames a web app isn't built.
+    assert!(h.query_by_label_contains("OPEN IN").is_none());
+    // Its kept versions: the newest two under the current file.
+    assert_eq!(h.state().backend.last_to(&format!("/webdav/{REPORT_HISTORY}")).method, Method::Propfind);
+    h.get_by_label("Loading…");
+    let list = multistatus(REPORT_HISTORY, &[("20261111T080000.000Z", "h0-0", 5), ("20261112T091200.000Z", "h1-1", 6), (NEWEST, "h2-2", 7)]);
+    h.state_mut().backend.answer(&format!("/webdav/{REPORT_HISTORY}"), Ok(HttpResponse::new(207, list)));
+    h.run();
+    h.get_by_label("CURRENT");
+    h.get_by_label("Today 09:00");
+    h.get_by_label("Yesterday 09:12");
+    assert_eq!(h.get_all_by_label("RESTORE").count(), 2, "the oldest is in ALL VERSIONS…");
+    // DOWNLOAD fetches the file (the meta line has one too); ALL VERSIONS… opens the history.
+    assert_eq!(h.get_all_by_label("DOWNLOAD").count(), 2);
+    h.get_all_by_label("DOWNLOAD").last().unwrap().click();
+    h.run();
+    assert_eq!(h.state().backend.downloads.last().map(|(_, n)| n.as_str()), Some("report.docx"));
+    h.get_by_label("ALL VERSIONS…").click();
+    h.run();
+    h.get_by_label("Versions of report.docx");
+}
+
+#[test]
+fn details_are_for_one_file_outside_the_trash() {
+    let mut h = report_details();
+    // A folder has none.
+    h.get_by_label("Drafts").click();
+    h.run();
+    assert!(!details_shown(&h));
+    // Nor have two files.
+    h.get_by_label("Select report.docx").click();
+    h.run();
+    h.get_by_label("Select plan.txt").click();
+    h.run();
+    assert_eq!(h.state().files.selection.len(), 3);
+    assert!(!details_shown(&h));
+    h.get_by_label("Select Drafts").click();
+    h.run();
+    h.get_by_label("Select report.docx").click();
+    h.run();
+    assert!(details_shown(&h), "one file again");
+    // Closed, they stay closed until a file is clicked again.
+    h.get_by_label("Close details").click();
+    h.run();
+    assert!(!details_shown(&h));
+    h.get_by_label("plan.txt").click();
+    h.run();
+    assert!(details_shown(&h));
+    h.get_by_label("Text · 8 B · opens in WordCraft");
+}
+
+#[test]
+fn the_menu_leaves_hidden_details_hidden() {
+    let mut h = in_reports(&[file("f1", "report.docx", 248_000)]);
+    h.get_by_label("More for report.docx").click();
+    h.run();
+    assert!(!details_shown(&h), "the page doesn't shift under the menu");
+    h.get_by_label("Versions…");
+}
+
+#[test]
+fn the_details_more_button_opens_the_files_menu() {
+    let mut h = report_details();
+    h.get_by_label("More actions").click();
+    h.run();
+    h.get_by_label("Rename…");
+    h.get_by_label("Move to trash");
+}
+
+#[test]
+fn the_details_star_stars_the_file() {
+    let mut h = report_details();
+    h.get_by_label("Star").click();
+    h.run();
+    assert_eq!(h.state().backend.last_to("/api/favorites/file/f1").method, Method::Post);
+}
+
+#[test]
+fn a_narrow_page_has_no_details() {
+    let mut h = report_details();
+    h.set_size(egui::vec2(1100.0, 900.0));
+    h.run();
+    assert!(!details_shown(&h));
+    h.set_size(egui::vec2(1440.0, 900.0));
+    h.run();
+    assert!(details_shown(&h));
+}
+
+#[test]
+fn a_late_versions_answer_never_fills_another_files_details() {
+    let mut h = report_details();
+    h.get_by_label("plan.txt").click();
+    h.run();
+    // report.docx's answer comes after plan.txt was picked.
+    let list = multistatus(REPORT_HISTORY, &[(NEWEST, "h2-2", 7)]);
+    h.state_mut().backend.answer(&format!("/webdav/{REPORT_HISTORY}"), Ok(HttpResponse::new(207, list)));
+    h.run();
+    assert_eq!(h.query_all_by_label("RESTORE").count(), 0, "report.docx's versions stay out of plan.txt's details");
+    h.get_by_label("Loading…");
+    h.state_mut().backend.answer(&format!("/webdav/{HISTORY}"), Ok(HttpResponse::new(404, Vec::new())));
+    h.run();
+    h.get_by_label("No earlier versions yet.");
+}
+
+#[test]
+fn restore_in_the_details_keeps_the_current_file_and_says_so() {
+    let mut h = in_reports(&[file("f1", "plan.txt", 8)]);
+    h.state_mut().backend.wall = Some(crate::backend::WallClock { unix: 1_794_608_247.123, utc_offset_minutes: 0 });
+    h.get_by_label("plan.txt").click();
+    h.run();
+    let list = multistatus(HISTORY, &[("20261112T091200.000Z", "h1-1", 6), (NEWEST, "h2-2", 7)]);
+    h.state_mut().backend.answer(&format!("/webdav/{HISTORY}"), Ok(HttpResponse::new(207, list)));
+    h.run();
+    restore_newest(&mut h);
+    h.get_by_label("RESTORING…");
+    let copy = h.state().backend.last_to("/webdav/Reports/plan.txt");
+    assert_eq!((copy.method, copy.header_value("Overwrite")), (Method::Copy, Some("F")));
+    h.state_mut().backend.answer("/webdav/Reports/plan.txt", Ok(HttpResponse::new(201, Vec::new())));
+    h.run();
+    h.state_mut().backend.answer(&format!("/webdav/{HISTORY}"), Ok(HttpResponse::new(404, Vec::new())));
+    h.run();
+    let put = h.state().backend.last_to("/webdav/Reports/plan.txt");
+    assert_eq!((put.method, put.header_value("If-Match")), (Method::Put, Some("\"cur-9\"")));
+    h.state_mut().backend.answer("/webdav/Reports/plan.txt", Ok(HttpResponse::new(204, Vec::new())));
+    h.run();
+    h.get_by_label("Restored the version from Today 09:00");
+}
+
+#[test]
+fn a_hostile_name_and_history_stay_inside_the_details() {
+    let long = format!("{}.docx", "x".repeat(5000));
+    let mut h = in_reports(&[file("f1", &long, u64::MAX)]);
+    h.get_by_label(&long).click();
+    h.run();
+    assert!(details_shown(&h));
+    let history = format!(".craftcloud/versions/Reports/{long}/");
+    let odd = multistatus(&history, &[("not-a-stamp", "e", u64::MAX), ("../../etc", "e", 0)]);
+    h.state_mut().backend.answer(&format!("/webdav/{history}"), Ok(HttpResponse::new(207, odd)));
+    h.run();
+    h.get_by_label("CURRENT");
 }

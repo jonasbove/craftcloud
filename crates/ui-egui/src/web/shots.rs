@@ -143,6 +143,33 @@ fn files_with_selection(s: egui::Vec2, t: egui::Theme) -> H {
     h
 }
 
+/// Answers the kept versions of "Q3 report.docx", five of them, to everything that asked.
+fn answer_versions(h: &mut H) {
+    let Some(url) = h.state().backend.sent.iter().map(|(_, r)| r.url.clone()).find(|u| u.contains("/.craftcloud/versions/")) else {
+        return;
+    };
+    let folder = url.split_once("/webdav/").map_or("", |(_, p)| p).to_owned();
+    let entry = |name: &str, size: u64| {
+        format!(
+            r#"<D:response><D:href>/webdav/{folder}{name}</D:href><D:propstat><D:prop><D:resourcetype/><D:getetag>"{name}-1"</D:getetag><D:getcontentlength>{size}</D:getcontentlength></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>"#
+        )
+    };
+    let versions = [
+        ("20261114T081500.000Z_20261114T091500Z", 244_000),
+        ("20261113T163000.000Z_20261113T163000Z", 231_000),
+        ("20261113T081200.000Z_20261113T081200Z", 229_000),
+        ("20261111T144800.000Z_20261111T144800Z", 210_000),
+        ("20261110T100300.000Z_20261110T100300Z", 188_000),
+    ];
+    let body: String = versions.iter().map(|(n, s)| entry(n, *s)).collect();
+    let xml = format!(r#"<D:multistatus xmlns:D="DAV:">{body}</D:multistatus>"#);
+    // The details panel and the sheet both ask.
+    while h.state().backend.waiting(&url) {
+        h.state_mut().backend.answer(&url, Ok(HttpResponse::new(207, xml.clone().into_bytes())));
+        h.run();
+    }
+}
+
 /// The device approval page, after `button` and the server's `status` answer.
 fn device_answered(s: egui::Vec2, t: egui::Theme, button: &str, status: &str) -> H {
     let mut h = visit("/device", Some("7KQ-4XM"), s, t);
@@ -291,26 +318,12 @@ fn scenes() -> Vec<Scene> {
             let mut h = files_with_selection(s, t);
             click(&mut h, "More for Q3 report.docx");
             click(&mut h, "Versions…");
-            let Some(url) = h.state().backend.sent.iter().map(|(_, r)| r.url.clone()).find(|u| u.contains("/.craftcloud/versions/")) else {
-                return h;
-            };
-            let folder = url.split_once("/webdav/").map_or("", |(_, p)| p).to_owned();
-            let entry = |name: &str, size: u64| {
-                format!(
-                    r#"<D:response><D:href>/webdav/{folder}{name}</D:href><D:propstat><D:prop><D:resourcetype/><D:getetag>"{name}-1"</D:getetag><D:getcontentlength>{size}</D:getcontentlength></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>"#
-                )
-            };
-            let versions = [
-                ("20261114T081500.000Z_20261114T091500Z", 244_000),
-                ("20261113T163000.000Z_20261113T163000Z", 231_000),
-                ("20261113T081200.000Z_20261113T081200Z", 229_000),
-                ("20261111T144800.000Z_20261111T144800Z", 210_000),
-                ("20261110T100300.000Z_20261110T100300Z", 188_000),
-            ];
-            let body: String = versions.iter().map(|(n, s)| entry(n, *s)).collect();
-            let xml = format!(r#"<D:multistatus xmlns:D="DAV:">{body}</D:multistatus>"#);
-            h.state_mut().backend.answer(&url, Ok(HttpResponse::new(207, xml.into_bytes())));
-            h.run();
+            answer_versions(&mut h);
+            h
+        }),
+        ("files-details", |s, t| {
+            let mut h = files_with_selection(s, t);
+            answer_versions(&mut h);
             h
         }),
         ("home", |s, t| {

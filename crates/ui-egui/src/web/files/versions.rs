@@ -118,17 +118,31 @@ impl Files {
                     return;
                 }
                 let known = h.list.clone().unwrap_or_default();
-                let when = known.iter().find(|v| v.stamp == stamp).map(|v| saved_when(v, self.clock)).unwrap_or_default();
                 h.restoring = Some(stamp.clone());
                 h.error = None;
-                let now = time::stamp(backend.wall_clock().map_or(0.0, |c| c.unix));
-                let mut keep = versions::make_folders(&self.server, &path);
-                keep.push(versions::snapshot(&self.server, &path, &now));
-                let steps = VecDeque::from([Step::Stat, Step::Fetch]);
-                self.version_run = Some(Run { path, stamp, steps, etag: None, bytes: Vec::new(), keep, known, when });
-                self.version_next(backend);
+                self.start_restore(backend, path, stamp, known);
             }
         }
+    }
+
+    /// Starts restoring version `stamp` of the file at `path` (the sheet's and the details panel's
+    /// RESTORE); `known` is the kept versions as last listed. One restore runs at a time.
+    pub(super) fn start_restore(&mut self, backend: &mut dyn Backend, path: String, stamp: String, known: Vec<Version>) {
+        if self.version_run.is_some() || path.is_empty() {
+            return;
+        }
+        let when = known.iter().find(|v| v.stamp == stamp).map(|v| saved_when(v, self.clock)).unwrap_or_default();
+        let now = time::stamp(backend.wall_clock().map_or(0.0, |c| c.unix));
+        let mut keep = versions::make_folders(&self.server, &path);
+        keep.push(versions::snapshot(&self.server, &path, &now));
+        let steps = VecDeque::from([Step::Stat, Step::Fetch]);
+        self.version_run = Some(Run { path, stamp, steps, etag: None, bytes: Vec::new(), keep, known, when });
+        self.version_next(backend);
+    }
+
+    /// The version being restored, `(path, stamp)`.
+    pub(super) fn restoring(&self) -> Option<(&str, &str)> {
+        self.version_run.as_ref().map(|r| (r.path.as_str(), r.stamp.as_str()))
     }
 
     fn version_next(&mut self, backend: &mut dyn Backend) {
@@ -224,7 +238,7 @@ impl Files {
 }
 
 /// When a version was saved: its content's own time when its name says, else when it was replaced.
-fn saved_when(v: &Version, clock: Option<WallClock>) -> String {
+pub(super) fn saved_when(v: &Version, clock: Option<WallClock>) -> String {
     match v.modified_at().or_else(|| v.replaced_at()) {
         Some(at) => time::when_exact(&at, clock),
         None => v.when(),
