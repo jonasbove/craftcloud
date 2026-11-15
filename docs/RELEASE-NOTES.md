@@ -8,6 +8,11 @@
 - **Sync: a file you're saving is never overwritten.** A file changed in the last two seconds waits for the next
   pass instead of looking unchanged, so a change made in the cloud at the same time now ends in a conflict copy
   rather than replacing your edit (#36). A download also checks the local file one last time before replacing it.
+- **`craftcloud sync --once` no longer says "up to date" while a file waits.** A file written in the two seconds
+  before it ran was held for the next pass, yet the result said `up_to_date` (#15). Now `--once` waits those two
+  seconds once and syncs the file in a second pass; anything still being written after that is listed in the new
+  `waiting` field (also in `status --json`) and in the headline ("1 file is still being saved"). The exit code
+  stays 0: the file waits for time, not for you.
 - **Building the server image yourself on an arm64 machine works** (a Raspberry Pi, an Apple Silicon Mac):
   `docker compose build` stopped in the web frontend step there. The published images were not affected.
 

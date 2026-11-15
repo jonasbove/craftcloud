@@ -74,7 +74,7 @@ and work without one.
 | `sync [--no-wait]` | Syncs now through the running client, and waits until that sync is done (unless `--no-wait`). When no client runs, it does one sync pass itself, like `sync --once` |
 | `sync --confirm-deletes` | Carries out the deletions a mass-delete hold waits on (see below), then waits for that sync. It says how many (`Deleting 3000 files…` on stderr, then `Deleted 3000 files.`). A folder deleted whole goes to the cloud's trash as one item (one activity line, `Deleted t14/many (folder with 3000 files, to the cloud trash)`). With `--once`, in this process |
 | `sync --discard-deletes` | Brings back the files a mass-delete hold would delete instead: downloaded again where they were deleted on this computer; where they were deleted in the cloud, put back from the cloud's trash (the same files and folders, so their links, stars and versions stay), and uploaded again only when they aren't in the trash any more |
-| `sync --once` | One full sync pass in this process, with the saved settings and sign-in, then exits. Refused (code 5) while the desktop client or a daemon syncs the folder |
+| `sync --once` | One full sync pass in this process, with the saved settings and sign-in, then exits. A file written in the 2 seconds before is held by that pass (an app may still be saving it), so `--once` then waits those seconds once and runs a second pass for it. Refused (code 5) while the desktop client or a daemon syncs the folder |
 | `daemon` | The sync engine without a window or tray, until stopped (Ctrl+C or a signal). Logs activity to stderr (JSON lines on stdout with `--json`), and answers `status`, `sync`, `pause` and `resume` like the desktop client. Refused (code 5) when one already runs |
 | `pause`, `resume` | Pauses or resumes syncing |
 
@@ -233,12 +233,17 @@ is always `false` there (the client doesn't know stars).
 `state` is one of `idle`, `scanning`, `downloading`, `up_to_date`, `paused`, `offline`, `signed_out`,
 `mass_delete`, `folder_missing`, `failed`; `error` is set for `offline` and `failed`, `pending_deletes` (the files
 whose deletion waits) for `mass_delete`. `not_synced` lists places in synced folders that the last pass left out, as `{"path", "reason"}`; `reason` is `unreadable` (a folder or a file that can't be read, such as one without read permission: it, and anything under it, isn't synced or deleted until it can be), `symlink` (a symbolic link, never followed), `name` (a name the cloud can't take; it syncs once renamed) or `temporary` (a FILE whose name looks like an app's temporary, lock or backup file: `*.tmp`, `*.part`, `*~`, `#*#`, `.#*`, `~$*`, `*.swp`; folders with such names sync normally), and `activity` says more. It doesn't change `state`. A place that can't be read needs you, so `status` (and `sync` through a client, and `sync --once`) then say "Up to date · N places can't be read" and exit with code 9; symbolic links, names and temporary files are left out for good and don't change the exit code. `status` prints each as `not synced PATH  (why)`. `no_room` lists files that don't fit in the cloud (its quota is full); they are tried again once there is room, the
-headline says "Up to date · N not synced (no room …)", and the exit code doesn't change. `syncing` is `false` (and
+headline says "Up to date · N not synced (no room …)", and the exit code doesn't change. `waiting` lists files the last pass held
+because they were written in the 2 seconds before it (an app may still be saving them); the next pass syncs them, the
+headline says "Up to date · N files are still being saved", and neither `state` nor the exit code changes. `syncing` is `false` (and
 `state` `signed_out`) while the client waits for a sign-in. `activity`
 holds the latest 10 events; `kind` is `up`, `down`, `deleted`, `conflict`, `error`, `moved` (renamed or moved, `detail` says from where) `skipped` (left out on purpose, e.g. a folder switched off, or a name the cloud can't take) or `warning` (synced, but e.g. a name a Windows computer can't have).
 
-**`sync --once`**: `{"state", "error", "pending_deletes", "files_done", "files_total", "conflicts", "not_synced", "activity"}`,
-with every event of that pass. It exits 0 when the pass ended up to date, 3 when signed out, 8 when offline, 9 when held
+**`sync --once`**: `{"state", "error", "pending_deletes", "files_done", "files_total", "conflicts", "not_synced", "waiting", "activity"}`,
+with every event of that run. When the first pass held a file being saved, a second pass follows 2.5 seconds later and
+the result is that pass's (`files_done` and `files_total` count it alone; `activity` has both). `waiting` lists what is
+still being saved after it (empty when nothing waits): a script tells "synced" from "a file still waits" by it. It
+exits 0 when the run ended up to date (with or without `waiting`), 3 when signed out, 8 when offline, 9 when held
 (or a place can't be read), 1 otherwise.
 
 **`daemon --json`** prints one line per event: `{"event": "started", "local_folder": …}`,

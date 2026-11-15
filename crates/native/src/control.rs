@@ -91,6 +91,10 @@ pub struct Status {
     /// Doesn't change `state` or the exit code.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed: Vec<String>,
+    /// Files the last pass held because they were written moments before (an app may still be
+    /// saving them); the next pass syncs them. Doesn't change `state` or the exit code.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting: Vec<String>,
     /// The latest activity, oldest first.
     pub activity: Vec<Activity>,
 }
@@ -235,6 +239,7 @@ impl Status {
                 .collect(),
             no_room: p.no_room.clone(),
             failed: p.unsynced.iter().filter(|(_, s)| **s == craftcloud_core::sync::FileStatus::Error).map(|(path, _)| path.clone()).collect(),
+            waiting: p.waiting.clone(),
             activity: p.activity[skip..].iter().map(Activity::from).collect(),
         }
     }

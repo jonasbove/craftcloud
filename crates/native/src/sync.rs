@@ -48,7 +48,7 @@ const NO_ROOM_RETRY: Duration = Duration::from_secs(5 * 60);
 /// How often an admin's client asks the cloud to count the storage use again.
 const RECOUNT_EVERY: Duration = Duration::from_secs(60);
 /// Files written more recently than this wait for the next cycle (an app may still be saving).
-const SETTLE_MS: i64 = 2_000;
+pub const SETTLE_MS: i64 = 2_000;
 /// How long the folder watcher waits after the last change (a bit over `SETTLE_MS`, so the
 /// changed files count as settled when the cycle runs).
 const SETTLE: Duration = Duration::from_millis(2_500);
@@ -471,6 +471,7 @@ impl Engine {
             }))
             .collect();
         let not_synced: Vec<String> = left_out.keys().cloned().collect();
+        let waiting = mid_save(&unreadable);
         self.move_folders(&root, &mut state, &mut local, &mut remote, &kept_conflicts, &unreadable)?;
         let (actions, held) = match reconcile::reconcile(&state, &local, &remote, confirm == Deletes::Confirm) {
             Ok(actions) => (actions, Vec::new()),
@@ -595,6 +596,7 @@ impl Engine {
             p.pending_deletes.clone_from(&held);
             p.not_synced.clone_from(&not_synced);
             p.left_out.clone_from(&left_out);
+            p.waiting.clone_from(&waiting);
         });
         if held.is_empty() { Ok(()) } else { Err(Stop::Hold(SyncState::MassDelete { deletes: held.len() })) }
     }
@@ -1689,6 +1691,11 @@ const TEMPORARY: &str = "looks like a temporary file";
 /// synced by the next one. Not reported as unreadable.
 const MID_SAVE: &str = "being saved";
 
+/// The files held because they're being saved (#15: reported as waiting, not as up to date).
+fn mid_save(unreadable: &[Unreadable]) -> Vec<String> {
+    unreadable.iter().filter(|u| u.why == MID_SAVE).map(|u| u.path.clone()).collect()
+}
+
 /// Takes every path the sync leaves alone (`names::skipped`) out of the state and both sides, so
 /// nothing is planned for it: no download, no upload, no delete either way (T-063). A file that
 /// another device uploads under such a name stays in the cloud; one here stays here.
@@ -2240,6 +2247,7 @@ mod tests {
         let actions = hold_unreadable(reconcile::reconcile(&state, &local, &remote, false).unwrap(), &unreadable);
         assert!(!actions.iter().any(|a| super::action_paths(a).contains(&"t36/notes.txt")), "held for the next pass: {actions:?}");
         assert!(unreadable.iter().all(|u| u.why == super::MID_SAVE), "held, not reported as unreadable: {unreadable:?}");
+        assert_eq!(super::mid_save(&unreadable), vec!["t36/notes.txt".to_owned()], "#15: reported as waiting");
     }
 
     /// #36: the download step never replaces a local file that changed since it was last synced.
