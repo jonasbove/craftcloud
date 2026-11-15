@@ -78,6 +78,9 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-15: Sync: a file being saved (written in the last 2 s) is held for the next pass instead of looking
+  unchanged, and a download never replaces a local file that changed since the last sync (#36: a cloud change
+  made while a file was being saved could replace the local edit with no conflict copy).
 - 2026-11-14: Releases: the Release workflow install-tests every Linux package before it makes a draft
   (`package-test`): the deb on Debian 12 and Ubuntu 22.04/24.04, the rpm on Fedora 41/42 (x86_64 and aarch64),
   the Arch package, the AppImage and the tarball, each installed with its package manager, checked, signed in and

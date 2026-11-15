@@ -461,7 +461,7 @@ impl Engine {
         let left_out: BTreeMap<String, LeftOut> = refused_names
             .into_iter()
             .map(|p| (p, LeftOut::Name))
-            .chain(unreadable.iter().map(|u| {
+            .chain(unreadable.iter().filter(|u| u.why != MID_SAVE).map(|u| {
                 let why = match u.why.as_str() {
                     SYMLINK => LeftOut::Symlink,
                     TEMPORARY => LeftOut::Temporary,
@@ -756,7 +756,7 @@ impl Engine {
     fn report_unreadable(&mut self, unreadable: &[Unreadable]) {
         let mut notes = Vec::new();
         let root = self.root();
-        for place in unreadable.iter().filter(|u| u.why != TEMPORARY) {
+        for place in unreadable.iter().filter(|u| u.why != TEMPORARY && u.why != MID_SAVE) {
             if self.reported.insert(format!("unreadable:{}", place.path)) {
                 let shown = if place.path.is_empty() { "the CraftCloud folder" } else { place.path.as_str() };
                 let is_file = !place.path.is_empty() && local_relative(&place.path).is_some_and(|rel| root.join(rel).is_file());
@@ -1270,6 +1270,11 @@ impl Engine {
     fn download(&mut self, root: &Path, path: &str, state: &mut State, listed: Option<&RemoteFile>) -> Result<Option<u64>, String> {
         let dest = local_relative(path).map(|rel| root.join(rel)).ok_or("name not allowed")?;
         let (part, etag, resumed) = self.fetch(path, &dest, listed)?;
+        // The last look before replacing a local file: it must still be what was last synced (or
+        // gone). A change made here meanwhile is never overwritten; the next pass sees both (#36).
+        if !replaceable(&dest, state.files.get(path)) {
+            return Err("changed here while it was downloading; it syncs in the next pass".into());
+        }
         std::fs::rename(&part, &dest).map_err(|e| e.to_string())?;
         let meta = local_meta(&dest).ok_or("the file disappeared")?;
         let hash = hash_of(&dest, &meta);
@@ -1680,6 +1685,9 @@ fn leave_out_refused(local: &mut Tree<LocalFile>, remote: &mut Tree<RemoteFile>)
 /// Why a symbolic link isn't synced (it is never followed).
 const SYMLINK: &str = "a symbolic link";
 const TEMPORARY: &str = "looks like a temporary file";
+/// A file written in the last moments (an app may still be saving it): held, untouched by this pass, and
+/// synced by the next one. Not reported as unreadable.
+const MID_SAVE: &str = "being saved";
 
 /// Takes every path the sync leaves alone (`names::skipped`) out of the state and both sides, so
 /// nothing is planned for it: no download, no upload, no delete either way (T-063). A file that
@@ -1759,10 +1767,10 @@ fn scan_local(root: &Path, plan: &SyncPlan, state: &State, settled: &BTreeSet<St
                     }
                 };
                 // Mid-save only if written in the last moments; a time in the future counts as settled (T-060).
+                // Held for the next pass like a place that can't be read (#36): kept as last synced
+                // and left out of every action, so a cloud change can't be downloaded over it.
                 if (0..SETTLE_MS).contains(&(now - meta.mtime)) && !settled.contains(&path) && !synced.contains(&(meta.size, meta.mtime)) {
-                    if let Some(k) = state.files.get(&path) {
-                        tree.files.insert(path, LocalFile { size: k.size, mtime: k.mtime });
-                    }
+                    unreadable.push(Unreadable { path, why: MID_SAVE.into() });
                     continue;
                 }
                 tree.files.insert(path, meta);
@@ -1816,6 +1824,15 @@ fn hold_unreadable(actions: Vec<Action>, unreadable: &[Unreadable]) -> Vec<Actio
         return actions;
     }
     actions.into_iter().filter(|a| !action_paths(a).iter().any(|p| unreadable.iter().any(|u| within(&u.path, p)))).collect()
+}
+
+/// Whether a download may replace the local file at `dest`: it isn't there, or it is still the
+/// version last synced (same size and time). Anything else is a change made here (#36).
+fn replaceable(dest: &Path, known: Option<&Known>) -> bool {
+    match file_meta(dest) {
+        Ok(now) => known.is_some_and(|k| k.size == now.size && k.mtime == now.mtime),
+        Err(_) => std::fs::symlink_metadata(dest).is_err(),
+    }
 }
 
 /// A local file's size and time, or why they can't be read.
@@ -2195,6 +2212,68 @@ mod tests {
         assert_eq!(local.files.len(), 1, "the synced one is kept as it was: {:?}", local.files);
         let actions = hold_unreadable(reconcile::reconcile(&state, &local, &remote, false).unwrap(), &unreadable);
         assert_eq!(actions, [], "no upload, no delete");
+    }
+
+    /// #36: a file written moments ago (mid-save) is held for the next pass, so a cloud change can't
+    /// overwrite it: with the old rule it looked unchanged and the cloud version was downloaded over it.
+    #[test]
+    fn a_file_being_saved_is_never_overwritten_by_a_cloud_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("t36")).unwrap();
+        let file = root.join("t36/notes.txt");
+        std::fs::write(&file, "synced").unwrap();
+        let an_hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(&file).unwrap().set_modified(an_hour_ago).unwrap();
+        let synced = super::file_meta(&file).unwrap();
+        let mut state = State::default();
+        state.files.insert("t36/notes.txt".into(), Known { etag: "\"e1\"".into(), size: synced.size, mtime: synced.mtime, hash: None });
+        state.folders.insert("t36".into());
+        // Edited here just now, and overwritten in the cloud meanwhile.
+        std::fs::write(&file, "edited here").unwrap();
+        let mut remote: Tree<RemoteFile> = Tree::default();
+        remote.files.insert("t36/notes.txt".into(), RemoteFile { etag: "\"e2\"".into(), size: 5 });
+        remote.folders.insert("t36".into());
+        let plan =
+            SyncPlan { server: String::new(), local_folder: root.display().to_string(), excluded: vec![], folders: vec![], sync_root_files: true };
+        let (local, unreadable) = scan_local(root, &plan, &state, &BTreeSet::new());
+        let actions = hold_unreadable(reconcile::reconcile(&state, &local, &remote, false).unwrap(), &unreadable);
+        assert!(!actions.iter().any(|a| super::action_paths(a).contains(&"t36/notes.txt")), "held for the next pass: {actions:?}");
+        assert!(unreadable.iter().all(|u| u.why == super::MID_SAVE), "held, not reported as unreadable: {unreadable:?}");
+    }
+
+    /// #36: the download step never replaces a local file that changed since it was last synced.
+    #[test]
+    fn a_download_replaces_only_the_file_last_synced() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("f.txt");
+        assert!(super::replaceable(&file, None), "nothing there yet");
+        std::fs::write(&file, "synced").unwrap();
+        let meta = super::file_meta(&file).unwrap();
+        let known = Known { etag: "\"e1\"".into(), size: meta.size, mtime: meta.mtime, hash: None };
+        assert!(super::replaceable(&file, Some(&known)), "still the synced version");
+        assert!(!super::replaceable(&file, None), "a file that was never synced is someone's work");
+        std::fs::write(&file, "edited here").unwrap();
+        assert!(!super::replaceable(&file, Some(&known)), "changed here since the last sync");
+    }
+
+    /// #36: a new file being saved isn't replaced by a cloud file of the same name either.
+    #[test]
+    fn a_new_file_being_saved_is_never_overwritten_by_a_cloud_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("t36")).unwrap();
+        std::fs::write(root.join("t36/new.txt"), "mine").unwrap();
+        let mut state = State::default();
+        state.folders.insert("t36".into());
+        let mut remote: Tree<RemoteFile> = Tree::default();
+        remote.files.insert("t36/new.txt".into(), RemoteFile { etag: "\"c1\"".into(), size: 6 });
+        remote.folders.insert("t36".into());
+        let plan =
+            SyncPlan { server: String::new(), local_folder: root.display().to_string(), excluded: vec![], folders: vec![], sync_root_files: true };
+        let (local, unreadable) = scan_local(root, &plan, &state, &BTreeSet::new());
+        let actions = hold_unreadable(reconcile::reconcile(&state, &local, &remote, false).unwrap(), &unreadable);
+        assert!(!actions.iter().any(|a| super::action_paths(a).contains(&"t36/new.txt")), "held for the next pass: {actions:?}");
     }
 
     /// T-060: a file whose time is in the future is settled, not mid-save: it must be synced.
