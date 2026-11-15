@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`craftcloud open` hands over and returns.** The app it opens no longer inherits the command's output, so a
+  script that reads that output (`path=$(craftcloud open …)`) gets it at once instead of waiting until the app
+  quits (#6). On Windows it prints and opens the usual `C:\…` form of the path instead of `\\?\C:\…` (#5).
 - **Server: files opened in the browser stay files.** HTML, SVG and XML that people store are served with a
   sandbox policy, so they never run as pages on your CraftCloud's address. WebDAV names with a backslash are refused
   (as the desktop client already does).
