@@ -514,7 +514,7 @@ fn apps_json(apps: &[(&str, &AppSpec)]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Cursor, Read as _};
+    use std::io::Cursor;
 
     use zip::write::SimpleFileOptions;
 
