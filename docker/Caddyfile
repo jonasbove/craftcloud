@@ -34,6 +34,26 @@
 		respond 404
 	}
 
+	# Names the cloud can't take: a backslash in a WebDAV write is refused here for every client, as the
+	# desktop client already does (core::names::server_refuses). `path_regexp` sees the decoded path, so
+	# `%5C`, `%5c` and a raw `\` all match; the Destination header (MOVE/COPY) is raw, so match both.
+	@dav_write_backslash {
+		method PUT MKCOL MOVE COPY
+		path /webdav/* /remote.php/*
+		path_regexp dav_bs \\
+	}
+	@dav_dest_backslash {
+		method MOVE COPY
+		path /webdav/* /remote.php/*
+		header_regexp dav_dest Destination (?i)(\\|%5c)
+	}
+	handle @dav_write_backslash {
+		respond "A name can't contain a backslash (\\)." 400
+	}
+	handle @dav_dest_backslash {
+		respond "A name can't contain a backslash (\\)." 400
+	}
+
 	# craftcloud-admin: live config and the admin settings API (it checks who is asking).
 	@admin path /craftcloud/config.json /craftcloud/api/*
 	handle @admin {
@@ -128,6 +148,19 @@
 	# frontend replaces them.
 	@oxicloud path /api/* /webdav /webdav/* /wopi/* /health /ready /.well-known/* /remote.php /remote.php/* /ocs/* /index.php /index.php/* /status.php /login/v2 /login/v2/*
 	handle @oxicloud {
+		# Stored files never open as a page on this site: HTML, SVG and XML responses get a sandbox CSP,
+		# so a file someone uploaded can't run scripts with the visitor's session.
+		header {
+			match {
+				header Content-Type text/html*
+				header Content-Type application/xhtml+xml*
+				header Content-Type image/svg+xml*
+				header Content-Type text/xml*
+				header Content-Type application/xml*
+				header Content-Type text/xsl*
+			}
+			Content-Security-Policy "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'"
+		}
 		reverse_proxy 127.0.0.1:8087 {
 			flush_interval -1
 			transport http {
