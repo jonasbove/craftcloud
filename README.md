@@ -145,7 +145,7 @@ docker compose up -d        # pulls ghcr.io/jonasbove/craftcloud (amd64 and arm6
 | `CRAFTCLOUD_PUBLIC_URL` | The address people type, e.g. `https://cloud.example.org` |
 | `CRAFTCLOUD_BIND` | `127.0.0.1` behind a reverse proxy; a LAN or VPN address to reach it directly |
 | `CRAFTCLOUD_HOST_PORT` | The host port (default `8086`) |
-| `OXICLOUD_COOKIE_SECURE` | `true` when served over HTTPS |
+| `OXICLOUD_COOKIE_SECURE` | Leave unset: sign-in cookies are marked Secure when `CRAFTCLOUD_PUBLIC_URL` starts with `https://`. Set `true` or `false` only to override that |
 | `CRAFTCLOUD_WEB_APPS` | `on` to run the Craft apps in the browser (needs the `-apps` image) |
 
 Then open the public URL and follow the setup, or create the owner from the terminal:
