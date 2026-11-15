@@ -209,6 +209,22 @@ fn device_answered(s: egui::Vec2, t: egui::Theme, button: &str, status: &str) ->
     h
 }
 
+/// The sign-in page of a server with single sign-on: `password` keeps the password form, and
+/// `error` is the `login_error` key the provider round trip came back with.
+fn login_sso(s: egui::Vec2, t: egui::Theme, password: bool, error: Option<&str>) -> H {
+    let mut h = visit("/login", None, s, t);
+    h.state_mut().oidc_return(None, error.map(String::from));
+    start(&mut h, INIT, false);
+    let mut providers = String::from_utf8(fixture("oidc-providers-on.json")).unwrap();
+    if !password {
+        providers = providers.replace("\"password_login_enabled\": true", "\"password_login_enabled\": false");
+    }
+    soft(&mut h, "/api/auth/oidc/providers", ok(providers.as_bytes()));
+    h.state_mut().form.name = "john".into();
+    h.run();
+    h
+}
+
 type Scene = (&'static str, fn(egui::Vec2, egui::Theme) -> H);
 
 fn setup_at(step: u8) -> fn(egui::Vec2, egui::Theme) -> H {
@@ -279,6 +295,28 @@ fn scenes() -> Vec<Scene> {
         ("login", |s, t| {
             let mut h = visit("/", None, s, t);
             start(&mut h, INIT, false);
+            h
+        }),
+        ("login-sso", |s, t| login_sso(s, t, true, None)),
+        ("login-sso-only", |s, t| login_sso(s, t, false, None)),
+        ("login-sso-busy", |s, t| {
+            let mut h = login_sso(s, t, true, None);
+            click(&mut h, "SIGN IN WITH EXAMPLE ID");
+            h
+        }),
+        ("login-sso-error", |s, t| login_sso(s, t, true, Some("provider_unreachable"))),
+        ("login-sso-callback-denied", |s, t| login_sso(s, t, true, Some("callback_denied"))),
+        ("login-sso-provider-denied", |s, t| login_sso(s, t, true, Some("provider_denied"))),
+        ("login-sso-callback-failed", |s, t| login_sso(s, t, true, Some("callback_failed"))),
+        ("login-sso-email", |s, t| login_sso(s, t, true, Some("email_not_verified_at_idp"))),
+        ("login-sso-expired", |s, t| {
+            let mut h = visit("/login", None, s, t);
+            h.state_mut().oidc_return(Some("stale".into()), None);
+            start(&mut h, INIT, false);
+            soft(&mut h, "/api/auth/oidc/exchange", Ok(HttpResponse::new(403, fixture("oidc-exchange-invalid.json"))));
+            soft(&mut h, "/api/auth/oidc/providers", ok(&fixture("oidc-providers-on.json")));
+            h.state_mut().form.name = "john".into();
+            h.run();
             h
         }),
         ("login-device", |s, t| {

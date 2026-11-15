@@ -135,7 +135,8 @@ impl<B: Backend> WebApp<B> {
         }
         let name = self.sso.offered().map_or("single sign-on", |p| p.display_name()).to_owned();
         let caption = if self.sso.leaving { format!("To {name}") } else { "Single sign-on".to_owned() };
-        chrome::sheet(
+        // Nothing to choose while the browser is on its way: no action row.
+        chrome::notice_sheet(
             ui,
             area,
             egui::vec2(480.0, 260.0),
@@ -164,19 +165,15 @@ impl<B: Backend> WebApp<B> {
         let label = format!("Sign in with {}", p.display_name());
         let password = self.sso.password_login();
         let busy = self.net.is_busy();
+        // As wide as the form under it, the label centred.
         let full = ui.available_width();
-        let clicked = ui
-            .scope(|ui| {
-                ui.set_width(full);
-                chrome::button(ui, &label, if password { Kind::Secondary } else { Kind::Primary }, Some(Icon::Arrow), !busy).clicked()
-            })
-            .inner;
-        if clicked {
+        let kind = if password { Kind::Secondary } else { Kind::Primary };
+        if chrome::wide_button(ui, &label, kind, Some(Icon::Arrow), !busy, full).clicked() {
             self.sso.error = None;
             self.sso_go();
         }
         if password {
-            ui.add_space(14.0);
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let w = (ui.available_width() - 40.0) / 2.0;
                 let (l, _) = ui.allocate_exact_size(egui::vec2(w, 12.0), egui::Sense::hover());
@@ -185,7 +182,7 @@ impl<B: Backend> WebApp<B> {
                 let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 12.0), egui::Sense::hover());
                 ui.painter().hline(r.x_range(), r.center().y, t.hairline());
             });
-            ui.add_space(10.0);
+            ui.add_space(2.0);
         } else {
             ui.add_space(10.0);
             ui.label(RichText::new("This server signs people in through its identity provider only.").size(12.5).color(t.muted));

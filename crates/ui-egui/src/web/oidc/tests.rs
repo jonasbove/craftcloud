@@ -17,6 +17,8 @@ fn a_configured_provider_gets_a_button_that_navigates_to_it() {
     h.run();
     h.get_by_label("OR");
     h.get_by_label("USERNAME"); // the password form stays
+    // As wide as the form, as in the v2 frame (the sheet is 480 wide with 24 margins).
+    assert_eq!(h.get_by_label("SIGN IN WITH EXAMPLE ID").rect().width(), 432.0);
     h.get_by_label("SIGN IN WITH EXAMPLE ID").click();
     h.run();
     assert_eq!(h.state().backend.opened, ["http://127.0.0.1:8093/api/auth/oidc/authorize"], "a navigation, not a fetch");
@@ -45,7 +47,7 @@ fn an_sso_only_server_hides_the_password_form() {
     h.run();
     assert!(h.query_by_label("USERNAME").is_none());
     h.get_by_label("This server signs people in through its identity provider only.");
-    h.get_by_label("SIGN IN WITH EXAMPLE ID");
+    assert_eq!(h.get_by_label("SIGN IN WITH EXAMPLE ID").rect().width(), 432.0);
 }
 
 #[test]

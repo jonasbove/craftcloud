@@ -135,6 +135,9 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   words and keeps the form. The expiry rules are the command line's `--expires`, now shared in `crates/core`
   (`shares::expiry_at`). Built to the v2 Sharing frames; checked with egui_kittest tests and screenshots, not yet
   against a live server.
+- 2026-11-15: Single sign-on: the sign-in sheet follows the v2 frames: "Sign in with <button name>" spans the
+  form with its label centred, the "or" rule sits closer to it, and "Signing you in…" has no empty action row.
+  Web shots of every sign-in state (`login-sso*`).
 - 2026-11-14: Releases: the Release workflow install-tests every Linux package before it makes a draft
   (`package-test`): the deb on Debian 12 and Ubuntu 22.04/24.04, the rpm on Fedora 41/42 (x86_64 and aarch64),
   the Arch package, the AppImage and the tarball, each installed with its package manager, checked, signed in and

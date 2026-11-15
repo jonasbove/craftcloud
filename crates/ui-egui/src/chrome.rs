@@ -234,10 +234,21 @@ pub fn icon(ui: &Ui, icon: Icon, centre: egui::Pos2, color: Color32) {
 
 /// A square button: 34 tall, mono caps, an optional drawn icon before the label.
 pub fn button(ui: &mut Ui, text: &str, kind: Kind, icon: Option<Icon>, enabled: bool) -> Response {
+    button_sized(ui, text, kind, icon, enabled, None)
+}
+
+/// A [`button`] `width` points wide (at least its content), with the icon and label centred: the
+/// sign-in sheet's "Sign in with …", which spans the form.
+pub fn wide_button(ui: &mut Ui, text: &str, kind: Kind, icon: Option<Icon>, enabled: bool, width: f32) -> Response {
+    button_sized(ui, text, kind, icon, enabled, Some(width))
+}
+
+fn button_sized(ui: &mut Ui, text: &str, kind: Kind, icon: Option<Icon>, enabled: bool, width: Option<f32>) -> Response {
     let t = Tokens::get(ui.ctx());
     let galley = caps(ui, text, HUD_SIZE, egui::FontFamily::Monospace, BUTTON_SPACING, t.ink);
     let icon_w = if icon.is_some() { 22.0 } else { 0.0 };
-    let size = vec2(galley.size().x + 32.0 + icon_w, CONTROL_H);
+    let content = galley.size().x + 32.0 + icon_w;
+    let size = vec2(width.map_or(content, |w| w.max(content)), CONTROL_H);
     let sense = if enabled { Sense::click() } else { Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     let hovered = resp.hovered() && enabled;
@@ -249,9 +260,11 @@ pub fn button(ui: &mut Ui, text: &str, kind: Kind, icon: Option<Icon>, enabled: 
     };
     let fade = |c: Color32| if enabled { c } else { c.gamma_multiply(0.5) };
     ui.painter().rect(rect, CornerRadius::ZERO, fade(fill), Stroke::new(stroke.width, fade(stroke.color)), egui::StrokeKind::Inside);
-    let text_left = rect.left() + 16.0 + icon_w;
+    // The content's left edge: 16 in from the left, or centred in a wider button.
+    let left = rect.left() + ((rect.width() - content) / 2.0).max(0.0);
+    let text_left = left + 16.0 + icon_w;
     if let Some(icon) = icon {
-        paint_icon(ui, icon, pos2(rect.left() + 16.0 + 7.0, rect.center().y), fade(color));
+        paint_icon(ui, icon, pos2(left + 16.0 + 7.0, rect.center().y), fade(color));
     }
     ui.painter().galley_with_override_text_color(pos2(text_left, rect.center().y - galley.size().y / 2.0), galley, fade(color));
     if resp.has_focus() {
@@ -610,7 +623,17 @@ pub enum Part {
 
 /// A sheet `size` points large, centred in `area` (shrunk to fit), over a dim of the page.
 /// `fill` is called once for each [`Part`].
-pub fn sheet(ui: &mut Ui, area: Rect, size: egui::Vec2, hero: &Hero<'_>, mut fill: impl FnMut(&mut Ui, Part)) {
+pub fn sheet(ui: &mut Ui, area: Rect, size: egui::Vec2, hero: &Hero<'_>, fill: impl FnMut(&mut Ui, Part)) {
+    sheet_with(ui, area, size, hero, true, fill);
+}
+
+/// A [`sheet`] without the action row: a short notice while something happens on its own
+/// ("Signing you in…"). `fill` is called for [`Part::HeroRight`] and [`Part::Body`] only.
+pub fn notice_sheet(ui: &mut Ui, area: Rect, size: egui::Vec2, hero: &Hero<'_>, fill: impl FnMut(&mut Ui, Part)) {
+    sheet_with(ui, area, size, hero, false, fill);
+}
+
+fn sheet_with(ui: &mut Ui, area: Rect, size: egui::Vec2, hero: &Hero<'_>, with_actions: bool, mut fill: impl FnMut(&mut Ui, Part)) {
     let t = Tokens::get(ui.ctx());
     ui.painter().rect_filled(area, 0.0, Color32::from_black_alpha(if t.dark { 90 } else { 30 }));
     let margin = if area.width() < 600.0 { 12.0 } else { 32.0 };
@@ -646,7 +669,7 @@ pub fn sheet(ui: &mut Ui, area: Rect, size: egui::Vec2, hero: &Hero<'_>, mut fil
         let r = hero_frame.response.rect;
         ui.painter().rect_filled(Rect::from_min_size(r.min, vec2(r.width(), 2.0)), 0.0, t.accent);
         ui.painter().hline(r.x_range(), r.bottom() - 0.5, t.hairline());
-        let actions_h = CONTROL_H + 28.0;
+        let actions_h = if with_actions { CONTROL_H + 28.0 } else { 0.0 };
         let body_h = (rect.bottom() - r.bottom() - actions_h).max(0.0);
         let (body_rect, _) = ui.allocate_exact_size(vec2(rect.width(), body_h), Sense::hover());
         ui.scope_builder(UiBuilder::new().max_rect(body_rect), |ui| {
@@ -658,6 +681,9 @@ pub fn sheet(ui: &mut Ui, area: Rect, size: egui::Vec2, hero: &Hero<'_>, mut fil
                 });
             });
         });
+        if !with_actions {
+            return;
+        }
         let actions = Rect::from_min_max(pos2(rect.left(), body_rect.bottom()), rect.max);
         ui.painter().hline(actions.x_range(), actions.top() + 0.5, t.hairline());
         ui.scope_builder(
@@ -680,7 +706,36 @@ pub fn page_rects(full: Rect) -> (Rect, Rect, Rect) {
 
 #[cfg(test)]
 mod tests {
-    use super::initials;
+    use super::{Hero, Kind, Part, initials, notice_sheet, wide_button};
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn a_wide_button_spans_the_width_it_is_given() {
+        let mut h = Harness::builder().with_size(egui::vec2(600.0, 200.0)).build_ui(|ui| {
+            wide_button(ui, "Sign in with Example ID", Kind::Secondary, None, true, 430.0);
+            wide_button(ui, "Sign in with a provider whose name is long", Kind::Secondary, None, true, 40.0);
+        });
+        h.run();
+        assert_eq!(h.get_by_label("SIGN IN WITH EXAMPLE ID").rect().width(), 430.0);
+        assert!(h.get_by_label("SIGN IN WITH A PROVIDER WHOSE NAME IS LONG").rect().width() > 40.0, "never narrower than its label");
+    }
+
+    #[test]
+    fn a_notice_sheet_has_no_action_row() {
+        let parts = std::cell::RefCell::new(Vec::new());
+        let mut h = Harness::builder().with_size(egui::vec2(800.0, 600.0)).build_ui(|ui| {
+            crate::theme::install(ui.ctx());
+            let area = ui.max_rect();
+            let hero = Hero { title: "Signing you in…", caption: "", keep_case: false };
+            notice_sheet(ui, area, egui::vec2(480.0, 260.0), &hero, |_, part| parts.borrow_mut().push(part));
+        });
+        h.run();
+        drop(h);
+        let parts = parts.into_inner();
+        assert!(parts.contains(&Part::Body));
+        assert!(!parts.contains(&Part::ActionsLeft) && !parts.contains(&Part::ActionsRight), "{parts:?}");
+    }
 
     #[test]
     fn initials_from_names() {
