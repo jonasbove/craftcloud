@@ -57,6 +57,10 @@ changing.
   seconds once and syncs the file in a second pass; anything still being written after that is listed in the new
   `waiting` field (also in `status --json`) and in the headline ("1 file is still being saved"). The exit code
   stays 0: the file waits for time, not for you.
+- **Desktop notifications on Linux** for a conflict, a sign-in that ran out and a sync that can't go on; clicking
+  one opens the window. **Starting CraftCloud again while it runs** (from the app launcher, say, after closing the
+  window) shows its window instead of starting a second copy that couldn't sync. A device removed on the server
+  now shows "Signed out" (sign in again) instead of the error "Session not found".
 - **Building the server image yourself on an arm64 machine works** (a Raspberry Pi, an Apple Silicon Mac):
   `docker compose build` stopped in the web frontend step there. The published images were not affected.
 

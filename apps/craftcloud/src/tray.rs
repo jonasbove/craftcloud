@@ -6,7 +6,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use craftcloud_core::sync::SyncState;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
@@ -34,6 +34,38 @@ pub struct TrayView {
     pub state: SyncState,
     pub line: String,
     pub recent: Vec<String>,
+    /// Files are going up or down (not only being checked).
+    pub moving: bool,
+}
+
+/// How long a sync's check may run before the tray says "Checking…". The check every cycle that
+/// finds nothing to do is over long before, and showing it would change the icon and the menu
+/// twice a cycle; a tray host such as Wayle rebuilds an open menu at every change.
+const QUIET_CHECK: Duration = Duration::from_secs(10);
+
+/// While files move, the count and the recent files change at most this often.
+const PROGRESS_EVERY: Duration = Duration::from_secs(2);
+
+/// Whether the tray should change from `shown` to `next` now; `false` holds it, and a later look
+/// shows it. `busy_for` is how long the sync has been busy, `since_shown` how long ago the tray
+/// last changed.
+fn show_now(shown: Option<&TrayView>, next: &TrayView, busy_for: Duration, since_shown: Duration) -> bool {
+    let Some(shown) = shown else { return true };
+    if shown == next {
+        return false;
+    }
+    // A state each cycle comes back to: a check that starts from it is routine until it runs long.
+    let settled = matches!(
+        shown.state,
+        SyncState::UpToDate | SyncState::Offline(_) | SyncState::Failed(_) | SyncState::FolderMissing | SyncState::MassDelete { .. }
+    );
+    if next.state.is_busy() && !next.moving {
+        return !settled || busy_for >= QUIET_CHECK;
+    }
+    if next.moving && shown.moving {
+        return since_shown >= PROGRESS_EVERY;
+    }
+    true
 }
 
 pub struct Tray {
@@ -269,6 +301,9 @@ pub struct TrayHandle {
     ready: Arc<AtomicBool>,
     inner: Inner,
     last: Option<TrayView>,
+    /// When the tray last changed, and since when the sync has been busy.
+    shown_at: Instant,
+    busy_since: Option<Instant>,
 }
 
 enum Inner {
@@ -311,14 +346,21 @@ impl TrayHandle {
                 }
             });
         }
-        Self { actions, ready, inner: Inner::Thread(updates), last: None }
+        Self { actions, ready, inner: Inner::Thread(updates), last: None, shown_at: Instant::now(), busy_since: None }
     }
 
     /// Makes the tray on this thread (macOS and Windows, inside the window's event loop).
     pub fn local(wake: impl Fn() + Send + Sync + 'static) -> Option<Self> {
         let (tx, actions) = channel();
         match Tray::new(wake, tx) {
-            Ok(tray) => Some(Self { actions, ready: Arc::new(AtomicBool::new(true)), inner: Inner::Local(tray), last: None }),
+            Ok(tray) => Some(Self {
+                actions,
+                ready: Arc::new(AtomicBool::new(true)),
+                inner: Inner::Local(tray),
+                last: None,
+                shown_at: Instant::now(),
+                busy_since: None,
+            }),
             Err(e) => {
                 log::warn!("no tray icon ({e}); closing the window quits");
                 None
@@ -335,10 +377,20 @@ impl TrayHandle {
         self.actions.try_iter().collect()
     }
 
+    /// Shows the sync's state; called every second or so, it changes the tray only as
+    /// [`show_now`] allows, so the menu doesn't change under the pointer at every cycle.
     pub fn show(&mut self, view: TrayView) {
-        if self.last.as_ref() == Some(&view) {
+        let now = Instant::now();
+        let busy_for = if view.state.is_busy() {
+            now - *self.busy_since.get_or_insert(now)
+        } else {
+            self.busy_since = None;
+            Duration::ZERO
+        };
+        if !show_now(self.last.as_ref(), &view, busy_for, now - self.shown_at) {
             return;
         }
+        self.shown_at = now;
         match &mut self.inner {
             Inner::Local(tray) => tray.show(&view),
             Inner::Thread(updates) => {
@@ -346,5 +398,52 @@ impl TrayHandle {
             }
         }
         self.last = Some(view);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use craftcloud_core::sync::SyncState;
+
+    use super::{PROGRESS_EVERY, QUIET_CHECK, TrayView, show_now};
+
+    fn view(state: SyncState, line: &str, moving: bool) -> TrayView {
+        TrayView { state, line: line.into(), recent: Vec::new(), moving }
+    }
+
+    const NO_TIME: Duration = Duration::ZERO;
+
+    #[test]
+    fn a_routine_check_leaves_the_tray_alone() {
+        let up = view(SyncState::UpToDate, "Up to date", false);
+        let checking = view(SyncState::Scanning, "Checking…", false);
+        // Every cycle checks; one that finds nothing changes neither the icon nor the menu.
+        assert!(!show_now(Some(&up), &checking, NO_TIME, Duration::from_secs(60)));
+        assert!(!show_now(Some(&up), &view(SyncState::Downloading, "Checking…", false), Duration::from_secs(3), NO_TIME));
+        assert!(!show_now(Some(&up), &up, NO_TIME, NO_TIME));
+        // Offline, a check every cycle until the server answers: the same.
+        let offline = view(SyncState::Offline("down".into()), "Offline", false);
+        assert!(!show_now(Some(&offline), &checking, NO_TIME, NO_TIME));
+        // A check that runs long is shown.
+        assert!(show_now(Some(&up), &checking, QUIET_CHECK, NO_TIME));
+        // After a pause or at the start, checking is news.
+        assert!(show_now(Some(&view(SyncState::Paused, "Paused", false)), &checking, NO_TIME, NO_TIME));
+        assert!(show_now(None, &checking, NO_TIME, NO_TIME));
+    }
+
+    #[test]
+    fn moving_files_are_shown_at_once_then_every_few_seconds() {
+        let up = view(SyncState::UpToDate, "Up to date", false);
+        let first = view(SyncState::Downloading, "Syncing 1 of 40", true);
+        let next = view(SyncState::Downloading, "Syncing 2 of 40", true);
+        assert!(show_now(Some(&up), &first, NO_TIME, NO_TIME));
+        assert!(!show_now(Some(&first), &next, Duration::from_secs(1), Duration::from_millis(300)));
+        assert!(show_now(Some(&first), &next, Duration::from_secs(3), PROGRESS_EVERY));
+        // Done, or anything that needs the person: at once.
+        assert!(show_now(Some(&next), &up, NO_TIME, NO_TIME));
+        assert!(show_now(Some(&next), &view(SyncState::SignedOut, "Signed out", false), NO_TIME, NO_TIME));
+        assert!(show_now(Some(&up), &view(SyncState::Failed("x".into()), "Error", false), NO_TIME, NO_TIME));
     }
 }
