@@ -198,11 +198,6 @@ def header_comp(d, lib, name, w, nav, web):
     n = cell("Nav", (0, 12, 0, 12), gap=4, right=True)
     for lab in nav:
         d.inst("Nav cell", n, props={"Label": lab, "State": "On" if lab == nav[0] else "Off"}, name=f"Nav {lab}")
-        if lab == "Files":
-            sn = d.frame(n, "Soon", 0, 0, 10, 16, fill=None, stroke="line", layout="horizontal", padding=[0, 4, 0, 4],
-                         crossAlign="center", sizingH="hug", sizingV="fixed")
-            d.text(sn, "Soon", "Badge/10", "muted", name="Soon label")
-            d.set(d.sub(n, "Nav Files"), opacity=0.5)
     d.frame(h, "Spacer", 0, 0, 10, 48, fill=None, sizingH="fill")
     if web:
         u = cell("User", left=True, gap=10)
@@ -1301,7 +1296,10 @@ def logo_state(d, parent, state, size=22, name=None):
 
 
 def v2_desktop_tray(d, name, x, y):
-    w, h = 560, 820
+    """The tray as apps/craftcloud/src/tray.rs builds it: a disabled status line ("CraftCloud · " and the header's
+    status text), Open CraftCloud folder, Open in browser, Sync now, Pause / Resume syncing, a Recent files submenu
+    (the last 5 file names, newest first), then Show CraftCloud, Settings… and Quit CraftCloud. No accelerators."""
+    w, h = 560, 1000
     f = screen(d, name, x, y, w, h)
     d.set(f, fill="sunken")
     bar = d.frame(f, "System tray", 0, 0, w, 32, fill="bg", layout="horizontal", padding=[0, 12, 0, 12], gap=10,
@@ -1311,52 +1309,69 @@ def v2_desktop_tray(d, name, x, y):
     sel = d.frame(bar, "Tray icon (open)", 0, 0, 30, 30, fill="line", layout="horizontal", mainAlign="center",
                   crossAlign="center", clip=False)
     logo_state(d, sel, "Synced", 20)
-    mw = 280
-    m = d.frame(f, "Tray menu", w - 12 - mw, 38, mw, 10, fill="bg", stroke="line", layout="vertical",
-                padding=[0, 0, 4, 0], sizingV="hug", clip=False)
-    d.effect_style(m, "Shadow/Dialog")
-    head = vstack(d, m, "Status line", 0, 0, mw, gap=4, pad=[12, 14, 12, 14])
-    d.set(head, sizingH="fill")
-    side_stroke(d, head, bottom=1)
-    r = hstack(d, head, "Status row", gap=8)
-    dot(d, r, "good")
-    d.text(r, "Up to date", "Body/14 Medium", "ink", name="Status")
-    hud(d, head, f"John Doe · {HOST}", color="muted", name="Who")
 
-    def item(lab, trail=None, hover=False):
+    def menu(name_, x_, y_, mw):
+        m = d.frame(f, name_, x_, y_, mw, 10, fill="bg", stroke="line", layout="vertical", padding=[4, 0, 4, 0],
+                    sizingV="hug", clip=False)
+        d.effect_style(m, "Shadow/Dialog")
+        return m
+
+    def item(m, lab, trail=None, hover=False, disabled=False):
         it = d.inst("Menu item", m, props={"Label": lab, "Icon": False, "Show trail": bool(trail),
                                            "State": "Hover" if hover else "Default", **({"Trail": trail} if trail
                                                                                        else {})}, name=f"Item {lab}")
         d.set(it, sizingH="fill")
+        if disabled:
+            d.set(d.sub(it, "Label"), fill="muted")
 
-    def sep():
+    def sep(m, mw):
         s = d.frame(m, "Separator", 0, 0, mw, 9, fill=None, layout="vertical", padding=[4, 0, 4, 0], sizingH="fill")
         rr = d.rect(s, 0, 0, mw, 1, "line", name="rule")
         d.set(rr, sizingH="fill")
 
-    item("Open CraftCloud folder", hover=True)
-    item("Open in browser", "↗")
-    item("Pause syncing")
-    sep()
-    hh = d.frame(m, "Recent head", 0, 0, mw, 26, fill=None, layout="horizontal", padding=[0, 12, 0, 12],
-                 crossAlign="center", sizingH="fill")
-    hud(d, hh, "Recent files", color="muted", name="Recent label")
-    for fn, t in (("Q3 report.docx", "14:32"), ("Ideas.md", "14:32"), ("Poster.psd", "14:20"),
-                  ("Budget 2027.xlsx", "13:58"), ("Floorplan.dwg", "11:47")):
-        item(fn, t)
-    sep()
-    item("Settings…")
-    item("Quit CraftCloud", "Ctrl+Q")
+    def full(m, mw, line="Up to date", paused=False, missing=False, hover=None):
+        item(m, f"CraftCloud · {line}", disabled=True)
+        sep(m, mw)
+        item(m, "Open CraftCloud folder", disabled=missing)
+        item(m, "Open in browser")
+        item(m, "Sync now", disabled=missing)
+        item(m, "Resume syncing" if paused else "Pause syncing")
+        item(m, "Recent files", "›", hover=hover == "recent")
+        sep(m, mw)
+        item(m, "Show CraftCloud")
+        item(m, "Settings…")
+        item(m, "Quit CraftCloud")
+
+    # The open menu (right click; on macOS any click), with Recent files open to its left.
+    mw, sw = 250, 200
+    mx = w - 12 - mw
+    full(menu("Tray menu", mx, 38, mw), mw, hover="recent")
+    sm = menu("Recent files submenu", mx - sw + 2, 38 + 4 + 32 + 9 + 4 * 32 - 4, sw)
+    for i, fn in enumerate(("Q3 report.docx", "Ideas.md", "Poster.psd", "Budget 2027.xlsx", "Floorplan.png")):
+        item(sm, fn, hover=i == 0)
+    d.text(f, "Left click opens the window; right click opens the menu (macOS: any click). Recent files: the "
+              "last 5 that went up, came down or moved, newest first; a pick opens the file in its app. An empty "
+              "slot shows \u2014.", "Small/12", "muted", x=24, y=52, w=mx - 24 - 24, name="How it opens")
+    # The same menu while paused and while the folder is missing.
+    yy = 388
+    for i, (lab, kw) in enumerate((("Paused", {"line": "Paused", "paused": True}),
+                                   ("Folder missing", {"line": "Folder missing", "missing": True}))):
+        xx = 24 + i * 262
+        hud(d, f, lab, xx, yy, color="muted", name=f"Variant {i}")
+        full(menu(f"Menu {lab}", xx, yy + 22, 250), 250, **kw)
     st = d.frame(f, "Icon states", 24, h - 190, w - 48, 100, fill="bg", stroke="line", layout="horizontal",
                  clip=False)
-    for i, s_ in enumerate(("Synced", "Syncing", "Paused", "Error")):
-        c = vstack(d, st, f"State {s_}", 0, 0, (w - 48) / 4, gap=8, pad=[14, 0, 14, 0])
+    for i, (s_, lab) in enumerate((("Synced", "Up to date"), ("Syncing", "Syncing"), ("Paused", "Paused"),
+                                   ("Error", "Error"))):
+        c = vstack(d, st, f"State {lab}", 0, 0, (w - 48) / 4, gap=8, pad=[14, 0, 14, 0])
         d.set(c, sizingH="fill", sizingV="fill", crossAlign="center")
         if i:
             side_stroke(d, c, left=1)
         logo_state(d, c, s_, 22)
-        hud(d, c, s_, color="ink", name="State label")
-    hud(d, f, "Tray icon: the logo at 22 px with a 10 px status dot", 24, h - 214, color="muted", name="States label")
+        hud(d, c, lab, color="ink", name="State label")
+    hud(d, f, "Tray icon: the logo with a status dot", 24, h - 258, color="muted", name="States label")
+    d.text(f, "Paused also stands for signed out and waiting for you (mass delete); Error for offline, folder "
+              "missing and a failed sync.", "Small/12", "muted", x=24, y=h - 238, w=w - 48, name="States note")
     wi = d.frame(f, "Window icon", 24, h - 80, w - 48, 64, fill=None, layout="horizontal", gap=16,
                  crossAlign="center", clip=False)
     hud(d, wi, "Window icon", color="muted", name="WI label")

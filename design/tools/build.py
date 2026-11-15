@@ -18,9 +18,13 @@ import cards  # noqa: E402
 import screens  # noqa: E402
 import web  # noqa: E402
 import v2  # noqa: E402
+import v2_files  # noqa: E402  (Files: the page "v2 · Files")
+import v2_sharing  # noqa: E402  (Sharing: the page "v2 · Sharing")
+import v2_sso  # noqa: E402  (Single sign-on: the page "v2 · Single sign-on")
 
 
-KEEP_PAGES = ("Tokens & type", "Components", "v2 · Web", "v2 · Desktop")
+KEEP_PAGES = ("Tokens & type", "Components", "v2 · Web", "v2 · Desktop",
+              "v2 · Files", "v2 · Sharing", "v2 · Single sign-on")  # one page per v2_*.py module
 
 
 def archive(d):
@@ -73,6 +77,9 @@ def main():
     old = screens.build_all(d, None)
     new = web.build_new(d)
     frames_v2 = v2.build_v2(d)
+    frames_v2 += v2_files.build(d)  # Files: the page "v2 · Files"
+    frames_v2 += v2_sharing.build(d)  # Sharing: the page "v2 · Sharing"
+    frames_v2 += v2_sso.build(d)  # Single sign-on: the page "v2 · Single sign-on"
     archive(d)
     out = os.path.join(DESIGN, "craftcloud.figcraft")
     d.save(out)
