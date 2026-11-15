@@ -10,6 +10,10 @@
   `Strict-Transport-Security: max-age=15552000` (180 days, this host only, no preload), so browsers keep using https
   for your CraftCloud. On plain http nothing changes. If your reverse proxy already sends this header, browsers see
   it twice with the same meaning; you can drop it there.
+- **Server: stricter settings writes.** A change to the server settings (Admin › Server) is refused with 413 above
+  4 KiB, and with 400 when it carries a field other than `web_apps` and `disabled_apps`, instead of ignoring it.
+  The web frontend sends only those two, so nothing changes for people using it; a script that writes the settings
+  must send just these fields.
 
 ## 0.1.1
 

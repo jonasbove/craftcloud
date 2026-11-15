@@ -13,11 +13,9 @@
 
 mod logic;
 
-use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use craftcloud_core::server_settings::ServerSettings;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::logic::{Access, Config, admin_check, gate, public_config};
@@ -84,20 +82,16 @@ fn handle(config: &Config, mut request: Request) {
         },
         (Method::Put, "/craftcloud/api/settings") => match authorize(config, &request, true) {
             Ok(()) => {
-                let mut body = Vec::new();
-                let read = request.as_reader().take(64 * 1024).read_to_end(&mut body);
-                match read.ok().and_then(|_| serde_json::from_slice::<ServerSettings>(&body).ok()) {
-                    Some(mut settings) => {
-                        settings.normalise();
-                        match logic::save(&config.state_dir, &settings) {
-                            Ok(()) => {
-                                log::info!("settings changed: web apps {}, disabled {:?}", settings.web_apps, settings.disabled_apps);
-                                json_response(200, &logic::settings_view(config, &settings))
-                            }
-                            Err(e) => error(500, &format!("couldn't save the settings: {e}")),
+                let declared = request.body_length();
+                match logic::read_settings_body(request.as_reader(), declared) {
+                    Ok(settings) => match logic::save(&config.state_dir, &settings) {
+                        Ok(()) => {
+                            log::info!("settings changed: web apps {}, disabled {:?}", settings.web_apps, settings.disabled_apps);
+                            json_response(200, &logic::settings_view(config, &settings))
                         }
-                    }
-                    None => error(400, "expected {\"web_apps\": bool, \"disabled_apps\": [ids]}"),
+                        Err(e) => error(500, &format!("couldn't save the settings: {e}")),
+                    },
+                    Err((status, why)) => error(status, why),
                 }
             }
             Err((status, why)) => error(status, why),

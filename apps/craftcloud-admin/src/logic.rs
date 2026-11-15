@@ -1,11 +1,13 @@
 //! The decisions, without HTTP: what config.json says, whether an app may be served, who may
 //! change settings, and reading and writing `settings.env`.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use craftcloud_core::api::auth;
 use craftcloud_core::http::HttpResponse;
 use craftcloud_core::server_settings::{ServerSettings, app_of_path};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 pub struct Config {
@@ -37,6 +39,46 @@ pub fn save(state_dir: &Path, settings: &ServerSettings) -> std::io::Result<()> 
     let tmp = state_dir.join(format!("{SETTINGS_FILE}.tmp"));
     std::fs::write(&tmp, settings.to_env_file())?;
     std::fs::rename(&tmp, state_dir.join(SETTINGS_FILE))
+}
+
+/// The most a settings write may carry. The real payload is `web_apps` plus the ids of the apps
+/// switched off: with every bundled app listed it stays well under 1 KiB.
+pub const MAX_SETTINGS_BODY: usize = 4 * 1024;
+
+/// What `PUT /craftcloud/api/settings` accepts, and nothing else: an unknown field is refused rather
+/// than ignored, so a typo or a newer client never looks saved when it wasn't.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsWrite {
+    web_apps: bool,
+    #[serde(default)]
+    disabled_apps: Vec<String>,
+}
+
+/// Reads and checks a settings write. `declared` is the request's `Content-Length`, if it sent one.
+/// Err is the HTTP status and a short message: 413 above [`MAX_SETTINGS_BODY`], 400 for anything that
+/// isn't exactly the settings.
+pub fn read_settings_body(body: impl Read, declared: Option<usize>) -> Result<ServerSettings, (u16, &'static str)> {
+    const TOO_LARGE: (u16, &str) = (413, "The settings are too large (at most 4 KiB).");
+    if declared.is_some_and(|n| n > MAX_SETTINGS_BODY) {
+        return Err(TOO_LARGE);
+    }
+    let mut bytes = Vec::new();
+    let limit = u64::try_from(MAX_SETTINGS_BODY).unwrap_or(u64::MAX).saturating_add(1);
+    if body.take(limit).read_to_end(&mut bytes).is_err() {
+        return Err((400, "Couldn't read the request body."));
+    }
+    if bytes.len() > MAX_SETTINGS_BODY {
+        return Err(TOO_LARGE);
+    }
+    match serde_json::from_slice::<SettingsWrite>(&bytes) {
+        Ok(w) => {
+            let mut settings = ServerSettings { web_apps: w.web_apps, disabled_apps: w.disabled_apps };
+            settings.normalise();
+            Ok(settings)
+        }
+        Err(_) => Err((400, "Expected {\"web_apps\": bool, \"disabled_apps\": [ids]} and no other fields.")),
+    }
 }
 
 /// 200 when the `/apps/<id>/…` file in `uri` may be served now, else 404.
@@ -114,7 +156,7 @@ pub fn admin_check(
 
 #[cfg(test)]
 mod tests {
-    use super::{Access, Config, admin_check, gate, load, public_config, save};
+    use super::{Access, Config, MAX_SETTINGS_BODY, admin_check, gate, load, public_config, read_settings_body, save};
     use craftcloud_core::http::HttpResponse;
     use craftcloud_core::server_settings::ServerSettings;
 
@@ -168,5 +210,44 @@ mod tests {
         assert_eq!(c["enabled_apps"], serde_json::json!(["wordcraft"]));
         let slim = Config { bundled: Vec::new(), ..config };
         assert_eq!(public_config(&slim, &s)["web_apps"], false, "nothing to serve on the slim image");
+    }
+
+    #[test]
+    fn a_settings_write_is_exactly_the_settings() {
+        let ok = read_settings_body(&br#"{"web_apps": true, "disabled_apps": ["effectcraft", "effectcraft"]}"#[..], None);
+        assert_eq!(ok, Ok(ServerSettings { web_apps: true, disabled_apps: vec!["effectcraft".into()] }));
+        assert_eq!(read_settings_body(&br#"{"web_apps": false}"#[..], None), Ok(ServerSettings::default()), "disabled_apps may be left out");
+
+        let unknown = read_settings_body(&br#"{"web_apps": true, "disabled_apps": [], "bundled_apps": ["x"]}"#[..], None);
+        assert_eq!(unknown.map_err(|(status, _)| status), Err(400), "an unknown field is refused, not ignored");
+        assert_eq!(read_settings_body(&b"not json"[..], None).map_err(|(status, _)| status), Err(400));
+    }
+
+    #[test]
+    fn a_settings_write_is_capped() {
+        // Valid JSON, just too long: a list of ids past the cap.
+        let ids = vec!["wordcraft"; MAX_SETTINGS_BODY / 8];
+        let big = serde_json::to_vec(&serde_json::json!({ "web_apps": true, "disabled_apps": ids })).unwrap();
+        assert!(big.len() > MAX_SETTINGS_BODY);
+        assert_eq!(read_settings_body(&big[..], None).map_err(|(status, _)| status), Err(413), "no Content-Length: counted while reading");
+        assert_eq!(
+            read_settings_body(&b"{}"[..], Some(MAX_SETTINGS_BODY + 1)).map_err(|(status, _)| status),
+            Err(413),
+            "a large Content-Length is refused before reading"
+        );
+
+        let head = r#"{"web_apps": true}"#;
+        let at_cap = format!("{head}{}", " ".repeat(MAX_SETTINGS_BODY - head.len()));
+        assert_eq!(at_cap.len(), MAX_SETTINGS_BODY);
+        assert!(read_settings_body(at_cap.as_bytes(), Some(at_cap.len())).is_ok(), "exactly the cap is fine");
+    }
+
+    #[test]
+    fn what_the_web_frontend_sends_is_accepted() {
+        // The admin and setup pages send a serialised `ServerSettings` (crates/ui-egui/src/web).
+        let some_apps = ["designcraft", "effectcraft", "materialcraft", "photocraft", "soundcraft", "texturecraft", "vectorcraft"];
+        let sent = ServerSettings { web_apps: true, disabled_apps: some_apps.iter().map(|s| (*s).to_owned()).collect() };
+        let body = serde_json::to_vec(&sent).unwrap();
+        assert_eq!(read_settings_body(&body[..], Some(body.len())), Ok(sent));
     }
 }
