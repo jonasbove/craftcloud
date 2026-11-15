@@ -220,6 +220,9 @@ pub struct SyncProgress {
     pub not_synced: Vec<String>,
     /// Why each of [`Self::not_synced`] is left out.
     pub left_out: std::collections::BTreeMap<String, LeftOut>,
+    /// Files the last cycle held because they were written moments before (an app may still be
+    /// saving them): untouched by that cycle, synced by the next one.
+    pub waiting: Vec<String>,
 }
 
 /// Why a local place is left out of the sync ([`SyncProgress::left_out`]).

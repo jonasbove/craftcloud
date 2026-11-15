@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use craftcloud_core::sync::{ActivityEvent, ClientSettings, SyncPlan, SyncProgress};
+use craftcloud_core::sync::{ActivityEvent, ClientSettings, SyncPlan, SyncProgress, SyncState};
 use craftcloud_native::control::{self, Activity, Attached, FolderLock, Status};
 use craftcloud_native::sync::{Command, Handle};
 use serde_json::json;
@@ -39,6 +39,25 @@ fn progress(handle: &Handle) -> SyncProgress {
     handle.progress.lock().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
+/// Runs sync pass number `ticket` and waits until it's done (or `deadline`).
+fn pass(handle: &Handle, ticket: u64, deadline: Instant) -> SyncProgress {
+    handle.send(Command::SyncFor(ticket));
+    loop {
+        let p = progress(handle);
+        if p.served >= ticket || Instant::now() > deadline {
+            return p;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// How long to wait before a second pass: when the first ended up to date but held files that
+/// were being saved, until they count as settled. `None`: no second pass.
+fn retry_after(p: &SyncProgress) -> Option<Duration> {
+    let settle = Duration::from_millis(craftcloud_native::sync::SETTLE_MS.unsigned_abs() + 500);
+    (p.state == SyncState::UpToDate && !p.waiting.is_empty()).then_some(settle)
+}
+
 /// `sync --once` (and `sync` when no desktop client runs): one full pass.
 pub fn once(ctx: &Ctx, deletes: super::account::Deletes) -> Result<()> {
     let engine = start(ctx)?;
@@ -47,15 +66,15 @@ pub fn once(ctx: &Ctx, deletes: super::account::Deletes) -> Result<()> {
         super::account::Deletes::Confirm => engine.handle.send(Command::ConfirmDeletes),
         super::account::Deletes::Discard => engine.handle.send(Command::DiscardDeletes),
     }
-    engine.handle.send(Command::SyncFor(1));
     let deadline = Instant::now() + Duration::from_secs(6 * 60 * 60);
-    let p = loop {
-        let p = progress(&engine.handle);
-        if p.served >= 1 || Instant::now() > deadline {
-            break p;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    };
+    let mut p = pass(&engine.handle, 1, deadline);
+    // A file written moments before was held for the next pass (an app may still be saving it):
+    // wait that out once and sync it, rather than say "up to date" without it (#15). Only once,
+    // so an app that keeps writing can't keep this running; what is still held is reported.
+    if let Some(wait) = retry_after(&p) {
+        std::thread::sleep(wait);
+        p = pass(&engine.handle, 2, deadline);
+    }
     drop(engine.handle);
     let status = Status::from_progress(&p, &engine.settings.server, &engine.settings.local_folder);
     let activity: Vec<Activity> = p.activity.iter().map(Activity::from).collect();
@@ -68,6 +87,7 @@ pub fn once(ctx: &Ctx, deletes: super::account::Deletes) -> Result<()> {
             "files_total": p.files_total,
             "conflicts": status.conflicts,
             "not_synced": status.not_synced,
+            "waiting": status.waiting,
             "activity": activity,
         }))?;
     } else {
@@ -148,7 +168,21 @@ pub fn daemon(ctx: &Ctx) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::new_events;
+    use super::{new_events, retry_after};
+    use craftcloud_core::sync::{SyncProgress, SyncState};
+
+    /// #15: a pass that held a file being saved is followed by one more, after the settle time,
+    /// instead of ending "up to date" without it.
+    #[test]
+    fn a_held_file_gets_a_second_pass() {
+        let mut p = SyncProgress { state: SyncState::UpToDate, ..SyncProgress::default() };
+        assert_eq!(retry_after(&p), None, "nothing held: one pass");
+        p.waiting = vec!["Documents/notes.md".into()];
+        let wait = retry_after(&p).expect("a second pass");
+        assert!(wait.as_millis() > craftcloud_native::sync::SETTLE_MS.unsigned_abs().into(), "after the file has settled");
+        p.state = SyncState::Offline("down".into());
+        assert_eq!(retry_after(&p), None, "a pass that didn't finish isn't repeated");
+    }
 
     fn lines(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| (*s).to_owned()).collect()

@@ -40,6 +40,9 @@ on Linux for every push to `main` and every pull request. The live tests need a 
   debug build, until a console build ships.
 - **Windows: the tray's Show doesn't bring back a minimized window.** Seen on a Windows 11 VM; click the taskbar
   button instead. The idle CPU cost of an open window there is still to be measured on real hardware.
+- **A file saved in the last two seconds waits for the next pass** (an app may still be writing it).
+  `craftcloud sync --once` waits that out once and syncs it in a second pass; a file still being written after
+  that is listed as `waiting` (and in the headline), and the exit code stays 0.
 - **Files on demand is a design only.** v1 is a full sync folder: every file in the chosen folders is downloaded
   ([FILES-ON-DEMAND.md](FILES-ON-DEMAND.md)).
 - **The Craft web apps can't open cloud files yet.** The `-apps` image serves the web builds and switches them on

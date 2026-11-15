@@ -78,6 +78,8 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-15: CLI: `sync --once` run right after a file was saved no longer ends "up to date" without it: it
+  waits the 2 s settle time once and syncs the file in a second pass, and lists what still waits as `waiting` (#15).
 - 2026-11-15: Sync: a file being saved (written in the last 2 s) is held for the next pass instead of looking
   unchanged, and a download never replaces a local file that changed since the last sync (#36: a cloud change
   made while a file was being saved could replace the local edit with no conflict copy).
