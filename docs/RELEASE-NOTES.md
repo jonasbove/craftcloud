@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.1
+
+Fixes for 0.1.0. **Update the server and every desktop client.** The sync fix (a file being saved is never
+overwritten) protects only the devices that run 0.1.1, so update them all. Nothing in your settings or data needs
+changing.
+
 - **`craftcloud open` hands over and returns.** The app it opens no longer inherits the command's output, so a
   script that reads that output (`path=$(craftcloud open …)`) gets it at once instead of waiting until the app
   quits (#6). On Windows it prints and opens the usual `C:\…` form of the path instead of `\\?\C:\…` (#5).
