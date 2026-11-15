@@ -14,6 +14,18 @@
   4 KiB, and with 400 when it carries a field other than `web_apps` and `disabled_apps`, instead of ignoring it.
   The web frontend sends only those two, so nothing changes for people using it; a script that writes the settings
   must send just these fields.
+- **Sync on Windows: names Windows can't have are left alone. Upgrade all devices together.** A Windows computer
+  no longer tries to download a cloud file or folder whose name Windows can't have (`< > : " | ? *`, a name that
+  ends in a dot or a space, or a reserved name such as `CON`, `NUL.txt` or `COM1.log`): it stays in the cloud, is
+  never taken as deleted, and the activity list says so once instead of failing on every pass. Linux and macOS keep
+  syncing these names and warn, as before. Two cloud names that differ only in upper and lower case (`Report.txt`,
+  `report.txt`) can't both live in one Windows folder: the one the computer already has keeps syncing and the
+  other is held in the cloud until one is renamed. A `CON.txt` an older Windows client made stays on that computer
+  but no longer syncs; rename it to sync it. This changes what the sync skips, so update every Windows computer
+  together: an older one keeps retrying these names.
+- **Sync: a failed download leaves no part file.** A download that couldn't be put in place used to leave its
+  hidden `.<name>.<version>.craftcloud-part` file in the sync folder. It is removed now on every failure but a
+  broken-off transfer (kept to resume from), and part files left for more than a day (after a crash) are cleaned up.
 
 ## 0.1.1
 
