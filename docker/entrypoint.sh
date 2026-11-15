@@ -69,6 +69,13 @@ if [ "$seed" = on ] && [ ! -f /srv/craftcloud/craftcloud/apps.json ]; then
     echo "craftcloud: CRAFTCLOUD_WEB_APPS=on, but this image has no web apps (use the -apps image)" >&2
 fi
 export CRAFTCLOUD_BLOCKED_PATHS="${blocked:-/__craftcloud_nothing_blocked__}"
+# Browsers that reached CraftCloud over https keep using https for it (180 days, this host only). Plain
+# http sends no Strict-Transport-Security header at all (docker/Caddyfile).
+case "$CRAFTCLOUD_PUBLIC_URL" in
+    https://*) CRAFTCLOUD_HSTS="max-age=15552000" ;;
+    *) CRAFTCLOUD_HSTS="" ;;
+esac
+export CRAFTCLOUD_HSTS
 export CRAFTCLOUD_PORT CRAFTCLOUD_VERSION="${CRAFTCLOUD_VERSION:-dev}"
 
 # Caddy keeps nothing on disk (no TLS, no admin API); point its dirs at /tmp anyway.

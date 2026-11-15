@@ -64,6 +64,14 @@ check "OxiCloud's own pages are gone" sh -c "! curl -fsS '$BASE/login' | grep -q
 check "OxiCloud API passes through" sh -c "curl -fsS '$BASE/api/auth/status' | grep -q initialized"
 check "health" sh -c "curl -fsS '$BASE/health' >/dev/null"
 check "frontend pages DENY framing" expect "$(header "$BASE/" x-frame-options)" DENY
+# Strict-Transport-Security only when the public address is https, on every kind of answer.
+case "${PUBLIC_URL:-$BASE}" in
+    https://*) want_hsts="max-age=15552000" ;;
+    *) want_hsts="" ;;
+esac
+check "HSTS '$want_hsts' on the frontend" expect "$(header "$BASE/" strict-transport-security)" "$want_hsts"
+check "HSTS '$want_hsts' on the API" expect "$(header "$BASE/api/auth/status" strict-transport-security)" "$want_hsts"
+check "HSTS '$want_hsts' on a blocked path" expect "$(header "$BASE/caldav/" strict-transport-security)" "$want_hsts"
 FWASM="$(curl -fsS "$BASE/" | grep -o 'craftcloud-web-[0-9a-f]*_bg\.wasm' | head -1)"
 check "frontend wasm found" test -n "$FWASM"
 check "frontend wasm precompressed (br)" expect "$(header "$BASE/$FWASM" content-encoding)" br

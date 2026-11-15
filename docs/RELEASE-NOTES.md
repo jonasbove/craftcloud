@@ -6,6 +6,10 @@
   sign-in cookies are marked Secure on their own; `OXICLOUD_COOKIE_SECURE` is now needed only to override that.
   `.env.example` no longer sets it to `false`: if your `.env` was copied from an older one and you serve CraftCloud
   over https, delete the `OXICLOUD_COOKIE_SECURE=false` line (or set it to `true`).
+- **Server: https stays https.** When `CRAFTCLOUD_PUBLIC_URL` starts with `https://`, every answer carries
+  `Strict-Transport-Security: max-age=15552000` (180 days, this host only, no preload), so browsers keep using https
+  for your CraftCloud. On plain http nothing changes. If your reverse proxy already sends this header, browsers see
+  it twice with the same meaning; you can drop it there.
 
 ## 0.1.1
 
