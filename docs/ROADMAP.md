@@ -138,6 +138,11 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 - 2026-11-15: Single sign-on: the sign-in sheet follows the v2 frames: "Sign in with <button name>" spans the
   form with its label centred, the "or" rule sits closer to it, and "Signing you in…" has no empty action row.
   Web shots of every sign-in state (`login-sso*`).
+
+- 2026-11-15: Single sign-on: **Admin › Server › Single sign-on** follows the v2 frames: "Asking <host> for its
+  OpenID configuration…" and "Testing…" while Test connection runs, a failed test in plain words with the
+  server's own words under it, and password sign-in stays on until Test connection has worked for the issuer URL.
+  The three Off/On switches are separate widgets again, and the actions wrap on a phone. Web shots `admin-sso*`.
 - 2026-11-14: Releases: the Release workflow install-tests every Linux package before it makes a draft
   (`package-test`): the deb on Debian 12 and Ubuntu 22.04/24.04, the rpm on Fedora 41/42 (x86_64 and aarch64),
   the Arch package, the AppImage and the tarball, each installed with its package manager, checked, signed in and

@@ -305,10 +305,88 @@ fn password_sign_in_goes_off_only_with_the_provider_on() {
     (f.issuer_url, f.client_id, f.client_secret) = ("https://id.example.org".into(), "craftcloud".into(), "s3cret".into());
     f.enabled = true;
     h.run();
+    test_connection(&mut h, &fixture("oidc-test-ok.json"));
     h.get_by_label("SAVE SINGLE SIGN-ON").click();
     h.run();
     let body = json(h.state().backend.last_to("/api/admin/settings/oidc"));
     assert_eq!(body["disable_password_login"].as_bool(), Some(true));
+}
+
+/// Clicks Test connection and answers it with `answer`.
+fn test_connection(h: &mut H, answer: &[u8]) {
+    h.get_by_label("TEST CONNECTION").click();
+    h.run();
+    h.state_mut().backend.answer("/api/admin/settings/oidc/test", ok(answer));
+    h.run();
+}
+
+fn puts(h: &H) -> usize {
+    h.state().backend.sent.iter().filter(|(_, r)| r.method == Method::Put && r.url.ends_with("/api/admin/settings/oidc")).count()
+}
+
+/// The provider on, with what it needs, and password sign-in switched off in the form.
+fn provider_on_password_off(h: &mut H, issuer: &str) {
+    let f = &mut h.state_mut().admin.sso;
+    (f.issuer_url, f.client_id, f.client_secret) = (issuer.into(), "craftcloud".into(), "s3cret".into());
+    f.enabled = true;
+    f.password_login = false;
+    h.run();
+}
+
+#[test]
+fn password_sign_in_stays_on_until_test_connection_works() {
+    const GUARD: &str = "Password sign-in stays on until Test connection works: with the provider out of reach, nobody could sign in.";
+    let mut h = server_page(ok(CATALOG.as_bytes()));
+    provider_on_password_off(&mut h, "https://id.example.org/realms/test");
+    // Never tested.
+    h.get_by_label("SAVE SINGLE SIGN-ON").click();
+    h.run();
+    h.get_by_label(GUARD);
+    assert_eq!(puts(&h), 0);
+    // Tested, and it failed: the failure stays in view next to the refusal.
+    test_connection(&mut h, &fixture("oidc-test-unreachable.json"));
+    h.get_by_label("SAVE SINGLE SIGN-ON").click();
+    h.run();
+    h.get_by_label(GUARD);
+    h.get_by_label_contains("The server can't reach id.example.org");
+    assert_eq!(puts(&h), 0);
+    // It worked, then the issuer URL changed: that test was for another provider.
+    test_connection(&mut h, &fixture("oidc-test-ok.json"));
+    h.state_mut().admin.sso.issuer_url = "https://other.example.org".into();
+    h.run();
+    h.get_by_label("SAVE SINGLE SIGN-ON").click();
+    h.run();
+    h.get_by_label(GUARD);
+    assert_eq!(puts(&h), 0);
+    // It worked for this issuer URL: saved.
+    h.state_mut().admin.sso.issuer_url = "https://id.example.org/realms/test".into();
+    h.run();
+    test_connection(&mut h, &fixture("oidc-test-ok.json"));
+    h.get_by_label("SAVE SINGLE SIGN-ON").click();
+    h.run();
+    assert_eq!(puts(&h), 1);
+    assert_eq!(json(h.state().backend.last_to("/api/admin/settings/oidc"))["disable_password_login"].as_bool(), Some(true));
+}
+
+#[test]
+fn password_sign_in_already_off_needs_no_new_test() {
+    let mut h = app("/admin/server", None);
+    start(&mut h, INITIALIZED, true);
+    let saved = String::from_utf8(fixture("oidc-settings-saved.json"))
+        .unwrap()
+        .replace("\"disable_password_login\": false", "\"disable_password_login\": true");
+    let b = &mut h.state_mut().backend;
+    b.answer("/craftcloud/apps.json", ok(CATALOG.as_bytes()));
+    b.answer("/craftcloud/api/settings", ok(br#"{"web_apps":false,"disabled_apps":[]}"#));
+    b.answer("/api/admin/settings/oidc", ok(saved.as_bytes()));
+    h.set_size(egui::vec2(1280.0, 2000.0));
+    h.run();
+    assert!(!h.state().admin.sso.password_login);
+    h.state_mut().admin.sso.admin_groups = "staff".into();
+    h.run();
+    h.get_by_label("SAVE SINGLE SIGN-ON").click();
+    h.run();
+    assert_eq!(puts(&h), 1, "only turning it off, or a new issuer URL, needs a test");
 }
 
 #[test]
@@ -320,9 +398,20 @@ fn test_connection_shows_what_the_server_saw() {
     h.run();
     let req = h.state().backend.last_to("/api/admin/settings/oidc/test");
     assert_eq!((req.method, json(req)), (Method::Post, serde_json::json!({"issuer_url": "https://id.example.org/realms/test"})));
+    // While the server asks.
+    h.get_by_label("ASKING ID.EXAMPLE.ORG FOR ITS OPENID CONFIGURATION…");
+    assert!(egui_kittest::kittest::NodeT::accesskit_node(&h.get_by_label("TESTING…")).is_disabled(), "one test at a time");
+    assert!(h.query_by_label("TEST CONNECTION").is_none());
     h.state_mut().backend.answer("/api/admin/settings/oidc/test", ok(&fixture("oidc-test-unreachable.json")));
     h.run();
-    h.get_by_label_contains("The server can't use this issuer URL: Failed to fetch OIDC discovery");
+    assert!(h.query_by_label_contains("ASKING").is_none());
+    // In plain words, with the server's own under them.
+    h.get_by_label(
+        "The server can't reach id.example.org: the name doesn't resolve from inside the CraftCloud container. Check the issuer URL, or give the provider a name the server can look up.",
+    );
+    h.get_by_label_contains("Server said: error sending request -> client error (Connect) -> dns error");
+    assert!(h.query_by_label_contains("Failed to fetch OIDC discovery").is_none());
+    assert!(h.query_by_label_contains("Possible causes").is_none());
     h.get_by_label("TEST CONNECTION").click();
     h.run();
     h.state_mut().backend.answer("/api/admin/settings/oidc/test", ok(&fixture("oidc-test-ok.json")));
@@ -344,4 +433,17 @@ fn dates_read_like_the_design() {
     assert_eq!(gb(0), "0.0");
     assert_eq!(gb(1024 * 1024 * 1024), "1");
     assert_eq!(gb(13_300_000_000), "12.4");
+}
+
+#[test]
+fn each_single_sign_on_switch_is_its_own() {
+    let mut h = server_page(ok(CATALOG.as_bytes()));
+    // The web apps' switch and the three single sign-on rows, each a widget of its own.
+    assert_eq!(h.get_all_by_label("ON").count(), 4);
+    assert!(h.state().admin.sso.password_login && h.state().admin.sso.auto_provision);
+    h.get_all_by_label("OFF").last().unwrap().click();
+    h.run();
+    let f = &h.state().admin.sso;
+    assert!(!f.password_login, "password sign-in went off");
+    assert!(!f.enabled && f.auto_provision, "and nothing else changed");
 }

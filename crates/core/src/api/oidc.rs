@@ -192,10 +192,61 @@ pub fn parse_test(resp: &HttpResponse) -> Result<TestResult, ApiError> {
     read_json(resp)
 }
 
+/// The host part of an issuer URL (`https://id.example.org/realms/x` → `id.example.org`), for
+/// "Asking <host> …" while [`test_connection`] runs and for [`test_failure_text`].
+pub fn issuer_host(issuer_url: &str) -> &str {
+    let rest = issuer_url.trim();
+    let rest = rest.split_once("://").map_or(rest, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    if host.is_empty() { "the provider" } else { host }
+}
+
+/// A failed [`test_connection`] in plain words, and the server's own words to show under them
+/// (OxiCloud's message without its fixed lead-in and its list of possible causes).
+pub fn test_failure_text(issuer_url: &str, message: &str) -> (String, String) {
+    let host = issuer_host(issuer_url);
+    let said = message.trim();
+    let said = said.strip_prefix("Failed to fetch OIDC discovery:").map_or(said, str::trim_start);
+    let said = said.split_once(" Possible causes include").map_or(said, |(s, _)| s).trim().to_owned();
+    // Matched on the cause alone: the list of possible causes names them all.
+    let m = said.to_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| m.contains(w));
+    let plain = if has(&["invalid discovery document"]) {
+        format!("{host} answered, but not with an OpenID configuration. Check the issuer URL.")
+    } else if has(&["returned http 404"]) {
+        format!(
+            "{host} answered, but there is no OpenID configuration at this issuer URL (HTTP 404). Check the issuer URL: it is the address in front of /.well-known/openid-configuration."
+        )
+    } else if has(&["returned http"]) {
+        format!("{host} answered with an error instead of its OpenID configuration. Check the issuer URL, and that the provider is working.")
+    } else if has(&["certificate"]) {
+        format!(
+            "The server doesn't trust {host}'s certificate. Give the provider a certificate from a public authority, or add the authority that signed it to the CraftCloud container."
+        )
+    } else if has(&["dns error", "failed to lookup address", "name does not resolve", "name or service not known", "no such host"]) {
+        format!(
+            "The server can't reach {host}: the name doesn't resolve from inside the CraftCloud container. Check the issuer URL, or give the provider a name the server can look up."
+        )
+    } else if has(&["connection refused"]) {
+        format!(
+            "The server can't reach {host}: nothing answers there (connection refused). Check the issuer URL, its port, and that the provider is running."
+        )
+    } else if has(&["timed out", "timeout", "deadline has elapsed"]) {
+        format!(
+            "The server can't reach {host}: it didn't answer in time. Check that the provider is running and that the CraftCloud container can reach it."
+        )
+    } else {
+        "The server can't use this issuer URL.".to_owned()
+    };
+    (plain, said)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        SaveSettings, authorize_url, exchange, login_error_text, parse_providers, parse_settings, parse_test, save_settings, test_connection,
+        SaveSettings, authorize_url, exchange, issuer_host, login_error_text, parse_providers, parse_settings, parse_test, save_settings,
+        test_connection, test_failure_text,
     };
     use crate::ServerUrl;
     use crate::api::fixtures::read;
@@ -282,6 +333,44 @@ mod tests {
         assert!(!bad.success && bad.message.contains("Failed to fetch OIDC discovery"));
         let good = parse_test(&HttpResponse::new(200, read("oidc-test-ok.json"))).unwrap();
         assert_eq!((good.success, good.issuer.as_deref()), (true, Some("https://id.example.org/realms/test")));
+    }
+
+    #[test]
+    fn the_issuer_host_is_its_address_without_the_path() {
+        assert_eq!(issuer_host(" https://id.example.org/application/o/craftcloud/ "), "id.example.org");
+        assert_eq!(issuer_host("http://user@id.example.org:8443/realms/x?y"), "id.example.org:8443");
+        assert_eq!(issuer_host("id.example.org"), "id.example.org");
+        assert_eq!(issuer_host("https://"), "the provider");
+    }
+
+    #[test]
+    fn a_failed_test_reads_as_words_with_the_servers_own_under_them() {
+        let bad = parse_test(&HttpResponse::new(200, read("oidc-test-unreachable.json"))).unwrap();
+        let (plain, said) = test_failure_text("https://id.example.org/realms/test", &bad.message);
+        assert!(plain.starts_with("The server can't reach id.example.org: the name doesn't resolve"), "{plain}");
+        assert!(!plain.contains("dns error"));
+        assert!(said.starts_with("error sending request -> client error (Connect) -> dns error"), "{said}");
+        assert!(!said.contains("Failed to fetch") && !said.contains("Possible causes"), "{said}");
+        for (message, words) in [
+            (
+                "Failed to fetch OIDC discovery: error sending request -> tcp connect error -> Connection refused (os error 111).",
+                "connection refused",
+            ),
+            ("Failed to fetch OIDC discovery: error sending request -> operation timed out.", "didn't answer in time"),
+            (
+                "Failed to fetch OIDC discovery: error sending request -> invalid peer certificate: UnknownIssuer.",
+                "doesn't trust id.example.org's certificate",
+            ),
+            ("OIDC discovery returned HTTP 404 Not Found — the Issuer URL may be incorrect.", "(HTTP 404)"),
+            ("OIDC discovery returned HTTP 504 Gateway Timeout — the Issuer URL may be incorrect.", "answered with an error"),
+            ("Invalid discovery document: missing field `issuer`", "not with an OpenID configuration"),
+            ("something new", "The server can't use this issuer URL."),
+        ] {
+            let (plain, said) = test_failure_text("https://id.example.org", message);
+            assert!(plain.contains(words), "{message}: {plain}");
+            assert!(!said.is_empty());
+        }
+        assert_eq!(test_failure_text("https://id.example.org", "something new").1, "something new");
     }
 
     #[test]
