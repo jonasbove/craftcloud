@@ -79,6 +79,8 @@ pub enum Glyph {
     Search,
     Close,
     More,
+    /// An arrow down onto a line (DOWNLOAD).
+    Down,
 }
 
 pub fn paint_glyph(ui: &Ui, glyph: Glyph, c: Pos2, color: Color32) {
@@ -144,6 +146,12 @@ pub fn paint_glyph(ui: &Ui, glyph: Glyph, c: Pos2, color: Color32) {
         Glyph::Close => {
             p.line_segment([c + vec2(-4.5, -4.5), c + vec2(4.5, 4.5)], s);
             p.line_segment([c + vec2(-4.5, 4.5), c + vec2(4.5, -4.5)], s);
+        }
+        Glyph::Down => {
+            p.line_segment([c + vec2(0.0, -6.0), c + vec2(0.0, 3.0)], s);
+            p.line_segment([c + vec2(-4.0, -1.0), c + vec2(0.0, 3.0)], s);
+            p.line_segment([c + vec2(4.0, -1.0), c + vec2(0.0, 3.0)], s);
+            p.line_segment([c + vec2(-6.0, 6.0), c + vec2(6.0, 6.0)], s);
         }
         Glyph::More => {
             for dx in [-5.0, 0.0, 5.0] {

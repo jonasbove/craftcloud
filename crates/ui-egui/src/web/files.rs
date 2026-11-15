@@ -7,6 +7,7 @@
 //! CraftCloud's own data (`.craftcloud/`, the file versions) never shows.
 
 mod apps;
+mod details;
 mod draw;
 mod history;
 mod model;
@@ -96,6 +97,8 @@ enum Key {
     Versions(u64),
     /// A step of restoring a version (see [`versions::Run`]).
     VersionStep,
+    /// The details panel's versions listing (by generation: another file's answer is ignored).
+    Details(u64),
     /// Best effort; the answer doesn't matter.
     Ignore,
 }
@@ -195,6 +198,8 @@ pub struct Files {
     /// Restoring a kept version.
     version_run: Option<versions::Run>,
     versions_generation: u64,
+    /// The details panel beside the list.
+    details: details::Panel,
 }
 
 impl Files {
@@ -239,6 +244,7 @@ impl Files {
             chain: restore::Chain::default(),
             version_run: None,
             versions_generation: 0,
+            details: details::Panel::default(),
         }
     }
 
@@ -246,6 +252,7 @@ impl Files {
     pub fn open(&mut self, backend: &mut dyn Backend, me: Option<&auth::Me>) {
         if let Some(me) = me {
             self.storage = Some((me.storage_used_bytes, me.storage_quota_bytes));
+            self.details.owner = Some(me.user.username.clone());
         }
         if !self.started {
             self.started = true;
@@ -285,6 +292,7 @@ impl Files {
                     Key::History(path) => self.on_history(backend, path, &Err(why)),
                     Key::Versions(g) => self.on_versions(g, Err(why)),
                     Key::VersionStep => self.on_version_step(backend, Err(why)),
+                    Key::Details(g) => self.on_details(g, Err(why)),
                     _ => {}
                 }
                 return;
@@ -351,6 +359,7 @@ impl Files {
             Key::History(path) => self.on_history(backend, path, &Ok(resp)),
             Key::Versions(g) => self.on_versions(g, Ok(resp)),
             Key::VersionStep => self.on_version_step(backend, Ok(resp)),
+            Key::Details(g) => self.on_details(g, Ok(resp)),
             Key::Ignore => {}
         }
     }
@@ -727,7 +736,13 @@ impl Files {
             let side = Rect::from_min_max(area.min, pos2(area.left() + sidebar_w, area.bottom()));
             self.sidebar_ui(ui, side, backend);
         }
-        let main = Rect::from_min_max(pos2(area.left() + sidebar_w, area.top()), area.max);
+        let mut main = Rect::from_min_max(pos2(area.left() + sidebar_w, area.top()), area.max);
+        // The details panel takes the right of a wide page.
+        let panel = (main.width() >= details::FROM && self.details_item().is_some()).then(|| {
+            main.max.x -= details::WIDTH;
+            Rect::from_min_max(pos2(main.right(), main.top()), area.max)
+        });
+        self.details.shown = panel.is_some();
         let small = main.width() < 600.0;
         let pad = if small { 16.0 } else { chrome::PAD };
         let inner = main.shrink2(vec2(pad, 0.0));
@@ -764,6 +779,9 @@ impl Files {
         self.list_ui(ui, list, backend);
         if ui.input(|i| !i.raw.hovered_files.is_empty()) {
             self.drop_overlay(ui, list);
+        }
+        if let Some(panel) = panel {
+            self.details_ui(ui, panel, backend);
         }
         self.uploads_ui(ui, main);
 

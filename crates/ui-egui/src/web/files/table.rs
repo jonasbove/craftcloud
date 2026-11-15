@@ -317,9 +317,14 @@ impl Files {
 
     pub(super) fn row_action(&mut self, backend: &mut dyn Backend, action: RowAction) {
         match action {
-            RowAction::Toggle(i) => self.toggle(i),
+            RowAction::Toggle(i) => {
+                // A click on a file shows its details again.
+                self.details.hidden = None;
+                self.toggle(i);
+            }
             RowAction::Select(i, m) => {
                 self.menu = None;
+                self.details.hidden = None;
                 self.select_click(i, m);
             }
             RowAction::Open(i) => self.open_item(backend, i),
@@ -328,6 +333,11 @@ impl Files {
                     if !self.selection.contains(&item.id) {
                         self.selection = vec![item.id.clone()];
                         self.anchor = Some(i);
+                        // The menu leaves the details as they were: a hidden panel stays hidden,
+                        // so the page doesn't shift under the open menu.
+                        if !self.details.shown {
+                            self.details.hidden = Some(item.id.clone());
+                        }
                     }
                     self.menu = Some(Menu { id: item.id.clone(), at });
                 }
