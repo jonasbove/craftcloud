@@ -98,6 +98,9 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   restore keeps the current file as a version first and writes with `If-Match`, so a change made meanwhile is never
   overwritten. The menu says "Move to trash" where it said "Delete". Uploading over a taken name, restoring from the
   trash with a new name, Recent's OPENED column and the phone layout already matched the frames.
+- 2026-11-15: Desktop: the tray's Show (and a second start, and a clicked notification) brings back a minimised
+  window at once (#2). eframe runs only the app's `logic` while the window is minimised or hidden, and the tray
+  was handled in `ui`; it is handled in `logic` now, with Quit and the close button. Found testing 0.1.1 on Windows 11.
 - 2026-11-15: Build: the Craft web builds are fetched by `cargo xtask fetch-apps` and their pins updated by
   `cargo xtask bump-apps`, in Rust; the Python scripts `scripts/fetch-apps` and `scripts/bump-apps` are gone, and the
   image build no longer needs Python. The `-apps` image serves the same files and `apps.json`.

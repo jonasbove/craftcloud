@@ -7,6 +7,10 @@
   `craftcloud.com`, a console program that runs `craftcloud.exe` and shows its output; both shells pick the `.com`
   when you type `craftcloud`. The MSI adds its folder to your PATH (for you only): open a new terminal after
   updating. Scripts that read the output through a pipe or a file work as before.
+- **Desktop: Show brings back a minimised window** (#2). With the window minimised to the taskbar, the tray's
+  "Show CraftCloud" (and starting CraftCloud again) left it there; a window closed to the tray came back only after a
+  few seconds. The tray, Quit and the status line now keep working while the window is minimised or hidden, and
+  Show brings the window out of the taskbar and in front at once.
 - **Windows: uninstalling turns off start at login.** The MSI used to leave the "Start at login" entry behind,
   starting a program that was no longer there. Uninstalling now removes it (and takes the folder off PATH); an
   update keeps it. If you uninstalled an earlier version with start at login on, remove the leftover entry with

@@ -416,20 +416,25 @@ fn read_cjk_font(ctx: &egui::Context) -> Option<Receiver<Option<FontFile>>> {
     spawned.ok().map(|_| rx)
 }
 
-impl Window<'_> {
-    fn show(ctx: &egui::Context) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-    }
-}
+/// What brings the window back from the taskbar, the Dock or the tray, in front: out of the
+/// taskbar first (a minimised window that is only made visible stays an icon; Windows won't focus
+/// one), then shown, then focused.
+const SHOW: [egui::ViewportCommand; 3] =
+    [egui::ViewportCommand::Minimized(false), egui::ViewportCommand::Visible(true), egui::ViewportCommand::Focus];
 
 impl eframe::App for Window<'_> {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
+    /// The tray, the control channel and Quit are handled here, not in `ui`: eframe calls only
+    /// `logic` while the window is minimised or hidden, so a Show handled in `ui` never came.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         for request in self.client.tray_tick() {
             match request {
-                Request::Show => Self::show(&ctx),
+                Request::Show => {
+                    for command in SHOW {
+                        ctx.send_viewport_cmd(command);
+                    }
+                    // A full frame next, to paint the window as it comes back.
+                    ctx.request_repaint();
+                }
                 Request::Quit => {
                     self.quitting = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -452,7 +457,22 @@ impl eframe::App for Window<'_> {
                 OnClose::ToTray => self.client.closed_to_tray = true,
             }
         }
+        if std::mem::take(&mut self.client.desktop.host.quit) {
+            self.quitting = true;
+            self.client.closed_to_tray = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        // The tray and the sync status need passes even while the window is hidden.
+        ctx.request_repaint_after(Duration::from_secs(1));
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         self.client.desktop.ui(ui);
+        if self.client.desktop.host.quit {
+            // Quit was picked: `logic` closes the window on the next pass.
+            ctx.request_repaint();
+        }
         if let Some(found) = self.cjk.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.cjk = None;
             match found {
@@ -464,13 +484,6 @@ impl eframe::App for Window<'_> {
                 None => log::info!("no CJK font found; Chinese, Japanese and Korean names show as boxes"),
             }
         }
-        if std::mem::take(&mut self.client.desktop.host.quit) {
-            self.quitting = true;
-            self.client.closed_to_tray = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
-        // The tray and the sync status need frames even while the window is hidden.
-        ctx.request_repaint_after(Duration::from_secs(1));
     }
 }
 
@@ -673,7 +686,59 @@ fn wait_until(limit: Duration, ready: impl Fn() -> bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{OnClose, on_close, window_can_hide_here};
+    use std::sync::Arc;
+    use std::sync::mpsc::{Sender, channel};
+    use std::time::Instant;
+
+    use craftcloud_native::http::{ThreadBackend, Waker};
+    use craftcloud_native::settings;
+    use craftcloud_ui_egui::desktop::DesktopApp;
+    use egui::{ViewportId, ViewportInfo};
+
+    use super::{Client, NativeHost, OnClose, SHOW, Window, notify, on_close, window_can_hide_here};
+
+    /// A client without a tray, keychain or notifications, its settings in `dir`.
+    fn client(dir: &std::path::Path) -> (Client, Sender<()>) {
+        let waker: Waker = Arc::new(|| {});
+        let host = NativeHost {
+            net: ThreadBackend::new(Arc::clone(&waker)),
+            store: settings::open_in(dir),
+            waker,
+            started: Instant::now(),
+            sync: None,
+            fresh: Arc::default(),
+            quit: false,
+            control: Arc::default(),
+            folder: None,
+            blocked: None,
+        };
+        let saved = host.store.get().0.clone();
+        let desktop = DesktopApp::waiting_for_keychain(&egui::Context::default(), host, saved);
+        let (tx, shows) = channel();
+        (Client { desktop, tray: None, keychain: None, can_hide: true, closed_to_tray: false, shows, notes: notify::Notifier::off() }, tx)
+    }
+
+    /// One pass of the window's logic, as eframe runs it while the window is minimised (no `ui`).
+    fn minimised_pass(window: &mut Window<'_>) -> Vec<egui::ViewportCommand> {
+        let mut input = egui::RawInput::default();
+        input.viewports.insert(ViewportId::ROOT, ViewportInfo { minimized: Some(true), ..ViewportInfo::default() });
+        assert_eq!(input.viewports[&ViewportId::ROOT].visible(), Some(false), "eframe skips `ui` for this window");
+        let out = egui::Context::default().run_logic(&input, |ctx| eframe::App::logic(window, ctx, &mut eframe::Frame::_new_kittest()));
+        out.viewport_commands.get(&ViewportId::ROOT).cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn show_brings_back_a_minimised_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut client, show) = client(dir.path());
+        let mut window = Window { client: &mut client, quitting: false, cjk: None };
+        assert!(!minimised_pass(&mut window).contains(&egui::ViewportCommand::Visible(true)), "nothing asked yet");
+        // The tray's Show, a second start or a notification clicked.
+        show.send(()).unwrap();
+        let commands = minimised_pass(&mut window);
+        assert_eq!(commands, SHOW, "out of the taskbar, shown and focused, in that order");
+        assert_eq!(SHOW[0], egui::ViewportCommand::Minimized(false));
+    }
 
     fn env(vars: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<std::ffi::OsString> {
         move |name| vars.iter().find(|(k, _)| *k == name).map(|(_, v)| (*v).into())

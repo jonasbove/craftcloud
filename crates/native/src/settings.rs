@@ -21,6 +21,12 @@ pub fn open() -> Store {
     open_at(craft_settings::Location::Auto)
 }
 
+/// Opens the settings in this folder (a settings folder such as [`Store::dir`]), read afresh
+/// from the disk: what `craftcloud login` saved while the client ran is in it.
+pub fn open_in(dir: &std::path::Path) -> Store {
+    open_at(craft_settings::Location::Dir(dir.to_path_buf()))
+}
+
 /// Opens the settings at `location`.
 pub fn open_at(location: craft_settings::Location) -> Store {
     let (store, report) = Store::open(location);
