@@ -89,6 +89,8 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 - 2026-11-15: Build: the Craft web builds are fetched by `cargo xtask fetch-apps` and their pins updated by
   `cargo xtask bump-apps`, in Rust; the Python scripts `scripts/fetch-apps` and `scripts/bump-apps` are gone, and the
   image build no longer needs Python. The `-apps` image serves the same files and `apps.json`.
+- 2026-11-15: Desktop: a long error detail in the Activity list is cut to its row (full text on hover) instead of
+  spilling out of the panel over the time, badge and name, and "Syncing stopped" never ends a path with two full stops.
 - 2026-11-15: Version 0.1.1: stored HTML and SVG never run as pages, a file being saved is never overwritten by the
   sync, `sync --once` syncs a file saved just before it, and `craftcloud open` returns at once with a usual Windows path.
 - 2026-11-15: CLI: `sync --once` run right after a file was saved no longer ends "up to date" without it: it

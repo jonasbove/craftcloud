@@ -110,22 +110,42 @@ struct Line {
     kind: Option<ActivityKind>,
 }
 
-/// Time · badge · path (fills, truncated) · extra, 14 apart.
+/// How wide the path and the extra are drawn, out of the `room` the row leaves them (a 14 gap
+/// between them). Both fit when they can; otherwise the path keeps up to 40% of the room (less
+/// if it is shorter), the extra gets the rest, and each is cut with an ellipsis. Never wider than
+/// the room: a long error detail used to spill out of the panel over the time and the badge.
+fn split_row(room: f32, path: f32, extra: f32) -> (f32, f32) {
+    const GAP: f32 = 14.0;
+    let room = (room - GAP).max(0.0);
+    if path + extra <= room {
+        return (room - extra, extra);
+    }
+    let extra_w = extra.min(room - path.min(room * 0.4));
+    (room - extra_w, extra_w)
+}
+
+/// Time · badge · path (fills, truncated) · extra (truncated, full text on hover), 14 apart.
 fn line_ui(ui: &mut Ui, line: &Line, t: &Look) {
     ui.spacing_mut().item_spacing.x = 14.0;
     let (rect, _) = ui.allocate_exact_size(vec2(44.0, 20.0), Sense::hover());
     let g = ui.painter().layout_no_wrap(line.when.clone(), egui::FontId::monospace(12.0), t.muted);
     ui.painter().galley(egui::pos2(rect.left(), rect.center().y - g.size().y / 2.0), g, t.muted);
     desk::badge_fixed(ui, line.tag.0, line.tag.1, desk::BADGE_W);
+    let path_text = egui::RichText::new(&line.path).size(13.0).color(t.ink);
+    let extra_text = egui::RichText::new(&line.extra).size(12.0).color(t.muted);
+    let path_g = ui.painter().layout_no_wrap(line.path.clone(), egui::FontId::proportional(13.0), t.ink);
     let extra_g = ui.painter().layout_no_wrap(line.extra.clone(), egui::FontId::proportional(12.0), t.muted);
-    let path_w = (ui.available_width() - extra_g.size().x - 14.0).max(40.0);
+    let (path_w, extra_w) = split_row(ui.available_width(), path_g.size().x, extra_g.size().x);
     ui.allocate_ui_with_layout(vec2(path_w, 20.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.set_width(path_w);
-        ui.add(egui::Label::new(egui::RichText::new(&line.path).size(13.0).color(t.ink)).truncate().selectable(false));
+        ui.add(egui::Label::new(path_text).truncate().selectable(false));
     });
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        ui.add(egui::Label::new(egui::RichText::new(&line.extra).size(12.0).color(t.muted)).selectable(false));
-    });
+    if !line.extra.is_empty() {
+        ui.allocate_ui_with_layout(vec2(extra_w, 20.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.set_width(extra_w);
+            ui.add(egui::Label::new(extra_text).truncate().selectable(false));
+        });
+    }
 }
 
 /// What a state panel offers.
@@ -287,7 +307,7 @@ impl<H: DesktopHost> DesktopApp<H> {
                 "Error",
                 t.bad,
                 "Syncing stopped".into(),
-                format!("{why}. It's tried again at the next cycle."),
+                format!("{} It's tried again at the next cycle.", sentence(why)),
                 &[(Ask::Retry, "Try again", Kind::Primary, Some(Icon::Refresh))],
             ),
             _ if !p.no_room.is_empty() => {
@@ -489,6 +509,13 @@ fn version_panel(ui: &mut Ui, title: &str, place: &str, facts: Option<&super::Fi
             None => chrome::meta(ui, &["Not on disk"]),
         }
     });
+}
+
+/// `why` as a sentence: it ends with one full stop, never two. Engine messages may already end
+/// with one (often right after a path, as in "is already syncing C:\Users\john\CraftCloud.").
+fn sentence(why: &str) -> String {
+    let why = why.trim_end();
+    if why.ends_with(['.', '!', '?']) { why.to_owned() } else { format!("{why}.") }
 }
 
 fn name_of(path: &str) -> &str {
