@@ -15,6 +15,10 @@
   menu, the Dock or the app menu) brings the running one's window to the front, also when it is minimised, instead of
   opening a second copy that said "another CraftCloud is already syncing". A start at login while one runs ends
   quietly.
+- **Desktop: the window comes back at its size.** A window minimised or hidden in the tray when CraftCloud quit
+  (or when it saved its place, every 30 seconds) came back as a 64×64 square in the screen's corner on Windows. The
+  window's place is now saved only while it is shown, and a window that would come back smaller than it can be
+  opens at its default size in the middle of the screen, once; after that it keeps its place again.
 - **Windows: uninstalling turns off start at login.** The MSI used to leave the "Start at login" entry behind,
   starting a program that was no longer there. Uninstalling now removes it (and takes the folder off PATH); an
   update keeps it. If you uninstalled an earlier version with start at login on, remove the leftover entry with

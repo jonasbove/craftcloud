@@ -7,6 +7,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod cli;
+mod geometry;
 mod notify;
 mod tray;
 
@@ -400,6 +401,34 @@ struct Window<'a> {
     quitting: bool,
     /// A system CJK font, read on a thread of its own (the bundled faces have no CJK glyphs).
     cjk: Option<Receiver<Option<FontFile>>>,
+    /// Shown, not hidden in the tray.
+    shown: bool,
+    /// The place and size eframe restored were looked at (and put right when bad).
+    placed: bool,
+    /// The last good place and size, saved instead of a minimised or hidden window's.
+    geometry: geometry::Keeper,
+}
+
+impl<'a> Window<'a> {
+    /// `saved` is the window's place and size from the last run, as eframe keeps it.
+    fn new(client: &'a mut Client, cjk: Option<Receiver<Option<FontFile>>>, shown: bool, saved: Option<String>) -> Self {
+        Self { client, quitting: false, cjk, shown, placed: false, geometry: geometry::Keeper::new(saved) }
+    }
+
+    /// Puts right a window that eframe restored from a bad save (once, when its size is known).
+    fn place(&mut self, ctx: &egui::Context) {
+        let (inner, outer, monitor) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().outer_rect, i.viewport().monitor_size));
+        if self.placed || inner.is_none() {
+            return;
+        }
+        self.placed = true;
+        if let Some(commands) = geometry::restore(inner, outer, monitor) {
+            log::info!("the saved window place was off (minimised or hidden when saved): back to the default");
+            for command in commands {
+                ctx.send_viewport_cmd(command);
+            }
+        }
+    }
 }
 
 /// A font file's bytes and the face's index in it.
@@ -426,9 +455,11 @@ impl eframe::App for Window<'_> {
     /// The tray, the control channel and Quit are handled here, not in `ui`: eframe calls only
     /// `logic` while the window is minimised or hidden, so a Show handled in `ui` never came.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.place(ctx);
         for request in self.client.tray_tick() {
             match request {
                 Request::Show => {
+                    self.shown = true;
                     for command in SHOW {
                         ctx.send_viewport_cmd(command);
                     }
@@ -453,6 +484,7 @@ impl eframe::App for Window<'_> {
                 OnClose::Hide => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                    self.shown = false;
                 }
                 OnClose::ToTray => self.client.closed_to_tray = true,
             }
@@ -462,8 +494,15 @@ impl eframe::App for Window<'_> {
             self.client.closed_to_tray = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+        let shown = self.shown;
+        self.geometry.look(ctx.input(|i| geometry::worth_keeping(shown, i.viewport())));
         // The tray and the sync status need passes even while the window is hidden.
         ctx.request_repaint_after(Duration::from_secs(1));
+    }
+
+    /// eframe has just written the window's place and size: never a minimised or hidden one's.
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.geometry.save(storage);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -523,8 +562,8 @@ fn options(visible: bool) -> eframe::NativeOptions {
         // The Wayland app id and the X11 window class: the desktop entry's name and StartupWMClass
         // (packaging/linux/io.github.jonasbove.craftcloud.desktop), so the dock finds its icon.
         .with_app_id("io.github.jonasbove.craftcloud")
-        .with_inner_size([960.0, 640.0])
-        .with_min_inner_size([640.0, 480.0])
+        .with_inner_size(geometry::DEFAULT_SIZE)
+        .with_min_inner_size(geometry::MIN_SIZE)
         .with_visible(visible);
     let viewport = match eframe::icon_data::from_png_bytes(include_bytes!("../assets/craftcloud-logo-256.png")) {
         Ok(icon) => viewport.with_icon(Arc::new(icon)),
@@ -654,7 +693,8 @@ fn main() -> ExitCode {
                             client.tray = TrayHandle::local(move || wake.wake());
                         }
                         let cjk = read_cjk_font(&cc.egui_ctx);
-                        Ok(Box::new(Window { client, quitting: false, cjk }))
+                        let saved = cc.storage.and_then(|s| s.get_string(geometry::KEY));
+                        Ok(Box::new(Window::new(client, cjk, !hidden, saved)))
                     }),
                 )
             };
@@ -768,7 +808,7 @@ mod tests {
         let start = |hidden| second_start(hidden, || control::is_running(dir.path()), || control::show_window(dir.path()));
         // From the Start menu or a shortcut: the running client's window comes up, this one ends.
         assert_eq!(start(false), Start::Shown);
-        let mut window = Window { client: &mut client, quitting: false, cjk: None };
+        let mut window = Window::new(&mut client, None, true, None);
         assert_eq!(minimised_pass(&mut window), SHOW, "the running client brings its window back");
         // At login: nothing shows.
         assert_eq!(start(true), Start::LeaveIt);
@@ -783,10 +823,35 @@ mod tests {
     }
 
     #[test]
+    fn a_minimised_window_saves_its_last_good_place() {
+        struct Storage(Option<String>);
+        impl eframe::Storage for Storage {
+            fn get_string(&self, key: &str) -> Option<String> {
+                (key == super::geometry::KEY).then(|| self.0.clone()).flatten()
+            }
+            fn set_string(&mut self, key: &str, value: String) {
+                if key == super::geometry::KEY {
+                    self.0 = Some(value);
+                }
+            }
+            fn remove_string(&mut self, _key: &str) {}
+            fn flush(&mut self) {}
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (mut client, _show) = client(dir.path());
+        let mut window = Window::new(&mut client, None, true, Some("from the last run".into()));
+        minimised_pass(&mut window);
+        // eframe writes the minimised window's 0×0 at (-32000, -32000), then asks the app.
+        let mut storage = Storage(Some("minimised".into()));
+        eframe::App::save(&mut window, &mut storage);
+        assert_eq!(storage.0.as_deref(), Some("from the last run"));
+    }
+
+    #[test]
     fn show_brings_back_a_minimised_window() {
         let dir = tempfile::tempdir().unwrap();
         let (mut client, show) = client(dir.path());
-        let mut window = Window { client: &mut client, quitting: false, cjk: None };
+        let mut window = Window::new(&mut client, None, true, None);
         assert!(!minimised_pass(&mut window).contains(&egui::ViewportCommand::Visible(true)), "nothing asked yet");
         // The tray's Show, a second start or a notification clicked.
         show.send(()).unwrap();

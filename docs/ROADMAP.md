@@ -98,6 +98,10 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   restore keeps the current file as a version first and writes with `If-Match`, so a change made meanwhile is never
   overwritten. The menu says "Move to trash" where it said "Delete". Uploading over a taken name, restoring from the
   trash with a new name, Recent's OPENED column and the phone layout already matched the frames.
+- 2026-11-15: Desktop: the window's place and size are never saved while it is minimised or hidden (eframe wrote
+  Windows' 0×0 at (-32000, -32000), restored as 64×64 at the corner); the last good place is written back instead
+  (`apps/craftcloud/src/geometry.rs`), and a window restored smaller than its minimum, or where Windows parks
+  minimised windows, opens at its default size, centred. Found testing 0.1.1 on Windows 11.
 - 2026-11-15: Desktop: a second start shows the running client's window on Windows and macOS as on Linux (the
   check is the same on every system; 0.1.1 didn't have it, and a minimised window didn't come back, see #2). The
   decision is one function, tested against a real control channel. Found testing 0.1.1 on Windows 11.
