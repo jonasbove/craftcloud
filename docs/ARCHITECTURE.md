@@ -44,7 +44,7 @@ Laid out like the ArtCraft Launcher:
 | `apps/craftcloud` | The desktop client (window, tray) and the command line ([CLI.md](CLI.md)) |
 | `apps/craftcloud-web` | The web frontend, built with Trunk |
 | `apps/craftcloud-admin` | The image's settings service |
-| `xtask` | `cargo xtask ci`: fmt, clippy, tests and the wasm build |
+| `xtask` | `cargo xtask ci`: fmt, clippy, tests and the wasm build. `fetch-apps` downloads, checks (sha256), unpacks and precompresses the Craft web builds for the `-apps` image; `bump-apps` updates their pins in `apps.toml` |
 
 ## Sync
 
@@ -85,7 +85,8 @@ The desktop client keeps chosen server folders in a local folder, two ways.
 Optional and off by default (`-apps` image plus the setting). The Craft web builds sit in a same-origin iframe and
 talk to the host through `craft-web-host` (`ready`, `open`, `save`, `dirty`, `failed`). For apps without that bridge,
 the image injects `craftcloud-shim.js`, which speaks the same protocol on the app's behalf; those apps are marked
-experimental. `apps.toml` pins each app's version and checksum and sets its bridge and file types.
+experimental. `apps.toml` pins each app's version and checksum and sets its bridge and file types; `cargo xtask bump-apps`
+moves the pins to each app's latest release, and `cargo xtask fetch-apps` builds the image's app tree from them.
 
 **Status:** the image serves the web builds and gates each file per app; the page that frames an app and the shim
 are not built yet ([ROADMAP.md](ROADMAP.md)).

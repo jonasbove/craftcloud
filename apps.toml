@@ -1,7 +1,7 @@
 # CraftCloud app manifest: which Craft web builds go into the image, and which files they open.
 #
-# Pins (version, asset, sha256) are written by `scripts/bump-apps`; everything else is edited by hand.
-# The Dockerfile downloads https://github.com/<repo>/releases/download/v<version>/<asset>, checks sha256,
+# Pins (version, asset, sha256) are written by `cargo xtask bump-apps`; everything else is edited by hand.
+# The Dockerfile (`cargo xtask fetch-apps`) downloads https://github.com/<repo>/releases/download/v<version>/<asset>, checks sha256,
 # and unpacks it to /srv/craftcloud/apps/<id>/.
 #
 # bridge    how CraftCloud gets files in and out (docs/ARCHITECTURE.md, "Apps in the browser"):
@@ -11,7 +11,7 @@
 # query     extra URL query for the app page (besides host=parent)
 # opens     extensions the app can open from the cloud
 # default   extensions this app claims when a file is opened (each extension has exactly one default)
-# fixups    repairs for packaging bugs in the pinned release, applied by scripts/fetch-apps
+# fixups    repairs for packaging bugs in the pinned release, applied by `cargo xtask fetch-apps`
 # tagline, color, ink
 #           display data for the app lists, from craft-launcher's crates/core/catalog.toml
 #           (MIT OR Apache-2.0, Copyright (c) 2026 ArtCraft Team)

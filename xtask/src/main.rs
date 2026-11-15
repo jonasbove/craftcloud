@@ -1,5 +1,11 @@
 //! Repository tasks, run as `cargo xtask <command>` (the alias is in .cargo/config.toml).
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
+mod bump_apps;
+mod fetch_apps;
+mod manifest;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -10,6 +16,12 @@ commands:
   ci     fmt check, clippy (-D warnings), tests, and the wasm check: what CI runs
   wasm   clippy for the crates the web frontend builds, on wasm32-unknown-unknown
   web    build the web frontend with Trunk into dist/web (needs `trunk` on PATH)
+  fetch-apps <apps.toml> <out-dir> [--cache DIR] [--only app,app] [--jobs N]
+         download, verify (sha256), unpack and precompress the Craft web builds apps.toml pins,
+         and write <out-dir>/apps.json (the Dockerfile's `apps` stage)
+  bump-apps [--check] [--app <id>]...
+         update apps.toml's pins (version, asset, sha256) from each app's latest GitHub release;
+         --check only reports, and fails if a pin is out of date
 ";
 
 fn main() -> ExitCode {
@@ -18,6 +30,8 @@ fn main() -> ExitCode {
         Some("ci") => cmd_ci(),
         Some("wasm") => cmd_wasm(),
         Some("web") => cmd_web(),
+        Some("fetch-apps") => fetch_apps::cmd(args.get(1..).unwrap_or_default()),
+        Some("bump-apps") => bump_apps::cmd(args.get(1..).unwrap_or_default()),
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");
             Ok(())

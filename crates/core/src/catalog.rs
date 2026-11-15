@@ -3,7 +3,7 @@
 //! - [`APPS`]: `apps.toml`'s table (names, colours, `opens`, `default`), built in so it works
 //!   offline, on the slim image and in the desktop client. A test keeps it in step with `apps.toml`.
 //! - [`parse`]: `/craftcloud/apps.json`, the Craft web apps the `-apps` image bundles (written by
-//!   `scripts/fetch-apps` from `apps.toml`). Absent on the slim image.
+//!   `cargo xtask fetch-apps` from `apps.toml`). Absent on the slim image.
 
 use serde::Deserialize;
 

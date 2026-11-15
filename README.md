@@ -352,7 +352,8 @@ the server image builds it for you. `nix develop` gives a shell with everything.
 CraftCloud is made for the **Craft App Suite**, the free, open-source creative apps from the
 [ArtCraft](https://getartcraft.com/) team, installed with the [ArtCraft Launcher](https://github.com/storytold/craft-launcher).
 Every one of them works with CraftCloud through the sync folder. The `-apps` image bundles their web builds at the
-versions pinned in [`apps.toml`](apps.toml), which also says which app opens which files.
+versions pinned in [`apps.toml`](apps.toml), which also says which app opens which files (`cargo xtask bump-apps`
+moves the pins to each app's latest release).
 
 | App | What it's for | Opens by default | Web build pinned | Code |
 |:----|:--------------|:-----------------|:----------|:-----|
