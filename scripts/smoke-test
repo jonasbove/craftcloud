@@ -31,7 +31,7 @@ compose() { docker compose -p "$PROJECT" -f "$ROOT/compose.yaml" --env-file "$EN
 
 cleanup() {
     if [ "${KEEP:-0}" != 1 ]; then compose down -v >/dev/null 2>&1 || true; fi
-    rm -f "$ENVFILE"
+    rm -f "$ENVFILE" "${JAR:-}"
 }
 trap cleanup EXIT
 
@@ -83,6 +83,24 @@ check "settings API needs sign-in" expect "$(status "$BASE/craftcloud/api/settin
 check "the admin gate is not reachable from outside" expect "$(status "$BASE/internal/apps-gate")" 200
 check "…it is the frontend there, not the gate" sh -c "curl -fsS '$BASE/internal/apps-gate' | grep -q craftcloud_canvas"
 
+# Create the owner and sign in (the cookie jar keeps the session for the checks below).
+JAR="$(mktemp)"
+PW="smoke-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+curl -fsS -o /dev/null -H 'Content-Type: application/json' -d "{\"username\":\"smoke\",\"email\":\"smoke@example.org\",\"password\":\"$PW\"}" "$BASE/api/setup"
+LOGIN_HEADERS="$(curl -fsS -o /dev/null -D - -c "$JAR" -H 'Content-Type: application/json' -d "{\"username\":\"smoke\",\"password\":\"$PW\"}" "$BASE/api/auth/login" | tr -d '\r')"
+CSRF="$(awk '$6=="oxicloud_csrf"{print $7}' "$JAR")"
+
+# The sign-in cookie is Secure exactly when the public address is https (read from Set-Cookie, since
+# curl may not keep a Secure cookie it got over http).
+case "${PUBLIC_URL:-$BASE}" in
+    https://*) want_secure=yes ;;
+    *) want_secure=no ;;
+esac
+access_cookie="$(printf '%s\n' "$LOGIN_HEADERS" | grep -i '^set-cookie: *oxicloud_access=' | head -1)"
+check "sign-in cookie set" test -n "$access_cookie"
+if printf '%s' "$access_cookie" | grep -qi '; *secure\(;\|$\)'; then got_secure=yes; else got_secure=no; fi
+check "sign-in cookie Secure: $want_secure for ${PUBLIC_URL:-$BASE}" expect "$got_secure" "$want_secure"
+
 if [ "$WEB_APPS" = off ]; then
     check "config says web apps off" expect "$web_apps_json" false
     check "web apps not served" expect "$(status "$BASE/apps/wordcraft/index.html")" 404
@@ -107,18 +125,12 @@ else
     check "photocraft fixup present" expect "$(status "$BASE/apps/photocraft/app/snippets/eframe-d31a8450ea12dfc1/inline0.js")" 200
 
     # Switch one app off as the owner, through the same API the admin page uses.
-    JAR="$(mktemp)"
-    PW="smoke-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
-    curl -fsS -o /dev/null -H 'Content-Type: application/json' -d "{\"username\":\"smoke\",\"email\":\"smoke@example.org\",\"password\":\"$PW\"}" "$BASE/api/setup"
-    curl -fsS -o /dev/null -c "$JAR" -H 'Content-Type: application/json' -d "{\"username\":\"smoke\",\"password\":\"$PW\"}" "$BASE/api/auth/login"
-    CSRF="$(awk '$6=="oxicloud_csrf"{print $7}' "$JAR")"
     BODY='{"web_apps": true, "disabled_apps": ["effectcraft"]}'
     check "settings write without CSRF refused" expect "$(curl -sS -o /dev/null -w '%{http_code}' -b "$JAR" -X PUT -H 'Content-Type: application/json' -d "$BODY" "$BASE/craftcloud/api/settings")" 403
     check "settings write as owner" expect "$(curl -sS -o /dev/null -w '%{http_code}' -b "$JAR" -X PUT -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d "$BODY" "$BASE/craftcloud/api/settings")" 200
     check "a switched-off app is gone at once" expect "$(status "$BASE/apps/effectcraft/index.html")" 404
     check "other apps stay" expect "$(status "$BASE/apps/wordcraft/index.html")" 200
     check "config lists only enabled apps" sh -c "curl -fsS '$BASE/craftcloud/config.json' | grep -q wordcraft && ! curl -fsS '$BASE/craftcloud/config.json' | grep -q effectcraft"
-    rm -f "$JAR"
 fi
 
 if [ "$fail" = 0 ]; then echo "all checks passed"; else echo "some checks failed"; fi

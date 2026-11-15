@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Server: sign-in cookies follow the public address.** When `CRAFTCLOUD_PUBLIC_URL` starts with `https://`, the
+  sign-in cookies are marked Secure on their own; `OXICLOUD_COOKIE_SECURE` is now needed only to override that.
+  `.env.example` no longer sets it to `false`: if your `.env` was copied from an older one and you serve CraftCloud
+  over https, delete the `OXICLOUD_COOKIE_SECURE=false` line (or set it to `true`).
+
 ## 0.1.1
 
 Fixes for 0.1.0. **Update the server and every desktop client.** The sync fix (a file being saved is never
