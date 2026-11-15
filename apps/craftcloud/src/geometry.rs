@@ -18,9 +18,10 @@ pub const KEY: &str = "window";
 const OFF_SCREEN: f32 = -30_000.0;
 
 /// Whether the window's place and size now are worth keeping: shown (not hidden in the tray), not
-/// minimised, and at least as big as the window can be made.
+/// minimised, and at least as big as the window can be made. Under Wayland the window's place
+/// isn't known (no `inner_rect`), but eframe saves its size, which is good then.
 pub fn worth_keeping(shown: bool, viewport: &ViewportInfo) -> bool {
-    shown && viewport.minimized != Some(true) && viewport.inner_rect.is_some_and(|r| fits(r.size()))
+    shown && viewport.minimized != Some(true) && viewport.inner_rect.is_none_or(|r| fits(r.size()))
 }
 
 fn fits(size: Vec2) -> bool {
@@ -144,7 +145,9 @@ mod tests {
         assert!(!worth_keeping(false, &shown), "hidden in the tray");
         assert!(!worth_keeping(true, &ViewportInfo { minimized: Some(true), ..shown.clone() }));
         assert!(!worth_keeping(true, &ViewportInfo { inner_rect: at(0.0, 0.0, 0.0, 0.0), ..shown.clone() }));
-        assert!(!worth_keeping(true, &ViewportInfo { inner_rect: None, ..shown }));
+        // Wayland gives no place: the size eframe saves is kept, as before.
+        assert!(worth_keeping(true, &ViewportInfo { inner_rect: None, ..shown.clone() }));
+        assert!(!worth_keeping(true, &ViewportInfo { inner_rect: None, minimized: Some(true), ..shown }));
     }
 
     #[test]
