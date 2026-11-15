@@ -15,6 +15,7 @@ mod sheets;
 mod table;
 mod time;
 mod upload;
+mod versions;
 
 use std::collections::HashMap;
 
@@ -91,6 +92,10 @@ enum Key {
     History(Option<String>),
     /// The trash's ids, for leaving trashed files out of search results (by generation).
     TrashIds(u64),
+    /// The "Versions…" sheet's listing.
+    Versions,
+    /// A step of restoring a version (see [`versions::Run`]).
+    VersionStep,
     /// Best effort; the answer doesn't matter.
     Ignore,
 }
@@ -187,6 +192,8 @@ pub struct Files {
     /// The trash's ids while searching (T-043); `None` until the trash has answered.
     search_trashed: Option<std::collections::HashSet<String>>,
     chain: restore::Chain,
+    /// Restoring a kept version.
+    version_run: Option<versions::Run>,
 }
 
 impl Files {
@@ -229,6 +236,7 @@ impl Files {
             search_bust: 0,
             search_trashed: None,
             chain: restore::Chain::default(),
+            version_run: None,
         }
     }
 
@@ -273,6 +281,8 @@ impl Files {
                     Key::RestoreCheck(id) => self.on_restore_check(backend, &id, Err(why)),
                     Key::Chain => self.on_chain(backend, Err(why)),
                     Key::History(path) => self.on_history(backend, path, &Err(why)),
+                    Key::Versions => self.on_versions(Err(why)),
+                    Key::VersionStep => self.on_version_step(backend, Err(why)),
                     _ => {}
                 }
                 return;
@@ -337,6 +347,8 @@ impl Files {
             Key::Chain => self.on_chain(backend, Ok(resp)),
             Key::TrashIds(g) => self.on_trash_ids(g, &resp),
             Key::History(path) => self.on_history(backend, path, &Ok(resp)),
+            Key::Versions => self.on_versions(Ok(resp)),
+            Key::VersionStep => self.on_version_step(backend, Ok(resp)),
             Key::Ignore => {}
         }
     }
@@ -1026,13 +1038,14 @@ impl Files {
             vec![
                 (MenuAction::Open, (!many).then_some((if item.is_folder() { "Open" } else { "Download" }, false, true))),
                 (MenuAction::Download, (many || item.is_folder()).then_some(("Download as zip", false, true))),
+                (MenuAction::Versions, (!many && !item.is_folder() && !item.path.is_empty()).then_some(("Versions…", false, true))),
                 (MenuAction::ShowInFolder, (!many && !in_folder && item.parent.is_some()).then_some(("Show in folder", false, true))),
                 (MenuAction::Rule, None),
                 (MenuAction::Rename, (!many).then_some(("Rename…", false, true))),
                 (MenuAction::Move, Some(("Move to…", false, true))),
                 (MenuAction::Star, Some((if all_starred { "Remove star" } else { "Star" }, false, true))),
                 (MenuAction::Rule, None),
-                (MenuAction::Trash, Some(("Delete", true, true))),
+                (MenuAction::Trash, Some(("Move to trash", true, true))),
             ]
         };
         let shown: Vec<(MenuAction, draw::MenuEntry<'_>)> = entries.into_iter().filter(|(a, e)| e.is_some() || *a == MenuAction::Rule).collect();
@@ -1050,6 +1063,7 @@ impl Files {
                 self.download(backend, &at);
             }
             MenuAction::ShowInFolder => self.show_in_folder(backend, index),
+            MenuAction::Versions => self.open_versions(backend, index),
             MenuAction::Rename => self.start_rename(index),
             MenuAction::Move => self.start_move(backend),
             MenuAction::Star => self.set_starred(backend, &picked, !all_starred),
@@ -1226,6 +1240,7 @@ enum MenuAction {
     Move,
     Download,
     ShowInFolder,
+    Versions,
     Star,
     Trash,
     Restore,

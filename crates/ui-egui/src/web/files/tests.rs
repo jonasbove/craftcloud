@@ -660,3 +660,132 @@ fn what_goes_for_good_loses_its_kept_versions() {
     h.run();
     assert_eq!(h.state().backend.sent_to("/webdav/.craftcloud/versions/Documents/Q4/a.txt/"), 0);
 }
+
+/// A WebDAV listing of `folder` (a path under `/webdav/`) with `files` as `(name, etag, size)`.
+fn multistatus(folder: &str, files: &[(&str, &str, u64)]) -> Vec<u8> {
+    let mut xml = format!(
+        r#"<D:multistatus xmlns:D="DAV:"><D:response><D:href>/webdav/{folder}</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>"#
+    );
+    for (name, etag, size) in files {
+        xml.push_str(&format!(
+            r#"<D:response><D:href>/webdav/{folder}{name}</D:href><D:propstat><D:prop><D:resourcetype/><D:getetag>&quot;{etag}&quot;</D:getetag><D:getcontentlength>{size}</D:getcontentlength></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>"#
+        ));
+    }
+    xml.push_str("</D:multistatus>");
+    xml.into_bytes()
+}
+
+const HISTORY: &str = ".craftcloud/versions/Reports/plan.txt/";
+const NEWEST: &str = "20261113T101500.000Z_20261113T090000Z";
+
+/// Opens "Versions…" of Reports/plan.txt from its "…" menu, with two kept versions.
+fn plan_versions() -> App {
+    let mut h = in_reports(&[file("f1", "plan.txt", 8)]);
+    h.state_mut().backend.wall = Some(crate::backend::WallClock { unix: 1_794_608_247.123, utc_offset_minutes: 0 });
+    h.get_by_label("More for plan.txt").click();
+    h.run();
+    h.get_by_label("Move to trash");
+    h.get_by_label("Versions…").click();
+    h.run();
+    assert_eq!(h.state().backend.last_to(&format!("/webdav/{HISTORY}")).method, Method::Propfind);
+    h.get_by_label("Versions of plan.txt");
+    h.get_by_label("My files/Reports");
+    let list = multistatus(HISTORY, &[("20261112T091200.000Z", "h1-1", 6), (NEWEST, "h2-2", 7)]);
+    h.state_mut().backend.answer(&format!("/webdav/{HISTORY}"), Ok(HttpResponse::new(207, list)));
+    h.run();
+    h
+}
+
+#[test]
+fn versions_list_the_current_file_and_the_kept_ones() {
+    let mut h = plan_versions();
+    h.get_by_label("CURRENT");
+    h.get_by_label("Today 09:00");
+    h.get_by_label("Yesterday 09:12");
+    assert_eq!(h.get_all_by_label("RESTORE").count(), 2, "the current file has nothing to restore");
+    // DOWNLOAD of a kept version fetches it from the history, under the file's own name.
+    h.get_all_by_label("DOWNLOAD").last().unwrap().click();
+    h.run();
+    let (url, name) = h.state().backend.downloads.last().cloned().unwrap();
+    assert_eq!(
+        (url.as_str(), name.as_str()),
+        ("https://cloud.example.org/webdav/.craftcloud/versions/Reports/plan.txt/20261112T091200.000Z", "plan.txt")
+    );
+    h.get_by_label("CLOSE").click();
+    h.run();
+    assert!(h.state().files.sheet.is_none());
+}
+
+#[test]
+fn a_file_without_history_says_so() {
+    let mut h = in_reports(&[file("f1", "plan.txt", 8)]);
+    h.get_by_label("More for plan.txt").click();
+    h.run();
+    h.get_by_label("Versions…").click();
+    h.run();
+    h.state_mut().backend.answer(&format!("/webdav/{HISTORY}"), Ok(HttpResponse::new(404, Vec::new())));
+    h.run();
+    h.get_by_label("No earlier versions yet. One is kept each time the file is saved over.");
+}
+
+/// Clicks RESTORE on the newest version and answers the ETag and the version's bytes.
+fn restore_newest(h: &mut App) {
+    h.get_all_by_label("RESTORE").next().unwrap().click();
+    h.run();
+    let stat = h.state().backend.last_to("/webdav/Reports/plan.txt");
+    assert_eq!((stat.method, stat.header_value("Depth")), (Method::Propfind, Some("0")));
+    h.state_mut().backend.answer("/webdav/Reports/plan.txt", Ok(HttpResponse::new(207, multistatus("Reports/", &[("plan.txt", "cur-9", 8)]))));
+    h.run();
+    // The version's bytes come before anything is pruned.
+    let version = format!("/webdav/{HISTORY}{NEWEST}");
+    assert_eq!(h.state().backend.last_to(&version).method, Method::Get);
+    h.state_mut().backend.answer(&version, ok(b"old plan".to_vec()));
+    h.run();
+    answer_mkcols(h);
+}
+
+#[test]
+fn restoring_a_version_keeps_the_current_file_and_never_overwrites_a_change() {
+    let mut h = plan_versions();
+    restore_newest(&mut h);
+    // The current file is kept first, never over anything.
+    let copy = h.state().backend.last_to("/webdav/Reports/plan.txt");
+    assert_eq!((copy.method, copy.header_value("Overwrite")), (Method::Copy, Some("F")));
+    assert!(copy.header_value("Destination").unwrap().ends_with(&format!("/webdav/{HISTORY}20261113T221727.123Z")));
+    h.state_mut().backend.answer("/webdav/Reports/plan.txt", Ok(HttpResponse::new(201, Vec::new())));
+    h.run();
+    // Pruned to 5, then the guarded write.
+    h.state_mut().backend.answer(&format!("/webdav/{HISTORY}"), Ok(HttpResponse::new(404, Vec::new())));
+    h.run();
+    let put = h.state().backend.last_to("/webdav/Reports/plan.txt");
+    assert_eq!((put.method, put.header_value("If-Match")), (Method::Put, Some("\"cur-9\"")));
+    assert_eq!(put.body, b"old plan");
+    h.state_mut().backend.answer("/webdav/Reports/plan.txt", Ok(HttpResponse::new(412, Vec::new())));
+    h.run();
+    h.get_by_label("Couldn't restore the version: it changed on the server meanwhile; nothing was overwritten. Try again.");
+}
+
+#[test]
+fn a_restore_stops_when_the_current_file_cant_be_kept() {
+    let mut h = plan_versions();
+    restore_newest(&mut h);
+    h.state_mut().backend.answer("/webdav/Reports/plan.txt", Ok(HttpResponse::new(507, Vec::new())));
+    h.run();
+    assert_eq!(h.state().backend.sent.iter().filter(|(_, r)| r.method == Method::Put).count(), 0, "nothing is written");
+    h.get_by_label("Couldn't restore the version: couldn't keep the current file first (the server answered 507).");
+    assert_eq!(h.get_all_by_label("RESTORE").count(), 2, "it can be tried again");
+}
+
+#[test]
+fn a_restored_version_closes_the_sheet_and_says_so() {
+    let mut h = plan_versions();
+    restore_newest(&mut h);
+    h.state_mut().backend.answer("/webdav/Reports/plan.txt", Ok(HttpResponse::new(201, Vec::new())));
+    h.run();
+    h.state_mut().backend.answer(&format!("/webdav/{HISTORY}"), Ok(HttpResponse::new(404, Vec::new())));
+    h.run();
+    h.state_mut().backend.answer("/webdav/Reports/plan.txt", Ok(HttpResponse::new(204, Vec::new())));
+    h.run();
+    assert!(h.state().files.sheet.is_none());
+    h.get_by_label("Restored the version from Today 09:00");
+}
