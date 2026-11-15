@@ -78,9 +78,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/bin"
           tar -xz -C "$RUNNER_TEMP/bin" -f "$RUNNER_TEMP/$archive" nfpm
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # installs the toolchain named below
         with:
-          toolchain: stable
+          toolchain: 1.100.0  # = rust-toolchain.toml
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: release-linux-${{ matrix.arch }}
@@ -198,9 +198,9 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # installs the toolchain named below
         with:
-          toolchain: stable
+          toolchain: 1.100.0  # = rust-toolchain.toml
           targets: aarch64-apple-darwin, x86_64-apple-darwin
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
@@ -249,9 +249,9 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # installs the toolchain named below
         with:
-          toolchain: stable
+          toolchain: 1.100.0  # = rust-toolchain.toml
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
@@ -321,7 +321,7 @@ jobs:
             if [ "${{ matrix.arch }}" = aarch64 ]; then
               pkg install -y rust
             else
-              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.100.0
             fi
       - name: Set up the aarch64 cross toolchain
         if: matrix.arch == 'aarch64'
@@ -422,9 +422,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/bin"
           tar -xz -C "$RUNNER_TEMP/bin" -f "$RUNNER_TEMP/$archive" nfpm
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # installs the toolchain named below
         with:
-          toolchain: stable
+          toolchain: 1.100.0  # = rust-toolchain.toml
           targets: riscv64gc-unknown-linux-gnu
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:

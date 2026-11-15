@@ -101,6 +101,8 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 - 2026-11-15: Windows: `craftcloud status` typed in Command Prompt or PowerShell prints again: `craftcloud.com`, a
   console program next to `craftcloud.exe`, runs it and passes its output, input and exit code through (#4). The
   MSI puts its folder on the user's PATH and, on uninstall only, removes the start-at-login value.
+- 2026-11-15: Build: Rust is pinned to 1.100.0 in `rust-toolchain.toml`, the CI and release workflows and the Docker image, so
+  local builds and CI use the same compiler (CI took the newest stable before, local builds whatever was installed).
 - 2026-11-15: Version 0.1.1: stored HTML and SVG never run as pages, a file being saved is never overwritten by the
   sync, `sync --once` syncs a file saved just before it, and `craftcloud open` returns at once with a usual Windows path.
 - 2026-11-15: CLI: `sync --once` run right after a file was saved no longer ends "up to date" without it: it
