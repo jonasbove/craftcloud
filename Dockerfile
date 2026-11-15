@@ -14,7 +14,6 @@
 # against that version's REST API (upstream/oxicloud/resources/gen/openapi.json).
 ARG OXICLOUD_VERSION=0.10.0
 ARG CADDY_VERSION=2.11.9
-ARG ALPINE_IMAGE=alpine:3.24
 ARG RUST_IMAGE=rust:1.97-slim-bookworm
 # The web stage needs glibc 2.38 or newer: Trunk downloads a prebuilt wasm-bindgen, and its arm64
 # build won't run on bookworm's glibc 2.36 (building the image on an arm64 machine failed there).
@@ -57,12 +56,23 @@ RUN --mount=type=cache,id=craftcloud-cargo-registry,sharing=locked,target=/usr/l
       -exec gzip -k -9 -n {} \; -exec brotli -k -q 11 {} \;
 
 # ─── Craft web builds: download, verify sha256, unpack, precompress ───────────────────────────────
-FROM --platform=$BUILDPLATFORM ${ALPINE_IMAGE} AS apps
-RUN apk add --no-cache python3 brotli
+# `cargo xtask fetch-apps` (xtask/src/fetch_apps.rs), built for the build machine and run there.
+FROM --platform=$BUILDPLATFORM ${RUST_IMAGE} AS apps
+ARG CARGO_BUILD_JOBS=6
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} CARGO_TERM_COLOR=never CARGO_NET_GIT_FETCH_WITH_CLI=true
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY .cargo .cargo
+COPY crates crates
+COPY apps apps
+COPY xtask xtask
+RUN --mount=type=cache,id=craftcloud-cargo-registry,sharing=locked,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=craftcloud-cargo-git,sharing=locked,target=/usr/local/cargo/git \
+    cargo build --release --locked -p xtask && cp target/release/xtask /usr/local/bin/xtask && rm -rf target
 COPY apps.toml /build/apps.toml
-COPY scripts/fetch-apps /build/fetch-apps
 RUN --mount=type=cache,target=/cache \
-    python3 -I /build/fetch-apps /build/apps.toml /out/apps --cache /cache && \
+    xtask fetch-apps /build/apps.toml /out/apps --cache /cache --jobs "$CARGO_BUILD_JOBS" && \
     mkdir -p /out/craftcloud && mv /out/apps/apps.json /out/craftcloud/apps.json
 
 # ─── craftcloud-admin: a static musl binary, cross-compiled on the build machine ─────────────────

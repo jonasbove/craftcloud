@@ -9,3 +9,15 @@ publish = false
 workspace = true
 
 [dependencies]
+# fetch-apps and bump-apps: GitHub downloads (rustls, as in crates/native), apps.toml, the sha256
+# pins, unpacking the release zips, and the .gz/.br siblings Caddy serves.
+brotli = { version = "8", default-features = false, features = ["std"] }
+flate2 = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+toml = { version = "1", default-features = false, features = ["std", "parse", "serde", "preserve_order"] }
+ureq = { version = "3.5", default-features = false, features = ["rustls"] }
+# Held at 9.3: from 9.4 on, zip always depends on constant_time_eq (CC0-1.0 OR MIT-0 OR Apache-2.0),
+# and MIT-0 is outside the licence allowlist. 9.3 has it only behind encryption features.
+zip = { version = "~9.3", default-features = false, features = ["deflate-flate2"] }

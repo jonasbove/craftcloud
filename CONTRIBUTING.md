@@ -28,6 +28,10 @@ cargo xtask ci          # fmt check, clippy -D warnings, tests, wasm clippy; mus
 cargo deny check        # licences, advisories, sources (deny.toml); CI runs it too
 ```
 
+The Craft web builds in the `-apps` image are pinned in `apps.toml`. `cargo xtask bump-apps --check` says which
+pins are behind the apps' latest releases and `cargo xtask bump-apps` updates them; `cargo xtask fetch-apps
+apps.toml <out-dir>` builds the tree the image serves (the Dockerfile's `apps` stage runs it).
+
 Working in several checkouts at once (git worktrees): give each its own `CARGO_TARGET_DIR`, so two
 builds never share or lock one target directory.
 
