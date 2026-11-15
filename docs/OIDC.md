@@ -88,10 +88,18 @@ provider's **issuer URL**, the **client ID** and the **client secret**.
 | Admin groups | Optional, comma-separated: members become admins when their account is created | `OXICLOUD_OIDC_ADMIN_GROUPS` |
 | Sign-in with the provider | On | `OXICLOUD_OIDC_ENABLED` |
 | Create accounts at first sign-in | On: anyone the provider lets in gets an account (with the default quota). Off: only people who already have one | `OXICLOUD_OIDC_AUTO_PROVISION` |
-| Password sign-in | On: the password form stays next to the button. Off: single sign-on only (only while sign-in with the provider is on) | `OXICLOUD_OIDC_DISABLE_PASSWORD_LOGIN` (inverted) |
+| Password sign-in | On: the password form stays next to the button. Off: single sign-on only (only while sign-in with the provider is on, and after **TEST CONNECTION** worked) | `OXICLOUD_OIDC_DISABLE_PASSWORD_LOGIN` (inverted) |
 
-**TEST CONNECTION** asks the server to read `<issuer URL>/.well-known/openid-configuration` and shows what it
-got, so you see a wrong address or an untrusted certificate before anyone signs in. **SAVE SINGLE SIGN-ON**
+**TEST CONNECTION** asks the server to read `<issuer URL>/.well-known/openid-configuration` ("Asking
+id.example.org for its OpenID configuration…" while it runs) and shows what it got, so you see a wrong address
+or an untrusted certificate before anyone signs in. A failure is put in plain words (the name doesn't resolve
+from inside the container, nothing answers, no answer in time, an untrusted certificate, no OpenID configuration
+at that address), with the server's own words under it ("Server said: …").
+
+Password sign-in goes off only after **TEST CONNECTION** worked for the issuer URL in the form, in the same visit
+to the page: with the provider out of reach, nobody could sign in. The same holds when password sign-in is already
+off and the issuer URL changes. Otherwise the page answers "Password sign-in stays on until Test connection
+works" and saves nothing. **SAVE SINGLE SIGN-ON**
 applies the settings at once; no restart is needed. Sign out and the sign-in page shows the new button.
 
 **In `.env` instead:** the compose file passes every `OXICLOUD_*` line in `.env` through (see `.env.example`).

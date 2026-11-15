@@ -225,6 +225,37 @@ fn login_sso(s: egui::Vec2, t: egui::Theme, password: bool, error: Option<&str>)
     h
 }
 
+/// Admin › Server on the slim image, with `oidc` as the single sign-on settings, on a canvas tall
+/// enough to show the single sign-on panel under the web apps.
+fn admin_sso(s: egui::Vec2, t: egui::Theme, oidc: &[u8]) -> H {
+    let mut h = visit("/admin/server", None, s, t);
+    start(&mut h, INIT, true);
+    h.set_size(egui::vec2(s.x, s.y + if s.x < 600.0 { 1500.0 } else { 700.0 }));
+    soft(&mut h, "/craftcloud/apps.json", Ok(HttpResponse::new(404, Vec::new())));
+    soft(&mut h, "/craftcloud/api/settings", ok(br#"{"web_apps":false,"disabled_apps":[]}"#));
+    soft(&mut h, "/api/admin/settings/oidc", ok(oidc));
+    h
+}
+
+/// A fresh server's single sign-on, filled in and tested; `answer` is the server's answer, if any.
+fn admin_sso_tested(s: egui::Vec2, t: egui::Theme, answer: Option<&str>) -> H {
+    let mut h = admin_sso(s, t, &fixture("oidc-settings.json"));
+    h.state_mut().admin.fill_sso(true, "https://id.example.org/realms/test", "s3cret", true);
+    h.run();
+    click(&mut h, "TEST CONNECTION");
+    if let Some(answer) = answer {
+        soft(&mut h, "/api/admin/settings/oidc/test", ok(&fixture(answer)));
+    }
+    h
+}
+
+fn saved_sso(env: &str) -> Vec<u8> {
+    String::from_utf8(fixture("oidc-settings-saved.json"))
+        .unwrap()
+        .replace("\"env_overrides\": []", &format!("\"env_overrides\": [{env}]"))
+        .replace("http://127.0.0.1:8097", "https://cloud.example.org")
+        .into_bytes()
+}
 type Scene = (&'static str, fn(egui::Vec2, egui::Theme) -> H);
 
 fn setup_at(step: u8) -> fn(egui::Vec2, egui::Theme) -> H {
@@ -514,6 +545,27 @@ fn scenes() -> Vec<Scene> {
             soft(&mut h, "/api/admin/users?limit=500&offset=0", ok(&fixture("admin-users-three.json")));
             h
         }),
+        ("admin-sso", |s, t| admin_sso(s, t, &saved_sso(""))),
+        ("admin-sso-testing", |s, t| admin_sso_tested(s, t, None)),
+        ("admin-sso-works", |s, t| admin_sso_tested(s, t, Some("oidc-test-ok.json"))),
+        ("admin-sso-fails", |s, t| admin_sso_tested(s, t, Some("oidc-test-unreachable.json"))),
+        ("admin-sso-guard", |s, t| {
+            let mut h = admin_sso(s, t, &saved_sso(""));
+            h.state_mut().admin.fill_sso(false, "https://id.example.org", "", false);
+            h.run();
+            click(&mut h, "SAVE SINGLE SIGN-ON");
+            h
+        }),
+        ("admin-sso-guard-untested", |s, t| {
+            let mut h = admin_sso(s, t, &saved_sso(""));
+            h.state_mut().admin.fill_sso(true, "https://id.example.org", "", false);
+            h.run();
+            click(&mut h, "TEST CONNECTION");
+            soft(&mut h, "/api/admin/settings/oidc/test", ok(&fixture("oidc-test-unreachable.json")));
+            click(&mut h, "SAVE SINGLE SIGN-ON");
+            h
+        }),
+        ("admin-sso-env", |s, t| admin_sso(s, t, &saved_sso(r#""issuer_url", "client_id", "client_secret", "auto_provision""#))),
         ("admin-server", |s, t| {
             let mut h = visit("/admin/server", None, s, t);
             start(&mut h, INIT, true);
