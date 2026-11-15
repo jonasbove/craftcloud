@@ -3,6 +3,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod bump_apps;
+mod e2e;
 mod fetch_apps;
 mod manifest;
 
@@ -22,6 +23,8 @@ commands:
   bump-apps [--check] [--app <id>]...
          update apps.toml's pins (version, asset, sha256) from each app's latest GitHub release;
          --check only reports, and fails if a pin is out of date
+  e2e-sync  two scratch clients sync a fresh folder on CRAFTCLOUD_TEST_SERVER and check each other
+            (create, edit, rename, move, delete to the trash, conflicts, …): docs/TESTING.md
 ";
 
 fn main() -> ExitCode {
@@ -32,6 +35,7 @@ fn main() -> ExitCode {
         Some("web") => cmd_web(),
         Some("fetch-apps") => fetch_apps::cmd(args.get(1..).unwrap_or_default()),
         Some("bump-apps") => bump_apps::cmd(args.get(1..).unwrap_or_default()),
+        Some("e2e-sync") => e2e::cmd(args.get(1..).unwrap_or_default(), &root()),
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");
             Ok(())

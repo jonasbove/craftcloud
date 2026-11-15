@@ -103,7 +103,7 @@ has the map.
    it was checked). Unless the user gives you a task, pick work from the roadmap.
 2. Read the doc for the area you touch: [ARCHITECTURE](docs/ARCHITECTURE.md), [CLI](docs/CLI.md),
    [CRAFT-INTEGRATION](docs/CRAFT-INTEGRATION.md), [OIDC](docs/OIDC.md), [FILES-ON-DEMAND](docs/FILES-ON-DEMAND.md),
-   [UPSTREAM](docs/UPSTREAM.md), [RELEASE-NOTES](docs/RELEASE-NOTES.md), [RELEASING](docs/RELEASING.md), [BACKUP](docs/BACKUP.md), and `design/README.md` for screens.
+   [UPSTREAM](docs/UPSTREAM.md), [RELEASE-NOTES](docs/RELEASE-NOTES.md), [RELEASING](docs/RELEASING.md), [BACKUP](docs/BACKUP.md), [TESTING](docs/TESTING.md), and `design/README.md` for screens.
    People contributing by hand start at [CONTRIBUTING.md](CONTRIBUTING.md).
 3. `PLAN.md` and `docs/RESEARCH.md` are an optional gitignored notebook, and `CLAUDE.local.md` holds one machine's
    facts. Do not ask for them and do not stop when they are absent.
@@ -184,6 +184,11 @@ has the map.
   `docker compose -p craftcloud-<name> down -v`.
 - **Live sync tests** against that server (never in CI; on a fresh server they create the owner first):
   `CRAFTCLOUD_TEST_SERVER=http://127.0.0.1:<port> CRAFTCLOUD_TEST_USER=john CRAFTCLOUD_TEST_PASSWORD=… CRAFTCLOUD_HTTP_IDLE_SECS=5 cargo test -p craftcloud-native --test live -- --test-threads 1`.
+- **The two-client smoke test** (any server, a test account; never in CI): the same variables, then
+  `cargo xtask e2e-sync` (`--bin PATH` for another build, `--keep` to look afterwards). Two scratch clients sync a
+  fresh folder pass by pass through every case in [docs/TESTING.md](docs/TESTING.md), and it ends with a PASS/FAIL
+  table; every pass's `--json` stays in `target/e2e-sync/<run>/passes/`. With an admin account it stops when another
+  client is signed in to it (a stray client syncing it makes the results meaningless); with others it warns.
 - **Server facts to rely on** (OxiCloud v0.10.0; recorded answers in `crates/core/tests/fixtures/oxicloud-0.10.0/`):
   - First run: `GET /api/auth/status` says `initialized:false`; `POST /api/setup {username, email, password}` without
     auth creates the owner. Sign-in: `POST /api/auth/login`, renewal `/api/auth/refresh`. A Bearer token works on

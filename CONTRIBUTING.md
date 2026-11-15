@@ -50,6 +50,10 @@ docker compose -p craftcloud-mine down -v
 The live tests create the owner on a fresh server and are skipped unless those variables are set
 (never in CI). Use a throwaway server only, never one with real files.
 
+A sync change also gets the two-client smoke test, `cargo xtask e2e-sync` with the same variables: two scratch
+clients sync a fresh folder pass by pass and check each other, and it ends with a PASS/FAIL table
+([docs/TESTING.md](docs/TESTING.md)).
+
 ## What the bot does
 
 Claude, run by the repository's GitHub Actions, looks at every pull request and issue:
