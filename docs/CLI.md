@@ -111,7 +111,7 @@ each request. This works the same on Linux, macOS and Windows.
 | `starred [--app APP]` | Starred files and folders |
 | `recent [--clear] [--app APP]` | Recently opened files, newest first (or clears the list) |
 | `search QUERY [--type KIND] [--in FOLDER] [--limit N] [--app APP]` | Searches names. `KIND`: folder, image, video, audio, document, archive, code, font |
-| `open PATH` | Opens the synced local copy with the app your system picks (it must be in a synced folder, and synced; a symlink out of the sync folder is refused) |
+| `open PATH` | Opens the synced local copy with the app your system picks (it must be in a synced folder, and synced; a symlink out of the sync folder is refused). On Windows, a file whose type has no app yet (`.md` or `.docx` on a fresh Windows) gets the "Open with" dialog |
 | `craftcloud://open?path=…`, `craftcloud://reveal?path=…` | A link as the only argument (how the system starts CraftCloud for one): see "Links" below |
 
 ### The Craft apps
@@ -179,7 +179,8 @@ copy, so the content's own time is kept in the name.
    file and exits.
 
 Global options may come before or after the link (`craftcloud --json 'craftcloud://…'`); `--json` prints
-`{"opened": local path}`, and `--server` changes nothing (a link opens the copy in the desktop client's sync folder). Exit codes: 0 opened; 2 a bad link (not `open` or
+`{"opened": local path}` (on Windows a file type with no app gets the "Open with" dialog, as for `open`, but a
+link's output has no `with`), and `--server` changes nothing (a link opens the copy in the desktop client's sync folder). Exit codes: 0 opened; 2 a bad link (not `open` or
 `reveal`, no `path`, `..`, a `.craftcloud` path) or no sync folder yet; 4 the file is in a folder this computer
 doesn't sync, leads outside the sync folder (a symlink), or isn't downloaded yet; 1 the system couldn't open it.
 When stderr isn't a terminal (a link clicked in a browser), the message is also shown as a desktop notification on
@@ -275,7 +276,7 @@ exits 0 when the run ended up to date (with or without `waiting`), 3 when signed
 | `share rm` | `{"removed": [ids]}` |
 | `versions` | `[{"n", "stamp", "time", "modified", "replaced_at", "size"}]`: `modified` is when the content was last changed (`null` when not recorded), `replaced_at` when it was replaced, both ISO 8601 in this computer's time zone with the offset (`2026-11-13T14:02:05+01:00`); `time` is the old replacement time text (UTC), kept for scripts |
 | `versions … restore` | the restored version's fields, with `path` and `restored` (its `stamp`) |
-| `open` | `{"opened": local path}` |
+| `open` | `{"opened": local path}`, with `"with": "chooser"` when Windows had no app for the file's type and showed its "Open with" dialog instead |
 | `server info` | `{"server", "craftcloud", "version", "public_url", "web_apps", "initialized", "signed_in_as", "role"}` |
 | `server users ls` | `[{"username", "email", "role", "active", "used_bytes", "quota_bytes", "last_login_at", "id"}]` |
 | `server settings` | `{"web_apps", "disabled_apps", "bundled_apps"}` |

@@ -88,6 +88,8 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-15: CLI: on Windows, `craftcloud open` on a file whose type has no app (`.md`, `.docx` on a fresh
+  Windows) shows the "Open with" dialog instead of nothing, and `--json` says `"with": "chooser"`.
 - 2026-11-15: Web: the file browser's **details panel** (#24). On a wide page, the one file selected shows beside the
   list: a preview (the image, or the mark of the Craft app that opens it), its name and star, "DOCX document · 248 KB
   · opens in WordCraft", DOWNLOAD, SHARE… and the "…" menu, when it changed, where it is, its owner and whether it is shared,

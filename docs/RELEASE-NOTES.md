@@ -27,6 +27,9 @@
   starting a program that was no longer there. Uninstalling now removes it (and takes the folder off PATH); an
   update keeps it. If you uninstalled an earlier version with start at login on, remove the leftover entry with
   `reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v CraftCloud /f` (or turn it off in Task Manager › Startup apps).
+- **CLI: Windows asks which app to use.** `craftcloud open` (and a `craftcloud://open` link) on a file whose type
+  has no app yet, such as `.md` or `.docx` on a fresh Windows, now shows the "Open with" dialog instead of doing
+  nothing. `craftcloud open --json` then adds `"with": "chooser"` to `{"opened": …}`.
 
 - **Server: sign-in cookies follow the public address.** When `CRAFTCLOUD_PUBLIC_URL` starts with `https://`, the
   sign-in cookies are marked Secure on their own; `OXICLOUD_COOKIE_SECURE` is now needed only to override that.
