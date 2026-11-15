@@ -11,6 +11,10 @@
   "Show CraftCloud" (and starting CraftCloud again) left it there; a window closed to the tray came back only after a
   few seconds. The tray, Quit and the status line now keep working while the window is minimised or hidden, and
   Show brings the window out of the taskbar and in front at once.
+- **Desktop: one CraftCloud at a time, on every system.** Starting CraftCloud again while it runs (from the Start
+  menu, the Dock or the app menu) brings the running one's window to the front, also when it is minimised, instead of
+  opening a second copy that said "another CraftCloud is already syncing". A start at login while one runs ends
+  quietly.
 - **Windows: uninstalling turns off start at login.** The MSI used to leave the "Start at login" entry behind,
   starting a program that was no longer there. Uninstalling now removes it (and takes the folder off PATH); an
   update keeps it. If you uninstalled an earlier version with start at login on, remove the leftover entry with

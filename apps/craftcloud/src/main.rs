@@ -581,16 +581,19 @@ fn main() -> ExitCode {
         Arc::new(move || wake.wake())
     };
     let store = settings::open();
-    // Started again while it runs (from the app menu, or a second entry at login): the running
-    // client shows its window, and this one ends. A start at login shows nothing.
+    // Started again while it runs (from the Start menu, the app menu, or a second entry at login):
+    // the running client shows its window, and this one ends. A start at login shows nothing.
     if let Some(dir) = store.dir() {
-        if hidden && control::is_running(dir) {
-            log::info!("CraftCloud is already running");
-            return ExitCode::SUCCESS;
-        }
-        if !hidden && control::show_window(dir) {
-            log::info!("CraftCloud is already running: its window is shown");
-            return ExitCode::SUCCESS;
+        match second_start(hidden, || control::is_running(dir), || control::show_window(dir)) {
+            Start::Run => {}
+            Start::LeaveIt => {
+                log::info!("CraftCloud is already running");
+                return ExitCode::SUCCESS;
+            }
+            Start::Shown => {
+                log::info!("CraftCloud is already running: its window is shown");
+                return ExitCode::SUCCESS;
+            }
         }
     }
     let (show_tx, shows) = std::sync::mpsc::channel();
@@ -672,6 +675,30 @@ fn main() -> ExitCode {
     }
 }
 
+/// What a start does when a CraftCloud may already be running on this settings folder.
+#[derive(Debug, PartialEq, Eq)]
+enum Start {
+    /// None runs (or it has no window, as `craftcloud daemon`): this one runs.
+    Run,
+    /// A start at login (`--hidden`) while one runs: end quietly.
+    LeaveIt,
+    /// The running one showed its window: end.
+    Shown,
+}
+
+/// The same on every platform: one client per settings folder, so a second start never gets as
+/// far as "another CraftCloud is already syncing". `running` and `show` ask over the control
+/// channel (loopback TCP, `control.json`), which works alike on Linux, macOS and Windows.
+fn second_start(hidden: bool, running: impl FnOnce() -> bool, show: impl FnOnce() -> bool) -> Start {
+    if hidden {
+        if running() { Start::LeaveIt } else { Start::Run }
+    } else if show() {
+        Start::Shown
+    } else {
+        Start::Run
+    }
+}
+
 /// Polls `ready` until it holds or `limit` passes.
 fn wait_until(limit: Duration, ready: impl Fn() -> bool) -> bool {
     let end = Instant::now() + limit;
@@ -725,6 +752,34 @@ mod tests {
         assert_eq!(input.viewports[&ViewportId::ROOT].visible(), Some(false), "eframe skips `ui` for this window");
         let out = egui::Context::default().run_logic(&input, |ctx| eframe::App::logic(window, ctx, &mut eframe::Frame::_new_kittest()));
         out.viewport_commands.get(&ViewportId::ROOT).cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn a_second_start_shows_the_running_client_instead() {
+        use super::{Start, second_start};
+        use craftcloud_native::control;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (mut client, show) = client(dir.path());
+        let on_show = Arc::new(move || {
+            let _ = show.send(());
+        });
+        let server = control::serve_window(dir.path(), Arc::default(), on_show).unwrap();
+        let start = |hidden| second_start(hidden, || control::is_running(dir.path()), || control::show_window(dir.path()));
+        // From the Start menu or a shortcut: the running client's window comes up, this one ends.
+        assert_eq!(start(false), Start::Shown);
+        let mut window = Window { client: &mut client, quitting: false, cjk: None };
+        assert_eq!(minimised_pass(&mut window), SHOW, "the running client brings its window back");
+        // At login: nothing shows.
+        assert_eq!(start(true), Start::LeaveIt);
+        assert!(minimised_pass(&mut window).is_empty());
+        drop(server);
+        assert_eq!(start(false), Start::Run, "none running");
+        assert_eq!(start(true), Start::Run);
+        // The command line's daemon has no window: the desktop client starts (and says the folder is taken).
+        let _headless = control::serve(dir.path(), Arc::default()).unwrap();
+        assert_eq!(start(false), Start::Run);
+        assert_eq!(start(true), Start::LeaveIt);
     }
 
     #[test]

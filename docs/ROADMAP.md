@@ -98,6 +98,9 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   restore keeps the current file as a version first and writes with `If-Match`, so a change made meanwhile is never
   overwritten. The menu says "Move to trash" where it said "Delete". Uploading over a taken name, restoring from the
   trash with a new name, Recent's OPENED column and the phone layout already matched the frames.
+- 2026-11-15: Desktop: a second start shows the running client's window on Windows and macOS as on Linux (the
+  check is the same on every system; 0.1.1 didn't have it, and a minimised window didn't come back, see #2). The
+  decision is one function, tested against a real control channel. Found testing 0.1.1 on Windows 11.
 - 2026-11-15: Desktop: the tray's Show (and a second start, and a clicked notification) brings back a minimised
   window at once (#2). eframe runs only the app's `logic` while the window is minimised or hidden, and the tray
   was handled in `ui`; it is handled in `logic` now, with Quit and the close button. Found testing 0.1.1 on Windows 11.
