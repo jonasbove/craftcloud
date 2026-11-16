@@ -259,25 +259,11 @@ fn remote_writes(action: &Action) -> Option<&str> {
     }
 }
 
-/// Whether one path is the old name in one move and the new name in another: a known bug, not
-/// fixed here (`one_file_is_never_two_moves` in `tests.rs`, ignored until it is). Plans with it
-/// are left out of the properties below, so that they keep checking everything else; once it is
-/// fixed, this goes.
-fn known_double_move(plan: &[Action]) -> bool {
-    let from: BTreeSet<&str> = plan
-        .iter()
-        .filter_map(|a| match a {
-            Action::MoveRemote { from, .. } | Action::MoveLocal { from, .. } => Some(from.as_str()),
-            _ => None,
-        })
-        .collect();
-    plan.iter().any(|a| matches!(a, Action::MoveRemote { to, .. } | Action::MoveLocal { to, .. } if from.contains(to.as_str())))
-}
-
 /// Whether a folder is removed before a file is moved out of it, or a file is moved before the
 /// folder it goes into is made: a known bug in how a folder replaced by a file (or the other way
 /// round) is put first, not fixed here (`a_replaced_folder_is_emptied_before_it_goes` in
-/// `tests.rs`, ignored until it is). Left out like [`known_double_move`]; once fixed, this goes.
+/// `tests.rs`, ignored until it is). Plans with it are left out of the properties below, so that
+/// they keep checking everything else; once it is fixed, this goes.
 /// Only `settle_clashes` reorders a plan (otherwise: folders to make, files, removals), so this
 /// can only match a plan with a file and a folder at one path.
 fn known_replacement_order(plan: &[Action]) -> bool {
@@ -466,7 +452,7 @@ proptest! {
     #[test]
     fn every_plan_keeps_the_rules(c in case(false)) {
         let plan = reconcile(&c.state, &c.local, &c.remote, true).map_err(|e| TestCaseError::fail(format!("{e:?}")))?;
-        prop_assume!(!known_double_move(&plan) && !known_replacement_order(&plan));
+        prop_assume!(!known_replacement_order(&plan));
         check_plan(&c, &plan)?;
     }
 
@@ -831,8 +817,8 @@ impl Sim {
     fn cycle(&mut self, errors: &mut Vec<String>) -> Result<Vec<Action>, TestCaseError> {
         let (local, remote) = self.trees();
         let plan = reconcile(&self.state, &local, &remote, true).map_err(|e| TestCaseError::fail(format!("{e:?}")))?;
-        if known_double_move(&plan) || known_replacement_order(&plan) {
-            return Err(TestCaseError::reject("a known bug (see known_double_move, known_replacement_order)"));
+        if known_replacement_order(&plan) {
+            return Err(TestCaseError::reject("a known bug (see known_replacement_order)"));
         }
         for a in &plan {
             if let Err(e) = self.apply(a) {
@@ -875,6 +861,60 @@ proptest! {
             prop_assert!(kept.contains(b), "a change ({b}) was lost: {plans:#?}");
         }
     }
+}
+
+/// Runs cycles until there is nothing left to do (at most 5); the bytes on each side then.
+fn settle_sim(c: &Case) -> (BTreeMap<String, u32>, BTreeMap<String, u32>) {
+    let mut sim = Sim::new(c);
+    let mut errors = Vec::new();
+    for _ in 0..5 {
+        match sim.cycle(&mut errors) {
+            Ok(plan) if plan.is_empty() => break,
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    assert!(errors.is_empty(), "{errors:?}");
+    (sim.local.iter().map(|(p, (_, b))| (p.clone(), *b)).collect(), sim.remote.iter().map(|(p, (_, b))| (p.clone(), *b)).collect())
+}
+
+/// `one_file_is_never_two_moves` (in `tests.rs`) carried out: here `a.txt` (bytes 1) was moved
+/// onto `B/a.txt` (bytes 2), while in the cloud `B/a.txt` was renamed to `b.md`. Both contents
+/// end on both sides, each under one name, and nothing was overwritten.
+#[test]
+fn a_move_onto_a_file_renamed_elsewhere_keeps_both() {
+    let k = |etag: &str, size, mtime| Known { etag: etag.into(), size, mtime, hash: None };
+    let c = Case {
+        state: State { files: [("a.txt".into(), k("e0", 5, 100)), ("B/a.txt".into(), k("e3", 7, 200))].into(), folders: ["B".into()].into() },
+        local: Tree { files: [("B/a.txt".into(), LocalFile { size: 5, mtime: 100 })].into(), folders: ["B".into()].into() },
+        remote: Tree {
+            files: [("a.txt".into(), RemoteFile { etag: "e0".into(), size: 5 }), ("b.md".into(), RemoteFile { etag: "e3".into(), size: 7 })].into(),
+            folders: ["B".into()].into(),
+        },
+        local_bytes: [("B/a.txt".into(), 1)].into(),
+        remote_bytes: [("a.txt".into(), 1), ("b.md".into(), 2)].into(),
+    };
+    let both: BTreeMap<String, u32> = [("B/a.txt".into(), 1), ("b.md".into(), 2)].into();
+    assert_eq!(settle_sim(&c), (both.clone(), both));
+}
+
+/// The same the other way round: in the cloud `a.txt` (bytes 1) was moved onto `B/a.txt` (bytes
+/// 2), while here `B/a.txt` was renamed to `b.md`. Both contents end on both sides.
+#[test]
+fn a_move_in_the_cloud_onto_a_file_renamed_here_keeps_both() {
+    let k = |etag: &str, size, mtime| Known { etag: etag.into(), size, mtime, hash: None };
+    let c = Case {
+        state: State { files: [("a.txt".into(), k("e0", 5, 100)), ("B/a.txt".into(), k("e3", 7, 200))].into(), folders: ["B".into()].into() },
+        local: Tree {
+            files: [("a.txt".into(), LocalFile { size: 5, mtime: 100 }), ("b.md".into(), LocalFile { size: 7, mtime: 200 })].into(),
+            folders: ["B".into()].into(),
+        },
+        remote: Tree { files: [("B/a.txt".into(), RemoteFile { etag: "e0".into(), size: 5 })].into(), folders: ["B".into()].into() },
+        local_bytes: [("a.txt".into(), 1), ("b.md".into(), 2)].into(),
+        remote_bytes: [("B/a.txt".into(), 1)].into(),
+    };
+    let both: BTreeMap<String, u32> = [("B/a.txt".into(), 1), ("b.md".into(), 2)].into();
+    assert_eq!(settle_sim(&c), (both.clone(), both));
 }
 
 /// A file or folder name made of the characters the name rules look at.

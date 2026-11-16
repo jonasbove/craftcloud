@@ -60,6 +60,13 @@
   other is held in the cloud until one is renamed. A `CON.txt` an older Windows client made stays on that computer
   but no longer syncs; rename it to sync it. This changes what the sync skips, so update every Windows computer
   together: an older one keeps retrying these names.
+- **Sync: a file moved onto one renamed elsewhere keeps both. Upgrade all devices together.** When you moved a
+  file onto another one (replacing it) while that one was renamed on another computer or in the browser, the sync
+  could take one file as two moves: the next pass then wrote over the renamed file in the cloud (its old bytes kept
+  only as a version), or the two sides kept different files under one name. The same the other way round (a file
+  moved onto another in the cloud while that one was renamed here) could replace the renamed file here. Now the
+  moved file goes to its new place and the renamed one is kept under its new name, on both sides. This changes how
+  the sync decides, so update every computer together: an older one can still make the old plan.
 - **Sync: a failed download leaves no part file.** A download that couldn't be put in place used to leave its
   hidden `.<name>.<version>.craftcloud-part` file in the sync folder. It is removed now on every failure but a
   broken-off transfer (kept to resume from), and part files left for more than a day (after a crash) are cleaned up.
