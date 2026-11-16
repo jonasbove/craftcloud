@@ -6,6 +6,7 @@ pub mod api;
 pub mod catalog;
 pub mod deeplink;
 pub mod http;
+pub mod logging;
 pub mod names;
 pub mod reconcile;
 mod runtime_config;

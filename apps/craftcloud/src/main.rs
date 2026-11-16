@@ -631,7 +631,13 @@ fn read_keychain(server: String, dir: Option<std::path::PathBuf>, wake: &Arc<Wak
 fn main() -> ExitCode {
     // A command (`craftcloud ls`, …) runs and exits; it never opens a window.
     let quiet = std::env::args().len() > 1 && !std::env::args().skip(1).all(|a| a == craftcloud_native::login::HIDDEN_FLAG);
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(if quiet { "error" } else { "warn" })).init();
+    // `RUST_LOG` as usual, except that the HTTP library's trace lines (request and answer bytes,
+    // tokens included) never pass: `craftcloud_core::logging`.
+    let logger = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(if quiet { "error" } else { "warn" })).build();
+    let max = logger.filter();
+    if log::set_boxed_logger(Box::new(craftcloud_core::logging::WireCapped(logger))).is_ok() {
+        log::set_max_level(max);
+    }
     if let Some(code) = cli::run_if_command() {
         return code;
     }

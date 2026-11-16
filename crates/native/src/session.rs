@@ -533,7 +533,8 @@ mod tests {
         assert!(!session.signed_out);
     }
 
-    /// Every log line of this test process (installed once; other tests' lines land here too).
+    /// Every log line of this test process (installed once; other tests' lines land here too),
+    /// through the same filter as the apps' loggers (`craftcloud_core::logging::WireCapped`).
     fn captured_logs() -> &'static Mutex<Vec<(log::Level, String)>> {
         struct Capture(Mutex<Vec<(log::Level, String)>>);
         impl log::Log for Capture {
@@ -546,14 +547,14 @@ mod tests {
             }
             fn flush(&self) {}
         }
-        static LOGS: Capture = Capture(Mutex::new(Vec::new()));
+        static LOGS: craftcloud_core::logging::WireCapped<Capture> = craftcloud_core::logging::WireCapped(Capture(Mutex::new(Vec::new())));
         static INSTALLED: std::sync::Once = std::sync::Once::new();
         INSTALLED.call_once(|| {
             if log::set_logger(&LOGS).is_ok() {
                 log::set_max_level(log::LevelFilter::Trace);
             }
         });
-        &LOGS.0
+        &LOGS.0.0
     }
 
     /// Runs a session through a refresh whose new tokens can't be saved (logged), a refused
@@ -595,7 +596,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "known bug: at trace level (`RUST_LOG=trace`) ureq-proto logs the raw bytes of a refresh answer, new tokens included; needs its own fix PR (cap that target's level)"]
     fn tokens_never_reach_the_trace_log() {
         let (_, leaked) = token_trouble("TRACED", log::Level::Trace);
         assert!(leaked.is_empty(), "a token in the log: {leaked:?}");
