@@ -117,6 +117,15 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 - 2026-11-16: Tests: a coverage run (`cargo llvm-cov`, by hand, not in CI) before 0.2.0: 71.5% of lines without the
   live tests; `crates/core` 96%, `crates/native` 55%. [TESTING.md › Coverage](TESTING.md#coverage) has the commands
   and the ten gaps worth a test, by risk (first: switching a folder off with a changed file in it).
+- 2026-11-16: Testing: `cargo xtask e2e-sync` runs a mixed pair, each client its own program (`--bin-laptop`,
+  `--bin-studio`), for the "upgrade all devices together" risk. New cases for every run: a conflict with each side
+  syncing first, a folder deleted from the Studio, a version kept by one client and restored by the other (both
+  ways), names Windows can't have synced both ways and never taken as deleted, and leftovers (part files,
+  `.craft_tmp`, `.craftcloud/`) that never reach the other side or the cloud. With an admin account the cleanup
+  checks that the clients' `logout` ended their sign-ins on the server, and the run's own password sign-in now
+  ends with its refresh token. Run on Linux against a throwaway
+  server with 0.1.1 on one side and this tree on the other, both ways round: every sync case passed. The Windows-only
+  name rule of 0.2.0 isn't exercised on Linux ([TESTING.md](TESTING.md#mixed-versions-an-older-release-on-one-side)).
 - 2026-11-16: Roadmap: M9, sync with any WebDAV server (Nextcloud, ownCloud, a NAS …), planned for 0.2.0 on the
   branch `feature/webdav-support`. The Windows command line (`craftcloud.com`, the PATH entry, the uninstall's
   cleanup) leaves Upcoming: it was tried on Windows 11.

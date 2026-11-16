@@ -32,7 +32,8 @@ signs two devices in to the account, so use an account kept for testing.
 
 | Option | Meaning |
 |---|---|
-| `--bin PATH` | The `craftcloud` program to test (default: build this tree's) |
+| `--bin PATH` | The `craftcloud` program both clients run (default: build this tree's) |
+| `--bin-laptop PATH`, `--bin-studio PATH` | The program one client runs, instead of `--bin` (or of this tree's build): a mixed pair, below |
 | `--keep` | Keep the cloud folder and the clients' folders afterwards, to look at them |
 | `--settle SECS` | The wait before every pass, more than 2 (default 3) |
 | `--dir PATH` | Where the run directory goes (default: `<target>/e2e-sync`) |
@@ -65,9 +66,12 @@ signs two devices in to the account, so use an account kept for testing.
    | a 20 MB file | the same SHA-256 on both sides |
    | 200 small files | all 200 arrive, each with its content |
    | delete a file, delete a folder | gone on the other side, and in the cloud's trash, checked through the REST trash API (`/api/trash/resources`); the folder as one item, not file by file |
-   | a conflict | both sides edit one file before syncing: each side ends with the file and one conflict copy, holding both edits |
+   | a conflict, each side syncing first | both sides edit one file before syncing: each side ends with the file and one conflict copy, holding both edits |
+   | delete a folder from the Studio | as from the Laptop: gone on the Laptop, and in the trash as one item |
+   | versions, both ways | one client overwrites a synced file, so its sync keeps the old content in `.craftcloud/versions/`; the other lists it (`versions PATH`) and restores it: both sides end with the old content and no conflict copy, and the writer lists the overwritten content as a version too |
+   | names Windows can't have, both ways | `a:b.txt`, `what?.md`, `CON.txt`, `Nul.log`, `trailing.`, a folder `dots./`, and `Report.txt` beside `report.txt` arrive on the other side, which edits one; after two more pass pairs from each side all are still on both sides and in the cloud (a Windows client leaves these alone, which must never read as deleted) |
+   | leftovers | each client leaves part files (the `.<name>.<version>.craftcloud-part` and `.ccpart-<hex>.craftcloud-part` forms), a `.craft_tmp` file and a `.craftcloud/` folder in the run's folder: none reaches the other side or the cloud (listed with `--all`), each stays where it was left, and the cloud's `.craftcloud/` holds no client's sync state |
    | temporary-looking names (T-063, T-064) | `notes.tmp` stays on the Laptop, is listed as `temporary` under `not_synced`, and never reaches the cloud; a folder named `projekt.tmp/` syncs, and is still there after three more pass pairs |
-
    | the end state | the run's cloud folder, the Laptop and the Studio hold the same files with the same sizes |
 
 5. **The whole run:** every pass ended up to date (exit 0), and no other client was active meanwhile (admin
@@ -75,13 +79,40 @@ signs two devices in to the account, so use an account kept for testing.
 6. **Cleanup,** also after a failure: the cloud folder and CraftCloud's kept versions of its files go to the trash
    and then for good, both clients sign out (`craftcloud logout`, which ends the sign-in on the server), the
    password sign-in ends, and the clients' folders (with their tokens) are deleted. With `--keep` the folders stay; the sign-ins
-   still end. A run stopped with Ctrl+C cleans up nothing: its `e2e-sync-…` folder stays in the cloud, and its
+   still end. With an admin account the run checks that the clients' logout really ended their sessions on the
+   server (FAIL otherwise), and ends any it left itself, so the next run doesn't find them signed in. With 0.1.1 and
+   this tree that check fails: their `logout` leaves the session signed in on the server, a known failure until the
+   command line ends it. A run stopped with Ctrl+C cleans up nothing: its `e2e-sync-…` folder stays in the cloud, and its
    two clients stay signed in (their tokens are in the run directory's `laptop/config` and `studio/config`;
    `CRAFTCLOUD_CONFIG_DIR=<that folder> CRAFTCLOUD_KEYCHAIN=off craftcloud logout` ends each).
 
 **Every pass waits first.** A file is held for 2 s after it changes (T-060), so a pass that starts sooner skips it
 and the case would fail for no reason. The run waits `--settle` seconds (3 by default, never 2 or less) before
 every pass.
+
+### Mixed versions: an older release on one side
+
+People don't update every computer at once, so a change to what the sync skips or how it decides can make an
+older client undo it (the "upgrade all devices together" entries in [RELEASE-NOTES.md](RELEASE-NOTES.md)). Run the
+same cases with the previous release on one side and this tree's build on the other, both ways round:
+
+```sh
+# The previous release's Linux tarball, checked against the release's SHA256SUMS.txt before it runs
+V=0.1.1   # the previous release
+gh release download v$V -R jonasbove/craftcloud -p "craftcloud-$V-linux-x86_64.tar.gz" -p SHA256SUMS.txt
+sha256sum -c --ignore-missing SHA256SUMS.txt && tar -xzf craftcloud-$V-linux-x86_64.tar.gz
+OLD=$PWD/craftcloud-$V-linux-x86_64/bin/craftcloud
+cargo build -p craftcloud && NEW=$PWD/target/debug/craftcloud
+cargo xtask e2e-sync --bin-laptop "$OLD" --bin-studio "$NEW"
+cargo xtask e2e-sync --bin-laptop "$NEW" --bin-studio "$OLD"
+```
+
+The table's first row says which program each client ran. The versions, conflict, folder-delete, Windows-names and
+leftovers cases are the ones a mixed pair is most likely to fail; a case that fails with a mixed pair but passes
+with the same build on both sides is a finding for the release notes. A run on Linux or macOS can't show what a
+Windows client leaves alone: the Windows-only name rule is checked on Windows. The run is made for Linux: on a
+case-insensitive file system (macOS by default) `Report.txt` and `report.txt` can't both exist, so that case fails
+there for a reason that isn't the sync's.
 
 ### What it leaves
 
