@@ -7,8 +7,8 @@ What works today and how it was checked, and the known limits. What comes next i
 
 Everything is checked against OxiCloud **0.10.0**, the pinned server. `cargo xtask ci` (fmt, clippy with warnings
 denied, the workspace tests and the wasm build) is the gate, and GitHub Actions runs it, plus the Trunk web build,
-on Linux for every push to `main` and every pull request. The live tests need a throwaway server from `scripts/smoke-test` and are skipped without one. What no test reaches, from a
-coverage run, is in [TESTING.md › Coverage](TESTING.md#coverage).
+on Linux for every push to `main` and every pull request. The live tests need a throwaway server from `scripts/smoke-test` and are skipped without one.
+What no test reaches, from a coverage run, is in [TESTING.md › Coverage](TESTING.md#coverage).
 
 ## What works, and how it was checked
 

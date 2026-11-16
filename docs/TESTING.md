@@ -129,7 +129,7 @@ To count the live tests too, set the `CRAFTCLOUD_TEST_*` variables of a throwawa
 
 ### The last run
 
-2026-11-16, `main` at `01f71f8`, cargo-llvm-cov 0.9.1, Rust 1.100.0, on Linux. 462 tests passed, none failed. **Not
+A snapshot to measure again before a release, not a target: 2026-11-16, `main` at `01f71f8`, cargo-llvm-cov 0.9.1, Rust 1.100.0, on Linux. 462 tests passed, none failed. **Not
 counted:** the live tests (`crates/native/tests/live.rs`, 20 tests, and `apps/craftcloud/tests/cli_live.rs`), which
 passed without running for want of a server, the `shots` screenshot tests (`--features shots`, ignored) and one
 ignored font test. `cargo xtask e2e-sync` runs the built program, outside coverage.
