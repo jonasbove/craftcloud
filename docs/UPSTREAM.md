@@ -332,7 +332,7 @@ fix below would remove some of that glue.
 > Ask: distinct keys, e.g. `account_not_provisioned` and `client_auth_failed` (the latter is an admin problem,
 > the former a user one).
 
-### C16. `getlastmodified` is rounded to the nearest second, `Date` truncated
+### C17. `getlastmodified` is rounded to the nearest second, `Date` truncated
 
 > **A file written at 16:11:13.66 says `getlastmodified` 16:11:14 in a `PROPFIND` answered with `Date` 16:11:13**
 >
