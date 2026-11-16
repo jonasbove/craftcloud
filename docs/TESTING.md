@@ -261,11 +261,16 @@ counted:** the live tests (`crates/native/tests/live.rs`, 20 tests, and `apps/cr
 passed without running for want of a server, the `shots` screenshot tests (`--features shots`, ignored) and one
 ignored font test. `cargo xtask e2e-sync` runs the built program, outside coverage.
 
+`crates/native` was measured again on 2026-11-16 after the engine, trash and sign-in tests
+(`cargo llvm-cov -p craftcloud-native --summary-only`): 90 tests passed, 3 ignored (two known bugs, one font
+test). Its row below is that run, and counts the test helper `fake_server.rs` (104 lines); the other rows are
+the run above.
+
 | Crate | Lines | Functions |
 |---|---|---|
 | `crates/core` | 96.1% (2826 of 2942) | 95.9% |
 | `crates/ui-egui` | 88.9% (9413 of 10587) | 89.6% |
-| `crates/native` | 55.1% (2074 of 3762) | 46.8% |
+| `crates/native` | 67.1% (2757 of 4108) | 59.5% |
 | `apps/craftcloud-cli` | 65.2% (73 of 112) | 60.9% |
 | `apps/craftcloud-admin` | 56.2% (145 of 258) | 56.2% |
 | `apps/craftcloud` | 32.9% (1064 of 3230) | 34.3% |
@@ -277,12 +282,14 @@ What the numbers mean:
 - **`crates/core` is well covered**: `reconcile.rs` 94%, `names.rs` 99%, `sync.rs` 93%, the API modules 90–100%.
   The few lines left in `reconcile` are rare branches (a vanished folder with no synced files, a folder whose
   subfolders are all going); property tests for it are on their way.
-- **`crates/native/src/sync.rs` is 45%**, because the engine itself (`Engine::try_cycle`, `apply`, `fetch`,
-  `move_folders`, `hold_no_room`, `restore_trashed`) talks to a server, and no unit test builds an `Engine`.
-  Its pure helpers (`scan_local`, `screen_names`, `split_deletes`, `bring_back`, the part files) are covered. The
+- **`crates/native/src/sync.rs` is 57%** (45% before). Most of the engine (`Engine::try_cycle`, `fetch`,
+  `move_folders`, `hold_no_room`, `restore_trashed`) talks to a server; `sync/engine_tests.rs` builds an
+  `Engine` against a scripted server (`crates/native/src/fake_server.rs`) for switching folders off, the guards
+  before a trash and the sign-in during a cycle. Its pure helpers (`scan_local`, `screen_names`, `split_deletes`, `bring_back`, the part files) are covered. The
   live tests cover the engine's main paths (two computers, renames, folder moves, deletes to the trash, quota,
   resumed downloads, held and discarded mass deletes); the table below lists what neither reaches.
-- **`session.rs` is 13%**: the token refresh and the versions kept before an overwrite.
+- **`session.rs` is 73%** (13% before): the token refresh, the take-over and the sign-out are tested against the
+  scripted server; the versions kept before an overwrite are not (row 6).
 - **`apps/craftcloud`** is mostly the window, the tray and the commands' calls to the server: `main.rs`, `tray.rs`
   and `cli/files.rs` are glue that the CLI end-to-end test and people check, not unit tests. `xtask`'s `e2e`
   harness is itself a test.
@@ -294,16 +301,17 @@ What the numbers mean:
 ### The gaps worth a test, by risk
 
 "Live" means a live test covers the main path; the gap is the branch named. "Engine in a test" means a unit test
-inside `sync.rs` that builds an `Engine` (no network needed); there is no such constructor yet. "Fake server"
-means a local `TcpListener` thread answering scripted responses, as `http.rs`'s `stalled_server` test does.
+in `sync/engine_tests.rs` that builds an `Engine` (no network needed). "Fake server" means
+`crates/native/src/fake_server.rs`: a local `TcpListener` answering scripted responses, which the real `Session`
+and `Engine` talk to.
 
 | # | Where | What no test checks | Today | Test |
 |---|---|---|---|---|
-| 1 | `native::sync`, `Engine::replan` | Switching a folder off deletes the local files that are exactly as last synced; a file **changed since** must be kept and reported (`kept += 1`). Only the unchanged case is live-tested. A wrong size or time compare here deletes someone's work. | live, unchanged files only | Engine in a test |
-| 2 | `native::sync`, `apply` → `trash_file`, `still_at`, `cloud_holds`; `RemoveRemoteFolder` | The "changed in the cloud meanwhile" guards: a file whose ETag moved since the plan is not trashed; a folder that holds more or newer files than planned is not trashed; a folder whose listing fails is kept (T-064). Live tests only take the happy path. | live, happy path only | fake server, or the comparisons pulled out into pure functions |
-| 3 | `native::session`, `retrying`, `refresh` | A 401 refreshes and retries once; tokens another process saved are taken over, and when those are stale too a real refresh follows; a refused refresh (401, 403, 404) signs out instead of failing forever. No live test runs past the 1-hour token. | untested | fake server |
+| 1 | `native::sync`, `Engine::replan` | Switching a folder off deletes the local files that are exactly as last synced; a file **changed since** (size, or only its time) is kept and reported (`kept += 1`). | **covered**: `switching_a_folder_off_keeps_the_files_changed_since_the_last_sync`, `switching_a_folder_off_without_changes_reports_nothing_kept` | Engine in a test |
+| 2 | `native::sync`, `apply` → `trash_file`, `still_at`, `cloud_holds`; `RemoveRemoteFolder` | The "changed in the cloud meanwhile" guards: a file whose ETag moved since the plan is not trashed; a folder that holds more or newer files than planned is not trashed; a folder whose listing fails is kept (T-064). **Known bug** (ignored test `a_file_listed_without_an_etag_is_not_trashed`): `still_at` takes a cloud file listed without an ETag as unchanged and trashes it, where `cloud_holds` keeps it. | **covered**: `a_file_changed_in_the_cloud_since_the_plan_is_not_trashed`, `a_file_whose_folder_cant_be_listed_is_not_trashed`, `an_unchanged_file_goes_to_the_trash`, `a_folder_with_a_file_added_in_the_cloud_is_not_trashed`, `a_folder_with_a_file_changed_in_the_cloud_is_not_trashed`, `a_folder_with_a_subfolder_that_cant_be_listed_is_not_trashed`, `a_folder_holding_exactly_what_was_planned_goes_to_the_trash_whole`, `a_folder_whose_listing_fails_is_kept`, `a_folder_that_is_not_empty_in_the_cloud_is_kept`, `an_empty_folder_goes_to_the_trash` | fake server |
+| 3 | `native::session`, `retrying`, `refresh` | A 401 refreshes and retries once; tokens another process saved are taken over, and when those are stale too a real refresh follows with their refresh token; a refused refresh (401, 403, 404) signs out instead of failing forever; tokens stay out of errors and the log up to debug level. **Known bug** (ignored test `tokens_never_reach_the_trace_log`): at trace level ureq-proto logs the raw bytes of a refresh, tokens included. | **covered**: `an_expired_access_token_is_refreshed_once_and_the_request_sent_again`, `a_request_refused_again_after_a_refresh_is_not_retried_forever`, `a_refused_refresh_signs_out_instead_of_retrying`, `trouble_on_the_server_during_a_refresh_is_not_a_sign_out`, `tokens_another_process_saved_are_taken_over_without_a_refresh`, `stale_tokens_taken_over_are_refreshed_with_their_own_refresh_token`, `tokens_never_reach_an_error_or_the_log`; in the engine `a_token_that_runs_out_mid_scan_is_refreshed_once`, `a_cycle_whose_refresh_is_refused_ends_signed_out` | fake server |
 | 4 | `native::sync`, `Engine::resolve` | Settling a conflict with "keep the cloud's" deletes the conflict copy; "keep both" records it as the person's file. Only "keep mine" is live-tested. | live, `Keep::Mine` only | Engine in a test |
-| 5 | `native::sync`, `Engine::cycle` | How a failed cycle becomes a state: signed out, offline (a transport error) or failed. The CLI's exit codes 3, 8 and 1 hang on it (`control::state_name` never produces `offline`, `signed_out` or `failed` in a test). | live for offline | Engine in a test with an unreachable server |
+| 5 | `native::sync`, `Engine::cycle` | How a failed cycle becomes a state: signed out, offline (a transport error) or failed. The CLI's exit codes 3, 8 and 1 hang on it (`control::state_name` never produces `offline`, `signed_out` or `failed` in a test). | live for offline; signed out by `a_cycle_whose_refresh_is_refused_ends_signed_out` | Engine in a test with an unreachable server |
 | 6 | `native::session`, `snapshot`; `apply`'s `UploadChange` | The old bytes are kept before an overwrite (not twice for one ETag, 5 kept), and a 412 on the overwrite (the cloud changed between the listing and the write) becomes a conflict copy. The live conflict test changes both sides before a pass, so the plan finds the conflict, not the 412. | live, versions kept | fake server |
 | 7 | `craftcloud-admin`, `main.rs` (`handle`, `authorize`) | The route table: which routes ask for admin rights, `X-Forwarded-Uri` to the `/apps/*` gate, a settings `PUT` saved, unknown paths 404. `logic.rs` is tested, the wiring is 0%. Also `admin_check` failing closed (502) when OxiCloud's answer can't be read, and `bundled_apps` (an unreadable `apps.json` serves no apps). | untested (the smoke test checks some routes) | unit with `tiny_http` on port 0 and a fake OxiCloud; `admin_check` and `bundled_apps` plain unit |
 | 8 | `native::secrets`, `TokenStore` | Saving, loading and deleting the tokens; with `CRAFTCLOUD_KEYCHAIN=off` the private file (what `e2e-sync` and headless servers use), and a working keychain removing an older file. 27%. | untested | unit with `CRAFTCLOUD_KEYCHAIN=off` (the variable is process-wide: one test, or a constructor switch) |

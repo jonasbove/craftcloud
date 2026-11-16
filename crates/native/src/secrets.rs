@@ -19,18 +19,27 @@ struct Stored {
 pub struct TokenStore {
     server: String,
     fallback: Option<PathBuf>,
+    /// `false` only in tests: the private file, never the keychain of the computer running them
+    /// (`CRAFTCLOUD_KEYCHAIN` can't be set from a test: the environment is process-wide).
+    keychain: bool,
 }
 
 impl TokenStore {
     /// `fallback_dir` is the settings folder, used only when the keychain is missing.
     pub fn new(server: &str, fallback_dir: Option<&Path>) -> Self {
-        Self { server: server.to_owned(), fallback: fallback_dir.map(|d| d.join("tokens.json")) }
+        Self { server: server.to_owned(), fallback: fallback_dir.map(|d| d.join("tokens.json")), keychain: true }
+    }
+
+    /// A store in `dir/tokens.json` only, for tests.
+    #[cfg(test)]
+    pub(crate) fn file_only(server: &str, dir: &Path) -> Self {
+        Self { keychain: false, ..Self::new(server, Some(dir)) }
     }
 
     /// The keychain entry, unless `CRAFTCLOUD_KEYCHAIN=off` asks for the private file instead (for
     /// servers without a desktop session, and tests that must not touch the real keychain).
     fn entry(&self) -> keyring::Result<keyring::Entry> {
-        if std::env::var("CRAFTCLOUD_KEYCHAIN").is_ok_and(|v| v.eq_ignore_ascii_case("off")) {
+        if !self.keychain || std::env::var("CRAFTCLOUD_KEYCHAIN").is_ok_and(|v| v.eq_ignore_ascii_case("off")) {
             return Err(keyring::Error::NoStorageAccess("switched off by CRAFTCLOUD_KEYCHAIN=off".into()));
         }
         keyring::Entry::new(SERVICE, &self.server)

@@ -2726,3 +2726,7 @@ mod tests {
         }
     }
 }
+
+/// Tests that build an [`Engine`] and drive it against `crate::fake_server`.
+#[cfg(test)]
+mod engine_tests;

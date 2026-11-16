@@ -395,6 +395,212 @@ mod tests {
         assert!(seen[2].0.starts_with("POST /api/auth/logout") && seen[2].1.contains("\"r2\""), "{:?}", seen[2]);
     }
 
+    use std::sync::{Arc, Mutex};
+
+    use craftcloud_core::http::{HttpRequest, Method};
+
+    use super::{SIGNED_OUT, Session, Tokens};
+    use crate::fake_server::{FakeServer, Seen};
+    use crate::secrets::TokenStore;
+
+    fn tokens(access: &str, refresh: &str) -> Tokens {
+        Tokens { access_token: access.into(), refresh_token: refresh.into() }
+    }
+
+    /// The answer to a refresh that gives `access`/`refresh`.
+    fn new_tokens(access: &str, refresh: &str) -> (u16, String) {
+        (200, format!(r#"{{"access_token":"{access}","refresh_token":"{refresh}"}}"#))
+    }
+
+    fn is_refresh(r: &Seen) -> bool {
+        r.is("POST", "/api/auth/refresh")
+    }
+
+    /// Any authorised request: what it asks for doesn't matter here.
+    fn me(server: &FakeServer) -> HttpRequest {
+        HttpRequest::new(Method::Get, server.server().join("api/auth/me"))
+    }
+
+    /// A session whose refreshed tokens are collected in the returned list.
+    fn session(server: &FakeServer, start: Tokens) -> (Session, Arc<Mutex<Vec<Tokens>>>) {
+        let told: Arc<Mutex<Vec<Tokens>>> = Arc::default();
+        let sink = Arc::clone(&told);
+        (Session::new(server.server(), start, Box::new(move |t| sink.lock().unwrap().push(t.clone()))), told)
+    }
+
+    #[test]
+    fn an_expired_access_token_is_refreshed_once_and_the_request_sent_again() {
+        let server = FakeServer::start(|r| match r.bearer() {
+            _ if is_refresh(r) => new_tokens("a2", "r2"),
+            Some("a2") => (200, "{}".into()),
+            _ => (401, "{}".into()),
+        });
+        let (mut session, told) = session(&server, tokens("a1", "r1"));
+        assert_eq!(session.call(&me(&server)).unwrap().status, 200);
+        let seen = server.seen();
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        assert_eq!(seen[0].bearer(), Some("a1"));
+        assert!(is_refresh(&seen[1]) && seen[1].body.contains("\"r1\""), "{:?}", seen[1]);
+        assert_eq!(seen[2].bearer(), Some("a2"), "sent again with the new token");
+        assert_eq!(session.tokens, tokens("a2", "r2"));
+        assert_eq!(*told.lock().unwrap(), vec![tokens("a2", "r2")], "the new tokens are handed on to be saved");
+        assert!(!session.signed_out && session.offline.is_none());
+    }
+
+    #[test]
+    fn a_request_refused_again_after_a_refresh_is_not_retried_forever() {
+        // A 401 that a fresh token doesn't cure: one refresh, one more try, then the 401 is the
+        // answer.
+        let server = FakeServer::start(|r| if is_refresh(r) { new_tokens("a2", "r2") } else { (401, "{}".into()) });
+        let (mut session, _) = session(&server, tokens("a1", "r1"));
+        assert_eq!(session.call(&me(&server)).unwrap().status, 401);
+        assert_eq!(server.seen().len(), 3);
+        assert_eq!(server.count("POST", "/api/auth/refresh"), 1);
+        assert!(!session.signed_out);
+    }
+
+    #[test]
+    fn a_refused_refresh_signs_out_instead_of_retrying() {
+        // 404 "Session not found" is what OxiCloud v0.10.0 answers for a removed device.
+        for refused in [401, 403, 404] {
+            let server =
+                FakeServer::start(move |r| if is_refresh(r) { (refused, r#"{"error":"Session not found"}"#.into()) } else { (401, "{}".into()) });
+            let (mut session, told) = session(&server, tokens("a1", "r1"));
+            assert_eq!(session.call(&me(&server)).unwrap_err(), SIGNED_OUT, "refresh answered {refused}");
+            assert!(session.signed_out, "refresh answered {refused}");
+            assert!(session.offline.is_none(), "a refusal is an answer, not being offline");
+            assert_eq!(server.seen().len(), 2, "the request and one refresh, nothing more (refresh answered {refused})");
+            assert!(told.lock().unwrap().is_empty());
+            assert_eq!(session.tokens, tokens("a1", "r1"));
+        }
+    }
+
+    #[test]
+    fn trouble_on_the_server_during_a_refresh_is_not_a_sign_out() {
+        let server = FakeServer::start(|r| if is_refresh(r) { (502, "{}".into()) } else { (401, "{}".into()) });
+        let (mut session, _) = session(&server, tokens("a1", "r1"));
+        let err = session.call(&me(&server)).unwrap_err();
+        assert_ne!(err, SIGNED_OUT);
+        assert!(!session.signed_out, "a 502 is tried again later; the sign-in stays");
+        assert_eq!(server.seen().len(), 2);
+    }
+
+    #[test]
+    fn tokens_another_process_saved_are_taken_over_without_a_refresh() {
+        // The command line refreshed while the desktop client's token ran out: refreshing again
+        // with the spent refresh token would end the sign-in, so the client takes the saved ones.
+        let dir = tempfile::tempdir().unwrap();
+        let server = FakeServer::start(|r| match r.bearer() {
+            _ if is_refresh(r) => (401, "{}".into()),
+            Some("a2") => (200, "{}".into()),
+            _ => (401, "{}".into()),
+        });
+        TokenStore::file_only(&server.url, dir.path()).save(&tokens("a2", "r2")).unwrap();
+        let told: Arc<Mutex<Vec<Tokens>>> = Arc::default();
+        let sink = Arc::clone(&told);
+        let store = TokenStore::file_only(&server.url, dir.path());
+        let mut session = Session::shared(server.server(), tokens("a1", "r1"), store, Some(dir.path()))
+            .on_new_tokens(Box::new(move |t| sink.lock().unwrap().push(t.clone())));
+        assert_eq!(session.call(&me(&server)).unwrap().status, 200);
+        assert_eq!(server.count("POST", "/api/auth/refresh"), 0, "no refresh with the spent token");
+        assert_eq!(server.seen().iter().map(|r| r.bearer().unwrap_or("")).collect::<Vec<_>>(), ["a1", "a2"]);
+        assert_eq!(session.tokens, tokens("a2", "r2"));
+        assert_eq!(*told.lock().unwrap(), vec![tokens("a2", "r2")]);
+        assert!(dir.path().join("refresh.lock").exists(), "taken over under the refresh lock");
+    }
+
+    #[test]
+    fn stale_tokens_taken_over_are_refreshed_with_their_own_refresh_token() {
+        // The saved tokens ran out as well: a real refresh follows, with the refresh token that
+        // came with them (r1 is spent: using it would end the sign-in), and the result is saved.
+        let dir = tempfile::tempdir().unwrap();
+        let server = FakeServer::start(|r| match r.bearer() {
+            _ if is_refresh(r) && r.body.contains("\"r2\"") => new_tokens("a3", "r3"),
+            _ if is_refresh(r) => (401, "{}".into()),
+            Some("a3") => (200, "{}".into()),
+            _ => (401, "{}".into()),
+        });
+        let store = || TokenStore::file_only(&server.url, dir.path());
+        store().save(&tokens("a2", "r2")).unwrap();
+        let mut session = Session::shared(server.server(), tokens("a1", "r1"), store(), Some(dir.path()));
+        assert_eq!(session.call(&me(&server)).unwrap().status, 200);
+        let seen = server.seen();
+        assert_eq!(seen.len(), 4, "{seen:?}");
+        assert_eq!((seen[0].bearer(), seen[1].bearer()), (Some("a1"), Some("a2")));
+        assert!(is_refresh(&seen[2]) && seen[2].body.contains("\"r2\""), "{:?}", seen[2]);
+        assert_eq!(seen[3].bearer(), Some("a3"));
+        assert_eq!(store().load(), Some(tokens("a3", "r3")), "saved for the other processes");
+        assert!(!session.signed_out);
+    }
+
+    /// Every log line of this test process (installed once; other tests' lines land here too).
+    fn captured_logs() -> &'static Mutex<Vec<(log::Level, String)>> {
+        struct Capture(Mutex<Vec<(log::Level, String)>>);
+        impl log::Log for Capture {
+            fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+                true
+            }
+            fn log(&self, record: &log::Record<'_>) {
+                let line = format!("{} {}", record.target(), record.args());
+                self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((record.level(), line));
+            }
+            fn flush(&self) {}
+        }
+        static LOGS: Capture = Capture(Mutex::new(Vec::new()));
+        static INSTALLED: std::sync::Once = std::sync::Once::new();
+        INSTALLED.call_once(|| {
+            if log::set_logger(&LOGS).is_ok() {
+                log::set_max_level(log::LevelFilter::Trace);
+            }
+        });
+        &LOGS.0
+    }
+
+    /// Runs a session through a refresh whose new tokens can't be saved (logged), a refused
+    /// refresh and a server that's gone, with tokens named `<marker>-…`. Hands back what the
+    /// session said (answers and errors) and the log lines at `max` and above that name a token.
+    fn token_trouble(marker: &'static str, max: log::Level) -> (Vec<String>, Vec<String>) {
+        let logs = captured_logs();
+        let dir = tempfile::tempdir().unwrap();
+        let blocked = dir.path().join("blocked");
+        std::fs::write(&blocked, "not a folder").unwrap();
+        let server = FakeServer::start(move |r| match r.bearer() {
+            _ if is_refresh(r) && r.body.contains(&format!("{marker}-R1")) => new_tokens(&format!("{marker}-A2"), &format!("{marker}-R2")),
+            _ if is_refresh(r) => (404, r#"{"error":"Session not found"}"#.into()),
+            _ => (401, "{}".into()),
+        });
+        // The store's folder is under a file: saving the refreshed tokens fails and says so.
+        let store = TokenStore::file_only(&server.url, &blocked.join("sub"));
+        let mut session = Session::shared(server.server(), tokens(&format!("{marker}-A1"), &format!("{marker}-R1")), store, None);
+        let mut said = vec![session.call(&me(&server)).map(|r| r.status.to_string()).unwrap_or_else(|e| e)];
+        said.push(session.call(&me(&server)).map(|r| r.status.to_string()).unwrap_or_else(|e| e));
+        assert!(session.signed_out, "the second refresh was refused: {said:?}");
+        let url = server.url.clone();
+        drop(server);
+        let gone = HttpRequest::new(Method::Get, format!("{url}/api/auth/me"));
+        said.push(session.call(&gone).map(|r| r.status.to_string()).unwrap_or_else(|e| e));
+        said.extend(session.offline.clone());
+        let logs = logs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(logs.iter().any(|(_, l)| l.contains("couldn't save the refreshed sign-in")), "the save failure is logged");
+        let leaked = logs.iter().filter(|(level, l)| *level <= max && l.contains(marker)).map(|(level, l)| format!("{level} {l}")).collect();
+        (said, leaked)
+    }
+
+    #[test]
+    fn tokens_never_reach_an_error_or_the_log() {
+        // Up to debug: what `RUST_LOG=debug` shows, CraftCloud's own lines and the libraries'.
+        let (said, leaked) = token_trouble("SECRET", log::Level::Debug);
+        assert!(said.iter().all(|s| !s.contains("SECRET")), "a token in what the session said: {said:?}");
+        assert!(leaked.is_empty(), "a token in the log: {leaked:?}");
+    }
+
+    #[test]
+    #[ignore = "known bug: at trace level (`RUST_LOG=trace`) ureq-proto logs the raw bytes of a refresh answer, new tokens included; needs its own fix PR (cap that target's level)"]
+    fn tokens_never_reach_the_trace_log() {
+        let (_, leaked) = token_trouble("TRACED", log::Level::Trace);
+        assert!(leaked.is_empty(), "a token in the log: {leaked:?}");
+    }
+
     #[test]
     fn the_refresh_lock_is_exclusive_across_handles() {
         let dir = tempfile::tempdir().unwrap();
