@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **An idle window uses next to no CPU.** The desktop client's window drew itself four times a second for as
+- **Desktop: an idle window uses next to no CPU** (#3). The desktop client's window drew itself four times a second for as
   long as it was open, even with nothing to show. Without a graphics card (a virtual machine, or a computer that
   draws in software) that kept several cores busy. Now it draws when something changes (a sync, an answer from
   the server, the mouse or keyboard) and otherwise once a minute, to keep "Synced 2 min ago" true.
