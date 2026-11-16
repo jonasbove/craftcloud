@@ -386,7 +386,7 @@ Every command takes `--json` for scripts. The reference, with exit codes and JSO
 
 ## Build from source
 
-You need a recent stable Rust. On Linux, install the windowing headers first (Debian/Ubuntu:
+You need rustup: `rust-toolchain.toml` pins the Rust every build uses (1.100.0 now), and rustup installs it with clippy, rustfmt and the wasm target on the first `cargo` command. On Linux, install the windowing headers first (Debian/Ubuntu:
 `sudo apt install libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev`).
 
 ```sh
