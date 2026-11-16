@@ -188,7 +188,7 @@ pub fn cmd(args: &[String], root: &Path) -> Result<(), String> {
             Err(e) => run.row("setup: two clients signed in, syncing a fresh folder", Verdict::Fail, &e),
         }
     }
-    run.cleanup(opts.keep, before.as_deref());
+    run.cleanup(opts.keep, before.as_deref(), !opts.allow_other_devices);
     run.report()
 }
 
@@ -382,7 +382,7 @@ impl Run {
     /// Everything the run started goes: the cloud folder and its kept versions (to the trash, then
     /// for good), the two clients' sign-ins, the clients' folders and tokens. With `keep`, the
     /// folders stay (the sign-ins still end).
-    fn cleanup(&mut self, keep: bool, before: Option<&[Session]>) {
+    fn cleanup(&mut self, keep: bool, before: Option<&[Session]>, revoke: bool) {
         let mut notes = Vec::new();
         if !keep && self.laptop.signed_in {
             notes.push(self.remove_cloud_folder());
@@ -395,7 +395,7 @@ impl Run {
             }
         }
         if signed_in > 0 {
-            self.logout_ended(before);
+            self.logout_ended(before, revoke);
         }
         self.api.sign_out();
         if !keep {
@@ -417,8 +417,9 @@ impl Run {
 
     /// `craftcloud logout` says it ends the sign-in on the server too. With an admin account the
     /// run checks that: a client session that signed in during the run and is still active is a
-    /// FAIL, and the run then ends it itself, so the next run doesn't find it signed in.
-    fn logout_ended(&mut self, before: Option<&[Session]>) {
+    /// FAIL, and the run then ends it itself, so the next run doesn't find it signed in (unless other
+    /// clients were allowed: one of theirs may have signed in meanwhile, and is left alone).
+    fn logout_ended(&mut self, before: Option<&[Session]>, revoke: bool) {
         let case = "the clients' logout ended their sign-ins on the server";
         let Some(before) = before else { return };
         let now = match self.api.sessions() {
@@ -430,11 +431,13 @@ impl Run {
         if left.is_empty() {
             return self.row(case, Verdict::Pass, "");
         }
-        let ended = left.iter().filter(|s| self.api.revoke(&s.id)).count();
-        let detail = format!(
-            "{} of the run's client sessions still signed in after `craftcloud logout` said signed_out; the run ended {ended} through the admin API",
-            left.len()
-        );
+        let after = if revoke {
+            let ended = left.iter().filter(|s| self.api.revoke(&s.id)).count();
+            format!("the run ended {ended} through the admin API")
+        } else {
+            "left signed in, since other clients were allowed".to_owned()
+        };
+        let detail = format!("{} client sessions signed in during the run are still signed in after `craftcloud logout`; {after}", left.len());
         self.row(case, Verdict::Fail, &detail);
     }
 

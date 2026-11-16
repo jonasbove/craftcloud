@@ -80,7 +80,9 @@ signs two devices in to the account, so use an account kept for testing.
    and then for good, both clients sign out (`craftcloud logout`, which ends the sign-in on the server), the
    password sign-in ends, and the clients' folders (with their tokens) are deleted. With `--keep` the folders stay; the sign-ins
    still end. With an admin account the run checks that the clients' logout really ended their sessions on the
-   server (FAIL otherwise), and ends any it left itself, so the next run doesn't find them signed in. A run stopped with Ctrl+C cleans up nothing: its `e2e-sync-…` folder stays in the cloud, and its
+   server (FAIL otherwise), and ends any it left itself, so the next run doesn't find them signed in. With 0.1.1 and
+   this tree that check fails: their `logout` leaves the session signed in on the server, a known failure until the
+   command line ends it. A run stopped with Ctrl+C cleans up nothing: its `e2e-sync-…` folder stays in the cloud, and its
    two clients stay signed in (their tokens are in the run directory's `laptop/config` and `studio/config`;
    `CRAFTCLOUD_CONFIG_DIR=<that folder> CRAFTCLOUD_KEYCHAIN=off craftcloud logout` ends each).
 
@@ -96,9 +98,10 @@ same cases with the previous release on one side and this tree's build on the ot
 
 ```sh
 # The previous release's Linux tarball, checked against the release's SHA256SUMS.txt before it runs
-gh release download v0.1.1 -R jonasbove/craftcloud -p 'craftcloud-0.1.1-linux-x86_64.tar.gz' -p SHA256SUMS.txt
-sha256sum -c --ignore-missing SHA256SUMS.txt && tar -xzf craftcloud-0.1.1-linux-x86_64.tar.gz
-OLD=$PWD/craftcloud-0.1.1-linux-x86_64/bin/craftcloud
+V=0.1.1   # the previous release
+gh release download v$V -R jonasbove/craftcloud -p "craftcloud-$V-linux-x86_64.tar.gz" -p SHA256SUMS.txt
+sha256sum -c --ignore-missing SHA256SUMS.txt && tar -xzf craftcloud-$V-linux-x86_64.tar.gz
+OLD=$PWD/craftcloud-$V-linux-x86_64/bin/craftcloud
 cargo build -p craftcloud && NEW=$PWD/target/debug/craftcloud
 cargo xtask e2e-sync --bin-laptop "$OLD" --bin-studio "$NEW"
 cargo xtask e2e-sync --bin-laptop "$NEW" --bin-studio "$OLD"
@@ -107,7 +110,9 @@ cargo xtask e2e-sync --bin-laptop "$NEW" --bin-studio "$OLD"
 The table's first row says which program each client ran. The versions, conflict, folder-delete, Windows-names and
 leftovers cases are the ones a mixed pair is most likely to fail; a case that fails with a mixed pair but passes
 with the same build on both sides is a finding for the release notes. A run on Linux or macOS can't show what a
-Windows client leaves alone: the Windows-only name rule is checked on Windows.
+Windows client leaves alone: the Windows-only name rule is checked on Windows. The run is made for Linux: on a
+case-insensitive file system (macOS by default) `Report.txt` and `report.txt` can't both exist, so that case fails
+there for a reason that isn't the sync's.
 
 ### What it leaves
 

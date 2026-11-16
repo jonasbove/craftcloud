@@ -465,8 +465,17 @@ fn leftovers(run: &mut Run) -> Result<String, String> {
     }
     let own = run.cli_json(LAPTOP, &["ls", ".craftcloud"])?;
     let own: Vec<&str> = own.as_array().map(Vec::as_slice).unwrap_or_default().iter().filter_map(|i| i["name"].as_str()).collect();
-    if let Some(state) = own.iter().find(|n| n.contains("state") || n.ends_with(".json")) {
-        return Err(format!("a client's state reached the cloud: .craftcloud/{state} (the cloud's .craftcloud/ holds {own:?})"));
+    // What each client keeps in its own `.craftcloud/` at the top of its sync folder (its sync
+    // state): none of it may be in the cloud's.
+    for who in [LAPTOP, STUDIO] {
+        let local = run.path(who, "").parent().map(|top| top.join(".craftcloud"));
+        let names: Vec<String> = local
+            .and_then(|dir| fs::read_dir(dir).ok())
+            .map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+            .unwrap_or_default();
+        if let Some(state) = names.iter().find(|n| own.contains(&n.as_str()) && *n != "versions") {
+            return Err(format!("the {}'s .craftcloud/{state} reached the cloud (the cloud's .craftcloud/ holds {own:?})", name(who)));
+        }
     }
     Ok(format!("the cloud's .craftcloud/ holds {own:?}"))
 }
