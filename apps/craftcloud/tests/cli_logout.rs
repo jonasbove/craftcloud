@@ -43,15 +43,15 @@ fn server(refused: u16) -> (String, JoinHandle<(String, String)>) {
     (url, seen)
 }
 
-/// `craftcloud logout --json` with a stored sign-in for `url` (in a file, not the keychain).
-fn logout(url: &str) -> (Output, tempfile::TempDir) {
+/// `craftcloud logout --json` with a stored sign-in for `url` whose refresh token is
+/// `refresh_token` (in a file, not the keychain).
+fn logout(url: &str, refresh_token: &str) -> (Output, tempfile::TempDir) {
     let config = tempfile::tempdir().unwrap();
-    std::fs::write(config.path().join("tokens.json"), r#"{"access_token":"a1","refresh_token":"r1"}"#).unwrap();
+    std::fs::write(config.path().join("tokens.json"), format!(r#"{{"access_token":"a1","refresh_token":"{refresh_token}"}}"#)).unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_craftcloud"))
         .args(["logout", "--json", "--server", url])
         .env("CRAFTCLOUD_CONFIG_DIR", config.path())
         .env("CRAFTCLOUD_KEYCHAIN", "off")
-        .env("CRAFTCLOUD_HTTP_IDLE_SECS", "5")
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -67,7 +67,7 @@ fn json(bytes: &[u8]) -> Value {
 fn logout_ends_the_sign_in_on_the_server() {
     // Without the refresh token in the body OxiCloud 0.10.0 answers 401 and the session stays.
     let (url, seen) = server(401);
-    let (out, config) = logout(&url);
+    let (out, config) = logout(&url, "r1");
     let (line, body) = seen.join().unwrap();
     assert!(line.starts_with("POST /api/auth/logout"), "{line}");
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["refresh_token"], "r1");
@@ -80,33 +80,25 @@ fn logout_ends_the_sign_in_on_the_server() {
 
 #[test]
 fn a_logout_the_server_refuses_is_still_a_sign_out_here() {
-    // The server can't end it (it fails): forgotten here, and the output says so (exit 1).
-    let listener_url = {
-        let (url, seen) = server(500);
-        // The stand-in answers 200 to `r1`; send another token so it refuses.
-        let config = tempfile::tempdir().unwrap();
-        std::fs::write(config.path().join("tokens.json"), r#"{"access_token":"a1","refresh_token":"other"}"#).unwrap();
-        let out = Command::new(env!("CARGO_BIN_EXE_craftcloud"))
-            .args(["logout", "--json", "--server", &url])
-            .env("CRAFTCLOUD_CONFIG_DIR", config.path())
-            .env("CRAFTCLOUD_KEYCHAIN", "off")
-            .stdin(Stdio::null())
-            .output()
-            .unwrap();
-        seen.join().unwrap();
-        assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
-        let result = json(&out.stdout);
-        assert_eq!(result["signed_out"], true);
-        assert_eq!(result["was_signed_in"], true);
-        assert_eq!(result["server_session_ended"], false);
-        let error = json(&out.stderr);
-        assert!(error["error"]["message"].as_str().unwrap().contains("may still be active"), "{error}");
-        assert!(!config.path().join("tokens.json").exists(), "forgotten here all the same");
-        url
-    };
+    // The server fails (500 for a token other than `r1`): forgotten here, and it says so (exit 1).
+    let (url, seen) = server(500);
+    let (out, config) = logout(&url, "other");
+    seen.join().unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
+    let result = json(&out.stdout);
+    assert_eq!(result["signed_out"], true);
+    assert_eq!(result["was_signed_in"], true);
+    assert_eq!(result["server_session_ended"], false);
+    let error = json(&out.stderr);
+    assert!(error["error"]["message"].as_str().unwrap().contains("may still be active"), "{error}");
+    assert!(!config.path().join("tokens.json").exists(), "forgotten here all the same");
+}
 
-    // Nothing answers any more: exit 8 (the server can't be reached), forgotten here too.
-    let (out, config) = logout(&listener_url);
+#[test]
+fn a_logout_without_the_server_is_still_a_sign_out_here() {
+    // Nothing listens on the port: exit 8 (the server can't be reached), forgotten here too.
+    let url = format!("http://{}", TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap());
+    let (out, config) = logout(&url, "r1");
     assert_eq!(out.status.code(), Some(8), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(json(&out.stdout)["server_session_ended"], false);
     assert!(!config.path().join("tokens.json").exists());

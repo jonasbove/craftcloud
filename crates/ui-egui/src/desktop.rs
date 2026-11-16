@@ -610,7 +610,8 @@ impl<H: DesktopHost> DesktopApp<H> {
                     }
                     false
                 }
-                // The refresh was refused: the server had already ended the sign-in.
+                // The refresh was refused: the server had already ended the sign-in. Anything
+                // else (a 5xx, an answer that can't be read) leaves it unknown: the note shows.
                 _ => matches!(resp.status, 401 | 403 | 404),
             },
             (_, Ok(resp)) => resp.is_success(),
