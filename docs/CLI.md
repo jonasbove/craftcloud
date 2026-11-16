@@ -51,6 +51,10 @@ one-line summary and at least one example (a test checks it).
 | `--yes` | Don't ask (`trash empty`) |
 - `CRAFTCLOUD_CONFIG_DIR` points to another settings folder; `CRAFTCLOUD_KEYCHAIN=off` keeps the tokens in a file
   only you can read in that folder instead of the keychain (for servers without a desktop session).
+- `RUST_LOG` sets how much goes to standard error (default `error` for a command, `warn` for the window and tray;
+  `RUST_LOG=debug` or `trace` for more, also per module: `RUST_LOG=craftcloud_native=debug`). Trace logging leaves
+  out HTTP bodies and headers: the HTTP library (`ureq`, `ureq_proto`) logs at most at debug level (method, address,
+  status), whatever `RUST_LOG` asks for. The same holds for `craftcloud-admin` in the server image.
 
 ## Commands
 

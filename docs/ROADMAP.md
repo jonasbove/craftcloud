@@ -2,8 +2,8 @@
 
 **Stage: early alpha** · version 0.1.1 (fixes for 0.1.0, the first release: a published image and desktop builds)
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (tests of the sync engine's
-> guards and the sign-in against a scripted server)
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (trace logs leave out HTTP
+> bodies and headers)
 
 CraftCloud is a self-hosted cloud for the Craft apps: the unmodified OxiCloud server in a Docker image, CraftCloud's
 own web frontend (Rust, egui, WebAssembly), a desktop sync client with a command line, and a small admin service.
@@ -101,6 +101,11 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-16: Logging: trace logs no longer include HTTP request bodies and headers. The desktop client, the
+  command line and `craftcloud-admin` log through one filter (`craftcloud_core::logging::WireCapped`) that stops the
+  HTTP library (`ureq`, `ureq_proto`) at debug level whatever `RUST_LOG` asks for. `tokens_never_reach_the_trace_log`
+  runs again, and `trace_logging_leaves_out_the_tokens` runs `craftcloud logout` with `RUST_LOG=trace` against a
+  stand-in server.
 - 2026-11-16: Tests: `cargo xtask e2e-web` runs the web frontend in headless Chromium (chromedriver, through a
   small WebDriver client of its own over `ureq`; no new dependency) against a fresh server: first-run setup, sign-out and sign-in with the session cookie's flags,
   an upload, a share link opened in a second, signed-out browser and downloaded there, a device code approved on

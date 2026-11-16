@@ -46,15 +46,20 @@ fn server(refused: u16) -> (String, JoinHandle<(String, String)>) {
 /// `craftcloud logout --json` with a stored sign-in for `url` whose refresh token is
 /// `refresh_token` (in a file, not the keychain).
 fn logout(url: &str, refresh_token: &str) -> (Output, tempfile::TempDir) {
+    logout_logged(url, "a1", refresh_token, None)
+}
+
+/// [`logout`] with an access token of choice and `RUST_LOG` set to `rust_log` (unset for `None`).
+fn logout_logged(url: &str, access_token: &str, refresh_token: &str, rust_log: Option<&str>) -> (Output, tempfile::TempDir) {
     let config = tempfile::tempdir().unwrap();
-    std::fs::write(config.path().join("tokens.json"), format!(r#"{{"access_token":"a1","refresh_token":"{refresh_token}"}}"#)).unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_craftcloud"))
-        .args(["logout", "--json", "--server", url])
-        .env("CRAFTCLOUD_CONFIG_DIR", config.path())
-        .env("CRAFTCLOUD_KEYCHAIN", "off")
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
+    std::fs::write(config.path().join("tokens.json"), format!(r#"{{"access_token":"{access_token}","refresh_token":"{refresh_token}"}}"#)).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_craftcloud"));
+    command.args(["logout", "--json", "--server", url]).env("CRAFTCLOUD_CONFIG_DIR", config.path()).env("CRAFTCLOUD_KEYCHAIN", "off");
+    match rust_log {
+        Some(filter) => command.env("RUST_LOG", filter),
+        None => command.env_remove("RUST_LOG"),
+    };
+    let out = command.stdin(Stdio::null()).output().unwrap();
     (out, config)
 }
 
@@ -92,6 +97,24 @@ fn a_logout_the_server_refuses_is_still_a_sign_out_here() {
     let error = json(&out.stderr);
     assert!(error["error"]["message"].as_str().unwrap().contains("may still be active"), "{error}");
     assert!(!config.path().join("tokens.json").exists(), "forgotten here all the same");
+}
+
+#[test]
+fn trace_logging_leaves_out_the_tokens() {
+    // The logout request carries the refresh token in its body (and the access token in its
+    // header): at trace level the HTTP library would log both. Its debug lines stay.
+    for filter in ["trace", "ureq_proto=trace,ureq=trace"] {
+        let (url, seen) = server(200);
+        let (out, _config) = logout_logged(&url, "FAKE-TRACE-ACCESS", "FAKE-TRACE-REFRESH", Some(filter));
+        let (_, body) = seen.join().unwrap();
+        assert!(body.contains("FAKE-TRACE-REFRESH"), "the request did carry the token: {body}");
+        assert_eq!(out.status.code(), Some(0), "RUST_LOG={filter}");
+        let log = String::from_utf8_lossy(&out.stderr);
+        assert!(log.contains("DEBUG ureq"), "RUST_LOG={filter}: the HTTP library's debug lines are kept:\n{log}");
+        // The library logs the bytes 16 to a line, so a token can be split: no trace line of it at all.
+        assert!(!log.contains("TRACE ureq"), "RUST_LOG={filter}: the HTTP library's trace lines:\n{log}");
+        assert!(!log.contains("FAKE-TRACE"), "RUST_LOG={filter}: a token in the log:\n{log}");
+    }
 }
 
 #[test]

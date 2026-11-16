@@ -1088,6 +1088,7 @@ dependencies = [
  "craft-dav",
  "craft-xml",
  "jiff",
+ "log",
  "percent-encoding",
  "proptest",
  "serde",

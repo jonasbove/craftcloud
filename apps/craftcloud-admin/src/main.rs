@@ -25,7 +25,13 @@ fn env(key: &str, default: &str) -> String {
 }
 
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    // `RUST_LOG` as usual, except that the HTTP library's trace lines (the forwarded cookies and
+    // `Authorization` headers) never pass: `craftcloud_core::logging`.
+    let logger = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).build();
+    let max = logger.filter();
+    if log::set_boxed_logger(Box::new(craftcloud_core::logging::WireCapped(logger))).is_ok() {
+        log::set_max_level(max);
+    }
     let config = Arc::new(Config {
         oxicloud: env("CRAFTCLOUD_OXICLOUD_URL", "http://127.0.0.1:8087"),
         state_dir: PathBuf::from(env("CRAFTCLOUD_STATE_DIR", "/app/storage/.craftcloud")),

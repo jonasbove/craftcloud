@@ -18,6 +18,8 @@ url = { workspace = true }
 percent-encoding = { workspace = true }
 craft-dav = { workspace = true }
 craft-xml = { workspace = true }
+# `logging::WireCapped`, the filter the desktop client and craftcloud-admin log through.
+log = { workspace = true }
 # Share-link expiry (presets, dates, times). No time zone database: the web passes the browser's
 # offset, and nothing here reads the system clock (that would panic on wasm32).
 jiff = { version = "0.2", default-features = false, features = ["std"] }

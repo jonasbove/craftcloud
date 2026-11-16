@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Trace logs no longer include HTTP request bodies and headers.** With `RUST_LOG=trace`, the desktop client,
+  the command line and `craftcloud-admin` logged the raw bytes of every request and answer. The HTTP library's
+  lines now stop at debug level (method, address, status), whatever `RUST_LOG` asks for. If you kept a trace log
+  from an earlier version, delete it, and sign out and in again if you shared it.
 - **Signing out now also ends the session on the server.** `craftcloud logout` and the desktop client's
   Sign out forgot the sign-in on the computer, but the server kept the session open (it needs the device's refresh
   token to know which one to end, and the client didn't send it). Now both end it there too. When the server
