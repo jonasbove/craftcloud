@@ -117,6 +117,14 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   llvmpipe (software GL, X11, signed in, idle on Activity, 60 s): 4.1 passes a second and 22 % of a core before, 0.2
   (three per 15 s sync check) and 1 % after. `an_idle_window_repaints_rarely_and_a_busy_one_often` fails without
   the fix; the Windows re-check is still to do.
+- 2026-11-16: Command line: a server that can't be reached gives exit code 8 on every system. The HTTP layer
+  (`craftcloud_native::http`) told an unreachable server from other errors by the system's English message
+  ("Connection refused"), so on Windows ("No connection could be made …", os error 10061) `logout` without a server
+  exited with 1; found by the new Windows tests job in the Release workflow (`cli_logout`). It now reads the
+  error's kind (`ErrorKind::ConnectionRefused`, `ConnectionReset`, `TimedOut`, `HostUnreachable` …, ureq's
+  `HostNotFound`, `ConnectionFailed` and connect timeouts, Winsock's lookup codes), and the CLI asks
+  `http::is_unreachable`. A name that can't be looked up was missed on Linux too. The new `http` tests with
+  Windows- and Linux-shaped errors and a real lookup of a `.invalid` name fail without the fix.
 - 2026-11-16: Versions: a kept version's content time is never shown after its replacement time
   (`versions::Version::modified_at`, which the command line and the web frontend both use). OxiCloud rounds
   `getlastmodified` to the nearest second (UPSTREAM.md C17) and the replacement time is the client's clock, so a

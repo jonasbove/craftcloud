@@ -87,12 +87,11 @@ fn send_on(agent: &ureq::Agent, req: &HttpRequest) -> Result<ureq::http::Respons
     for (name, value) in &req.headers {
         builder = builder.header(name, value);
     }
-    let result = if req.body.is_empty() {
-        builder.body(()).map_err(|e| e.to_string()).and_then(|r| agent.run(r).map_err(|e| e.to_string()))
+    if req.body.is_empty() {
+        builder.body(()).map_err(|e| e.to_string()).and_then(|r| agent.run(r).map_err(|e| describe(&e)))
     } else {
-        builder.body(req.body.clone()).map_err(|e| e.to_string()).and_then(|r| agent.run(r).map_err(|e| e.to_string()))
-    };
-    result.map_err(|e| describe(&e))
+        builder.body(req.body.clone()).map_err(|e| e.to_string()).and_then(|r| agent.run(r).map_err(|e| describe(&e)))
+    }
 }
 
 /// Sends a request whose body is a file, streamed from disk (large uploads never sit in memory).
@@ -110,17 +109,18 @@ fn send_file_on(agent: &ureq::Agent, req: &HttpRequest, file: &std::path::Path, 
         builder = builder.header(name, value);
     }
     let request = builder.body(ureq::SendBody::from_owned_reader(body)).map_err(|e| e.to_string())?;
-    let mut resp = agent.run(request).map_err(|e| why_upload_failed(&e.to_string(), cancel))?;
+    let mut resp = agent.run(request).map_err(|e| why_upload_failed(&e, cancel))?;
     let body = resp.body_mut().with_config().limit(1024 * 1024).read_to_vec().map_err(|e| e.to_string())?;
     Ok(answer(&resp, body))
 }
 
 /// A transport error during an upload, in words: our own reasons first (ureq hands them back
 /// wrapped in its I/O error).
-fn why_upload_failed(e: &str, cancel: &AtomicBool) -> String {
+fn why_upload_failed(e: &ureq::Error, cancel: &AtomicBool) -> String {
+    let text = e.to_string();
     if cancel.load(Ordering::Relaxed) {
         CANCELLED.into()
-    } else if e.contains(CHANGED_WHILE_UPLOADING) || e.contains("than content-length") {
+    } else if text.contains(CHANGED_WHILE_UPLOADING) || text.contains("than content-length") {
         CHANGED_WHILE_UPLOADING.into()
     } else {
         describe(e)
@@ -201,14 +201,57 @@ pub fn answer(resp: &ureq::http::Response<ureq::Body>, body: Vec<u8>) -> HttpRes
     out
 }
 
-fn describe(e: &str) -> String {
-    if e.contains("Connection refused") || e.contains("ConnectionFailed") {
-        format!("Can't connect to the server ({e}).")
-    } else if e.contains("dns") || e.contains("Dns") || e.contains("resolve") {
-        format!("Can't find the server ({e}).")
-    } else {
-        e.to_owned()
+/// How a transport error starts when the server couldn't be reached: nothing listens there, the
+/// connection was refused, reset or timed out, or there is no route to it.
+pub const CANT_CONNECT: &str = "Can't connect to the server";
+/// How a transport error starts when the server's name couldn't be looked up.
+pub const CANT_FIND: &str = "Can't find the server";
+
+/// Whether a transport error (an `Err` from [`execute`], [`send`] or [`send_file`]) means the
+/// server couldn't be reached at all.
+pub fn is_unreachable(e: &str) -> bool {
+    e.starts_with(CANT_CONNECT) || e.starts_with(CANT_FIND)
+}
+
+/// A transport error in words, starting with [`CANT_CONNECT`] or [`CANT_FIND`] when the server
+/// couldn't be reached.
+fn describe(e: &ureq::Error) -> String {
+    match unreachable(e) {
+        Some(why) => format!("{why} ({e})."),
+        None => e.to_string(),
     }
+}
+
+/// Why the server couldn't be reached, read from the error's kind and never from its words: the
+/// system's messages differ by OS and language ("Connection refused" on Linux, "No connection
+/// could be made because the target machine actively refused it." on Windows).
+fn unreachable(e: &ureq::Error) -> Option<&'static str> {
+    use std::io::ErrorKind as Kind;
+    match e {
+        ureq::Error::HostNotFound | ureq::Error::Timeout(ureq::Timeout::Resolve) => Some(CANT_FIND),
+        ureq::Error::ConnectionFailed | ureq::Error::Timeout(ureq::Timeout::Connect) => Some(CANT_CONNECT),
+        ureq::Error::Io(io) => match io.kind() {
+            Kind::ConnectionRefused
+            | Kind::ConnectionReset
+            | Kind::ConnectionAborted
+            | Kind::TimedOut
+            | Kind::HostUnreachable
+            | Kind::NetworkUnreachable
+            | Kind::NetworkDown
+            | Kind::AddrNotAvailable => Some(CANT_CONNECT),
+            _ if lookup_failed(io) => Some(CANT_FIND),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// A failed name lookup, which has no `ErrorKind` of its own. On Windows it carries Winsock's
+/// lookup codes (WSAHOST_NOT_FOUND, WSATRY_AGAIN, WSANO_RECOVERY and WSANO_DATA: 11001 to 11004,
+/// numbers no Unix errno uses). On Unix getaddrinfo's errors are not errnos, and the standard
+/// library words them itself, the same way on every system and in every language.
+fn lookup_failed(io: &std::io::Error) -> bool {
+    matches!(io.raw_os_error(), Some(11001..=11004)) || io.to_string().starts_with("failed to lookup address information")
 }
 
 /// The UI's transport: one worker thread that runs requests in order and wakes the UI.
@@ -250,7 +293,7 @@ impl ThreadBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::{CANCELLED, CHANGED_WHILE_UPLOADING, FileBody, agent, execute_on, send_file_on};
+    use super::{CANCELLED, CANT_CONNECT, CANT_FIND, CHANGED_WHILE_UPLOADING, FileBody, agent, describe, execute_on, is_unreachable, send_file_on};
     use craftcloud_core::http::{HttpRequest, Method};
     use std::io::{Read, Write};
     use std::sync::Arc;
@@ -348,5 +391,74 @@ mod tests {
         assert!(send_file_on(&quick, &HttpRequest::new(Method::Put, url), &path, &Arc::default()).is_err());
         assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
         held.join().unwrap();
+    }
+
+    fn io(kind: std::io::ErrorKind, message: &str) -> ureq::Error {
+        ureq::Error::Io(std::io::Error::new(kind, message))
+    }
+
+    #[test]
+    fn a_server_that_cant_be_reached_reads_the_same_on_every_system() {
+        use std::io::ErrorKind as Kind;
+        for e in [
+            // Linux and macOS.
+            io(Kind::ConnectionRefused, "Connection refused (os error 111)"),
+            io(Kind::ConnectionReset, "Connection reset by peer (os error 104)"),
+            io(Kind::NetworkUnreachable, "Network is unreachable (os error 101)"),
+            // Windows, whose words differ (and are translated).
+            io(Kind::ConnectionRefused, "No connection could be made because the target machine actively refused it. (os error 10061)"),
+            io(Kind::ConnectionReset, "An existing connection was forcibly closed by the remote host. (os error 10054)"),
+            io(
+                Kind::TimedOut,
+                "A connection attempt failed because the connected party did not properly respond after a period of time. (os error 10060)",
+            ),
+            io(Kind::HostUnreachable, "A socket operation was attempted to an unreachable host. (os error 10065)"),
+            ureq::Error::ConnectionFailed,
+            ureq::Error::Timeout(ureq::Timeout::Connect),
+        ] {
+            assert!(describe(&e).starts_with(CANT_CONNECT), "{e}");
+            assert!(is_unreachable(&describe(&e)), "{e}");
+        }
+    }
+
+    #[test]
+    fn a_name_that_cant_be_looked_up_reads_the_same_on_every_system() {
+        for e in [
+            ureq::Error::Io(std::io::Error::other("failed to lookup address information: Name or service not known")),
+            // Windows: WSAHOST_NOT_FOUND and WSATRY_AGAIN.
+            ureq::Error::Io(std::io::Error::from_raw_os_error(11001)),
+            ureq::Error::Io(std::io::Error::from_raw_os_error(11002)),
+            ureq::Error::HostNotFound,
+            ureq::Error::Timeout(ureq::Timeout::Resolve),
+        ] {
+            assert!(describe(&e).starts_with(CANT_FIND), "{e}");
+            assert!(is_unreachable(&describe(&e)), "{e}");
+        }
+    }
+
+    #[test]
+    fn an_answer_that_stalls_or_breaks_is_not_an_unreachable_server() {
+        for e in [
+            ureq::Error::Timeout(ureq::Timeout::PerRead),
+            ureq::Error::Io(std::io::Error::other(CHANGED_WHILE_UPLOADING)),
+            io(std::io::ErrorKind::UnexpectedEof, "Peer disconnected"),
+            ureq::Error::BadUri("x".into()),
+        ] {
+            assert!(!is_unreachable(&describe(&e)), "{e}");
+        }
+    }
+
+    #[test]
+    fn a_port_nothing_listens_on_is_unreachable() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let e = execute_on(&agent(Duration::from_secs(5)), &HttpRequest::new(Method::Get, format!("http://127.0.0.1:{port}/"))).unwrap_err();
+        assert!(e.starts_with(CANT_CONNECT), "{e}");
+    }
+
+    #[test]
+    fn a_name_that_doesnt_exist_is_unreachable() {
+        // `.invalid` never resolves (RFC 2606); without a network the lookup fails all the same.
+        let e = execute_on(&agent(Duration::from_secs(5)), &HttpRequest::new(Method::Get, "http://craftcloud-test.invalid/")).unwrap_err();
+        assert!(e.starts_with(CANT_FIND), "{e}");
     }
 }

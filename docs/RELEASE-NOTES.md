@@ -6,6 +6,11 @@
   long as it was open, even with nothing to show. Without a graphics card (a virtual machine, or a computer that
   draws in software) that kept several cores busy. Now it draws when something changes (a sync, an answer from
   the server, the mouse or keyboard) and otherwise once a minute, to keep "Synced 2 min ago" true.
+- **On Windows, a server that can't be reached gives exit code 8, as elsewhere.** The command line read the
+  system's error message to tell an unreachable server from other errors, and Windows words it differently, so
+  there such a command exited with 1. It now goes by the kind of error, the same on every system and in every
+  language. A server name that can't be looked up now also gives 8 on Linux, as do a connection that was reset
+  and one that timed out.
 - **A kept version's time is never after it was replaced.** `craftcloud versions` (and `--json`'s `modified`)
   and the web frontend's Versions sheet show when a version's content was last changed. That time comes from the
   server and the replacement time from the computer that replaced it, so a server that rounds up or whose clock
