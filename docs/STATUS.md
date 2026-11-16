@@ -35,11 +35,10 @@ on Linux for every push to `main` and every pull request. The live tests need a 
 - **macOS deep links don't open the file.** macOS hands a `craftcloud://` link to the app as an Apple Event
   (`kAEGetURL`), and the client has no handler for it (winit doesn't expose one). A click starts or focuses
   CraftCloud; `craftcloud 'craftcloud://…'` from a terminal works.
-- **The Windows command line in a terminal is untried on Windows.** `craftcloud.com` (`apps/craftcloud-cli`) runs
+- **The Windows command line in a terminal: Ctrl+C is unconfirmed.** `craftcloud.com` (`apps/craftcloud-cli`) runs
   `craftcloud.exe` for a terminal and passes its output through ([CLI.md › Windows](CLI.md#windows)); the MSI puts
-  its folder on the user's PATH and removes the start-at-login value on uninstall. Its tests ran on Linux with a
-  stand-in child and it passes clippy for `x86_64-pc-windows-msvc`; the MSI, Ctrl+C and the relayed console have
-  not run on Windows yet.
+  its folder on the user's PATH and removes the start-at-login value on uninstall. On a Windows 11 VM (2026-11-15,
+  an MSI built from these changes) the output, the exit codes, the PATH entry and the uninstall's cleanup worked.
 - **Windows: the tray's Show doesn't bring back a minimized window.** Seen on a Windows 11 VM; click the taskbar
   button instead. The idle CPU cost of an open window there is still to be measured on real hardware.
 - **Names Windows can't have don't sync to a Windows computer.** A cloud name with `< > : " | ? *`, a trailing dot

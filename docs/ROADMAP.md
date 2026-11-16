@@ -51,7 +51,7 @@ backup of anything you sync with it.
 | M6 Files on demand | Placeholders that download when opened (Windows, Linux, macOS) | Design only |
 | M7 Signed desktop builds | Signed and notarized macOS builds, signed Windows builds | Not started; v1 is unsigned |
 | M8 Native NixOS deployment | OxiCloud, Caddy and craftcloud-admin as NixOS services without Docker, with the Craft web apps built by Nix from `apps.toml` | Not started; the NixOS module runs the Docker image today |
-| M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Not started; tried by hand against Nextcloud, ownCloud and OpenCloud |
+| M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Planned |
 
 ## Current focus
 
@@ -101,6 +101,9 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-16: Roadmap: M9, sync with any WebDAV server (Nextcloud, ownCloud, a NAS …), planned for 0.2.0 on the
+  branch `feature/webdav-support`. The Windows command line (`craftcloud.com`, the PATH entry, the uninstall's
+  cleanup) leaves Upcoming: it was tried on Windows 11.
 - 2026-11-15: CLI: on Windows, `craftcloud open` on a file whose type has no app (`.md`, `.docx` on a fresh
   Windows) shows the "Open with" dialog instead of nothing, and `--json` says `"with": "chooser"`.
 - 2026-11-15: Web: the file browser's **details panel** (#24). On a wide page, the one file selected shows beside the
