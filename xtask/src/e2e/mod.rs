@@ -19,13 +19,15 @@ use api::{Api, Session};
 use client::Client;
 
 const USAGE: &str = "\
-usage: cargo xtask e2e-sync [--bin PATH] [--keep] [--settle SECS] [--dir PATH] [--allow-other-devices]
+usage: cargo xtask e2e-sync [--bin PATH | --bin-laptop PATH --bin-studio PATH] [--keep] [--settle SECS] [--dir PATH] [--allow-other-devices]
 
 Two scratch clients sync a fresh folder of the test account and check every change on the other side.
 Needs CRAFTCLOUD_TEST_SERVER, CRAFTCLOUD_TEST_USER and CRAFTCLOUD_TEST_PASSWORD (a test account: the
 run signs two clients in to it). See docs/TESTING.md.
 
-  --bin PATH               the craftcloud binary to test (default: build this tree's, debug)
+  --bin PATH               the craftcloud binary both clients run (default: build this tree's, debug)
+  --bin-laptop PATH        the Laptop's binary, instead of --bin (a mixed pair: an older release on one side)
+  --bin-studio PATH        the Studio's binary, instead of --bin
   --keep                   keep the cloud folder and the clients' folders afterwards
   --settle SECS            the wait before every pass, more than 2 (files are held 2 s after a change); default 3
   --dir PATH               where the run directory goes (default: <target>/e2e-sync)
@@ -39,6 +41,8 @@ const CMD_TIMEOUT: Duration = Duration::from_secs(120);
 
 struct Options {
     bin: Option<PathBuf>,
+    bin_laptop: Option<PathBuf>,
+    bin_studio: Option<PathBuf>,
     keep: bool,
     settle: Duration,
     dir: Option<PathBuf>,
@@ -46,12 +50,15 @@ struct Options {
 }
 
 fn options(args: &[String]) -> Result<Option<Options>, String> {
-    let mut o = Options { bin: None, keep: false, settle: Duration::from_secs(3), dir: None, allow_other_devices: false };
+    let mut o =
+        Options { bin: None, bin_laptop: None, bin_studio: None, keep: false, settle: Duration::from_secs(3), dir: None, allow_other_devices: false };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         let mut value = || it.next().cloned().ok_or_else(|| format!("{arg} needs a value\n\n{USAGE}"));
         match arg.as_str() {
             "--bin" => o.bin = Some(PathBuf::from(value()?)),
+            "--bin-laptop" => o.bin_laptop = Some(PathBuf::from(value()?)),
+            "--bin-studio" => o.bin_studio = Some(PathBuf::from(value()?)),
             "--dir" => o.dir = Some(PathBuf::from(value()?)),
             "--keep" => o.keep = true,
             "--allow-other-devices" => o.allow_other_devices = true,
@@ -71,6 +78,14 @@ fn options(args: &[String]) -> Result<Option<Options>, String> {
         }
     }
     Ok(Some(o))
+}
+
+impl Options {
+    /// The program each client runs, `(Laptop, Studio)`: its own option, else `--bin`, else
+    /// `None` (this tree's build).
+    fn bins(&self) -> (Option<&PathBuf>, Option<&PathBuf>) {
+        (self.bin_laptop.as_ref().or(self.bin.as_ref()), self.bin_studio.as_ref().or(self.bin.as_ref()))
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -121,15 +136,15 @@ pub fn cmd(args: &[String], root: &Path) -> Result<(), String> {
     let env = |key: &str| std::env::var(key).ok().filter(|v| !v.is_empty()).ok_or_else(|| format!("{key} is not set\n\n{USAGE}"));
     let (server, user, password) = (env("CRAFTCLOUD_TEST_SERVER")?, env("CRAFTCLOUD_TEST_USER")?, env("CRAFTCLOUD_TEST_PASSWORD")?);
     let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("target"), PathBuf::from);
-    let bin = match &opts.bin {
-        Some(bin) => bin.clone(),
-        None => {
-            super::cargo(&["build", "-p", "craftcloud", "--locked"])?;
-            target.join("debug").join(format!("craftcloud{}", std::env::consts::EXE_SUFFIX))
-        }
-    };
+    let (laptop_bin, studio_bin) = opts.bins();
+    let built = target.join("debug").join(format!("craftcloud{}", std::env::consts::EXE_SUFFIX));
+    if laptop_bin.is_none() || studio_bin.is_none() {
+        super::cargo(&["build", "-p", "craftcloud", "--locked"])?;
+    }
     // Absolute: each client runs in a folder of its own.
-    let bin = fs::canonicalize(&bin).ok().filter(|b| b.is_file()).ok_or_else(|| format!("{}: no such program", bin.display()))?;
+    let absolute = |bin: &Path| fs::canonicalize(bin).ok().filter(|b| b.is_file()).ok_or_else(|| format!("{}: no such program", bin.display()));
+    let laptop_bin = absolute(laptop_bin.unwrap_or(&built))?;
+    let studio_bin = absolute(studio_bin.unwrap_or(&built))?;
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let cloud = format!("e2e-sync-{secs}-{}", std::process::id());
     let dir = opts.dir.clone().unwrap_or_else(|| target.join("e2e-sync")).join(&cloud);
@@ -137,10 +152,16 @@ pub fn cmd(args: &[String], root: &Path) -> Result<(), String> {
         fs::create_dir_all(dir.join(sub)).map_err(|e| format!("couldn't make {}: {e}", dir.join(sub).display()))?;
     }
     let dir = fs::canonicalize(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    eprintln!("e2e-sync: {} against {server}, run directory {}", bin.display(), dir.display());
+    let (laptop_version, studio_version) = (program_version(&laptop_bin), program_version(&studio_bin));
+    eprintln!(
+        "e2e-sync: Laptop {} ({laptop_version}), Studio {} ({studio_version}) against {server}, run directory {}",
+        laptop_bin.display(),
+        studio_bin.display(),
+        dir.display()
+    );
 
     let local = other_local_clients();
-    let (laptop, studio) = (Client::new("Laptop", dir.join("laptop"), &bin)?, Client::new("Studio", dir.join("studio"), &bin)?);
+    let (laptop, studio) = (Client::new("Laptop", dir.join("laptop"), &laptop_bin)?, Client::new("Studio", dir.join("studio"), &studio_bin)?);
     let api = Api::sign_in(&server, &user, &password)?;
     let before = match api.sessions() {
         Ok(before) => before,
@@ -150,6 +171,14 @@ pub fn cmd(args: &[String], root: &Path) -> Result<(), String> {
         }
     };
     let mut run = Run { server, api, laptop, studio, cloud, dir, settle: opts.settle, passes: Vec::new(), calls: 0, rows: Vec::new() };
+    // What the run tested, so a mixed pair's report reads on its own.
+    // A build between releases says the last release's number, so the paths say which is which.
+    let pair = if laptop_bin == studio_bin {
+        format!("the same program on both: {}", laptop_bin.display())
+    } else {
+        format!("a mixed pair: Laptop {}, Studio {}", laptop_bin.display(), studio_bin.display())
+    };
+    run.row(&format!("clients: Laptop runs {laptop_version}, Studio runs {studio_version}"), Verdict::Pass, &pair);
     if run.preflight(before.as_deref(), &local, opts.allow_other_devices) {
         match run.setup() {
             Ok(()) => {
@@ -159,7 +188,7 @@ pub fn cmd(args: &[String], root: &Path) -> Result<(), String> {
             Err(e) => run.row("setup: two clients signed in, syncing a fresh folder", Verdict::Fail, &e),
         }
     }
-    run.cleanup(opts.keep);
+    run.cleanup(opts.keep, before.as_deref());
     run.report()
 }
 
@@ -353,15 +382,20 @@ impl Run {
     /// Everything the run started goes: the cloud folder and its kept versions (to the trash, then
     /// for good), the two clients' sign-ins, the clients' folders and tokens. With `keep`, the
     /// folders stay (the sign-ins still end).
-    fn cleanup(&mut self, keep: bool) {
+    fn cleanup(&mut self, keep: bool, before: Option<&[Session]>) {
         let mut notes = Vec::new();
         if !keep && self.laptop.signed_in {
             notes.push(self.remove_cloud_folder());
         }
+        let mut signed_in = 0;
         for who in [Who::Laptop, Who::Studio] {
             if self.client(who).signed_in {
+                signed_in += 1;
                 let _ = self.cli(who, &["logout"]);
             }
+        }
+        if signed_in > 0 {
+            self.logout_ended(before);
         }
         self.api.sign_out();
         if !keep {
@@ -379,6 +413,29 @@ impl Run {
         };
         let verdict = if keep || detail.is_empty() { Verdict::Pass } else { Verdict::Warn };
         self.row("cleanup", verdict, &detail);
+    }
+
+    /// `craftcloud logout` says it ends the sign-in on the server too. With an admin account the
+    /// run checks that: a client session that signed in during the run and is still active is a
+    /// FAIL, and the run then ends it itself, so the next run doesn't find it signed in.
+    fn logout_ended(&mut self, before: Option<&[Session]>) {
+        let case = "the clients' logout ended their sign-ins on the server";
+        let Some(before) = before else { return };
+        let now = match self.api.sessions() {
+            Ok(Some(now)) => now,
+            Ok(None) => return self.row(case, Verdict::Fail, "the session list went away during the run"),
+            Err(e) => return self.row(case, Verdict::Fail, &e),
+        };
+        let left: Vec<&Session> = now.iter().filter(|s| s.origin == "device" && !before.iter().any(|b| b.id == s.id)).collect();
+        if left.is_empty() {
+            return self.row(case, Verdict::Pass, "");
+        }
+        let ended = left.iter().filter(|s| self.api.revoke(&s.id)).count();
+        let detail = format!(
+            "{} of the run's client sessions still signed in after `craftcloud logout` said signed_out; the run ended {ended} through the admin API",
+            left.len()
+        );
+        self.row(case, Verdict::Fail, &detail);
     }
 
     /// Trashes the run's folder (and its kept versions), then deletes those items for good. A note
@@ -437,6 +494,18 @@ fn describe(s: &Session) -> String {
     format!("{what} (signed in {}, last seen {})", s.created_at, s.last_seen_at)
 }
 
+/// What `PROGRAM --version` says (`craftcloud 0.1.1`), for the table.
+fn program_version(bin: &Path) -> String {
+    std::process::Command::new(bin)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "an unknown version".to_owned())
+}
+
 /// Other `craftcloud` processes on this computer (Linux: from `/proc`; elsewhere none are seen).
 fn other_local_clients() -> Vec<String> {
     let Ok(dir) = fs::read_dir("/proc") else { return Vec::new() };
@@ -447,4 +516,30 @@ fn other_local_clients() -> Vec<String> {
             comm.contains("craftcloud").then(|| format!("{} (pid {pid})", comm.trim()))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::options;
+
+    fn bins(args: &[&str]) -> (Option<PathBuf>, Option<PathBuf>) {
+        let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+        let o = options(&args).unwrap().unwrap();
+        let (laptop, studio) = o.bins();
+        (laptop.cloned(), studio.cloned())
+    }
+
+    /// A mixed pair: each client can run a program of its own (an older release on one side).
+    #[test]
+    fn each_client_can_run_its_own_program() {
+        let p = |s: &str| Some(PathBuf::from(s));
+        assert_eq!(bins(&[]), (None, None), "no option: this tree's build on both");
+        assert_eq!(bins(&["--bin", "new"]), (p("new"), p("new")), "--bin: the same on both");
+        assert_eq!(bins(&["--bin-laptop", "old", "--bin-studio", "new"]), (p("old"), p("new")));
+        assert_eq!(bins(&["--bin", "new", "--bin-studio", "old"]), (p("new"), p("old")), "a side's own option wins over --bin");
+        assert_eq!(bins(&["--bin-laptop", "old"]), (p("old"), None), "the other side: this tree's build");
+        assert!(options(&["--bin-studio".to_owned()]).is_err(), "needs a value");
+    }
 }

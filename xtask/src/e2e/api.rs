@@ -11,6 +11,8 @@ pub struct Api {
     server: String,
     agent: ureq::Agent,
     access: String,
+    /// Needed to end the sign-in ([`Api::sign_out`]).
+    refresh: String,
 }
 
 /// A signed-in session on the account (a browser, or a client signed in with the device flow).
@@ -78,7 +80,8 @@ impl Api {
         let (status, body) = post(&agent, &format!("{server}/api/auth/login"), None, &creds, "signing in")?;
         let access = body["access_token"].as_str().filter(|_| status == 200).map(str::to_owned);
         let access = access.ok_or_else(|| format!("signing in as CRAFTCLOUD_TEST_USER answered {status} (check the user and password)"))?;
-        Ok(Self { server, agent, access })
+        let refresh = body["refresh_token"].as_str().unwrap_or_default().to_owned();
+        Ok(Self { server, agent, access, refresh })
     }
 
     fn get(&self, path: &str) -> Result<(u16, Value), String> {
@@ -158,9 +161,18 @@ impl Api {
         let _ = self.agent.delete(url).header("Authorization", format!("Bearer {}", self.access)).call();
     }
 
-    /// Ends the password sign-in.
+    /// Ends a session of the account on the server (admins only), as Admin › Users does.
+    pub fn revoke(&self, id: &str) -> bool {
+        let url = format!("{}/api/admin/sessions/{}", self.server, encode(id));
+        let resp = self.agent.delete(url).header("Authorization", format!("Bearer {}", self.access)).call();
+        answer(resp, "ending a session").is_ok_and(|(status, _)| (200..300).contains(&status))
+    }
+
+    /// Ends the password sign-in. OxiCloud finds the session to end by its refresh token: a logout
+    /// without it answers 401 and leaves the session signed in.
     pub fn sign_out(&self) {
-        let _ = post(&self.agent, &format!("{}/api/auth/logout", self.server), Some(&self.access), &json!({}), "signing out");
+        let body = json!({"refresh_token": self.refresh});
+        let _ = post(&self.agent, &format!("{}/api/auth/logout", self.server), Some(&self.access), &body, "signing out");
     }
 }
 

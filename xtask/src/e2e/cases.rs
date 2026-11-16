@@ -16,7 +16,7 @@ const LAPTOP: Who = Who::Laptop;
 const STUDIO: Who = Who::Studio;
 
 pub fn all(run: &mut Run) {
-    let cases: [(&str, Case); 19] = [
+    let cases: [(&str, Case); 27] = [
         ("create Laptop → Studio", create_on_laptop),
         ("create Studio → Laptop", create_on_studio),
         ("edit Laptop → Studio", edit_on_laptop),
@@ -33,6 +33,14 @@ pub fn all(run: &mut Run) {
         ("delete a folder Laptop → Studio", delete_folder),
         ("the deleted folder is in the cloud trash as one item (REST)", folder_in_trash),
         ("conflict: both edits kept, a conflict copy on both sides", conflict),
+        ("conflict, the Studio syncing first: both edits kept, a conflict copy on both sides", conflict_studio_first),
+        ("delete a folder Studio → Laptop", delete_folder_on_studio),
+        ("the folder the Studio deleted is in the cloud trash as one item (REST)", studio_folder_in_trash),
+        ("a version the Laptop kept is listed and restored by the Studio", version_laptop_to_studio),
+        ("a version the Studio kept is listed and restored by the Laptop", version_studio_to_laptop),
+        ("names Windows can't have, Laptop → Studio: synced, never taken as deleted", windows_names_from_laptop),
+        ("names Windows can't have, Studio → Laptop: synced, never taken as deleted", windows_names_from_studio),
+        ("leftovers (part files, .craft_tmp, .craftcloud/) stay with the client that left them", leftovers),
         ("T-063: notes.tmp stays local, the projekt.tmp/ folder syncs", temp_names),
         ("T-064: projekt.tmp/ and notes.tmp still there after 3 more pass pairs", temp_names_stay),
         ("the cloud, the Laptop and the Studio hold the same files at the end", same_everywhere),
@@ -235,24 +243,31 @@ fn delete_folder(run: &mut Run) -> Result<String, String> {
 }
 
 fn folder_in_trash(run: &mut Run) -> Result<String, String> {
+    folder_trashed_whole(run, "Été")
+}
+
+/// `folder` (at the top of the run's folder) is in the cloud's trash as one item, not file by file.
+fn folder_trashed_whole(run: &Run, folder: &str) -> Result<String, String> {
     let items = trashed(run)?;
-    let folder = items.iter().any(|(p, folder)| p == "Été" && *folder);
-    let loose = items.iter().any(|(p, _)| p.starts_with("Été/"));
-    match (folder, loose) {
+    let whole = items.iter().any(|(p, is_folder)| p == folder && *is_folder);
+    let loose = items.iter().any(|(p, _)| p.starts_with(&format!("{folder}/")));
+    match (whole, loose) {
         (true, false) => Ok(String::new()),
-        (true, true) => Err("Été is in the trash, but so are files from it, one by one".to_owned()),
-        (false, _) => Err(format!("no folder Été in the trash; the run's trashed items: {:?}", items.iter().map(|(p, _)| p).collect::<Vec<_>>())),
+        (true, true) => Err(format!("{folder} is in the trash, but so are files from it, one by one")),
+        (false, _) => {
+            Err(format!("no folder {folder} in the trash; the run's trashed items: {:?}", items.iter().map(|(p, _)| p).collect::<Vec<_>>()))
+        }
     }
 }
 
-/// The files at the top of the run's folder whose names start with `conf`, with their contents.
-fn conf_files(run: &Run, who: Who) -> Vec<(String, String)> {
+/// The files at the top of the run's folder whose names start with `stem`, with their contents.
+fn files_starting(run: &Run, who: Who, stem: &str) -> Vec<(String, String)> {
     let Ok(dir) = fs::read_dir(run.path(who, "")) else { return Vec::new() };
     let mut out: Vec<(String, String)> = dir
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            name.starts_with("conf").then(|| (name, fs::read_to_string(e.path()).unwrap_or_default()))
+            name.starts_with(stem).then(|| (name, fs::read_to_string(e.path()).unwrap_or_default()))
         })
         .collect();
     out.sort();
@@ -260,27 +275,200 @@ fn conf_files(run: &Run, who: Who) -> Vec<(String, String)> {
 }
 
 fn conflict(run: &mut Run) -> Result<String, String> {
-    write(run, LAPTOP, "conf.txt", b"base")?;
-    run.pair(LAPTOP);
-    has(run, STUDIO, "conf.txt", "base")?;
-    write(run, LAPTOP, "conf.txt", b"Laptop's edit")?;
-    write(run, STUDIO, "conf.txt", b"Studio's edit")?;
-    run.sync(LAPTOP);
-    run.sync(STUDIO);
-    run.sync(LAPTOP);
+    conflict_between(run, "conf", LAPTOP)
+}
+
+fn conflict_studio_first(run: &mut Run) -> Result<String, String> {
+    conflict_between(run, "clash", STUDIO)
+}
+
+/// Both clients edit `<stem>.txt` before syncing, `first` syncing first: each side ends with the
+/// file and one conflict copy, holding both edits.
+fn conflict_between(run: &mut Run, stem: &str, first: Who) -> Result<String, String> {
+    let file = format!("{stem}.txt");
+    write(run, first, &file, b"base")?;
+    run.pair(first);
+    has(run, first.other(), &file, "base")?;
+    write(run, LAPTOP, &file, b"Laptop's edit")?;
+    write(run, STUDIO, &file, b"Studio's edit")?;
+    run.sync(first);
+    run.sync(first.other());
+    run.sync(first);
     let mut copy = String::new();
     for who in [LAPTOP, STUDIO] {
-        let files = conf_files(run, who);
+        let files = files_starting(run, who, stem);
         let names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
         let mut contents: Vec<&str> = files.iter().map(|(_, c)| c.as_str()).collect();
         contents.sort_unstable();
         let conflict_copy = names.iter().find(|n| n.contains(" (conflict "));
-        if files.len() != 2 || !names.contains(&"conf.txt") || conflict_copy.is_none() || contents != ["Laptop's edit", "Studio's edit"] {
+        if files.len() != 2 || !names.contains(&file.as_str()) || conflict_copy.is_none() || contents != ["Laptop's edit", "Studio's edit"] {
             return Err(format!("on {}: {files:?}", name(who)));
         }
         copy = conflict_copy.map(|n| (*n).to_owned()).unwrap_or_default();
     }
     Ok(copy)
+}
+
+fn delete_folder_on_studio(run: &mut Run) -> Result<String, String> {
+    write(run, STUDIO, "Atelier/a.txt", b"a")?;
+    write(run, STUDIO, "Atelier/sub/b.txt", b"b")?;
+    run.pair(STUDIO);
+    has(run, LAPTOP, "Atelier/sub/b.txt", "b")?;
+    let path = run.path(STUDIO, "Atelier");
+    fs::remove_dir_all(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    run.pair(STUDIO);
+    gone(run, LAPTOP, "Atelier").map(|()| String::new())
+}
+
+fn studio_folder_in_trash(run: &mut Run) -> Result<String, String> {
+    folder_trashed_whole(run, "Atelier")
+}
+
+fn version_laptop_to_studio(run: &mut Run) -> Result<String, String> {
+    version_across(run, LAPTOP)
+}
+
+fn version_studio_to_laptop(run: &mut Run) -> Result<String, String> {
+    version_across(run, STUDIO)
+}
+
+/// The versions of a file in the run's folder, as `versions PATH --json` on `who` lists them.
+fn versions(run: &mut Run, who: Who, rel: &str) -> Result<Vec<serde_json::Value>, String> {
+    let path = format!("{}/{rel}", run.cloud);
+    Ok(run.cli_json(who, &["versions", &path])?.as_array().cloned().unwrap_or_default())
+}
+
+/// `writer` overwrites a synced file, so its sync keeps the old content as a version in
+/// `.craftcloud/versions/`; the other client lists that version and restores it with its own
+/// program; both sides end with the old content, no conflict copy, and the overwritten content kept
+/// as a version too (listed by the writer).
+fn version_across(run: &mut Run, writer: Who) -> Result<String, String> {
+    let reader = writer.other();
+    let stem = format!("ver-{}", name(writer).to_lowercase());
+    let file = format!("{stem}.txt");
+    write(run, writer, &file, b"first")?;
+    run.pair(writer);
+    has(run, reader, &file, "first")?;
+    write(run, writer, &file, b"second, longer")?;
+    run.pair(writer);
+    has(run, reader, &file, "second, longer")?;
+    let listed = versions(run, reader, &file)?;
+    let kept = listed
+        .iter()
+        .find(|v| v["size"].as_u64() == Some(5))
+        .ok_or_else(|| format!("{} lists no 5-byte version of {file} (the content {} replaced): {listed:?}", name(reader), name(writer)))?;
+    let n = kept["n"].as_u64().map(|n| n.to_string()).ok_or_else(|| format!("a version without n: {kept}"))?;
+    let path = format!("{}/{file}", run.cloud);
+    run.cli_json(reader, &["versions", &path, "restore", &n])?;
+    run.pair(reader);
+    for who in [LAPTOP, STUDIO] {
+        has(run, who, &file, "first")?;
+        let copies = files_starting(run, who, &stem);
+        if copies.len() != 1 {
+            return Err(format!("on {}: {copies:?}", name(who)));
+        }
+    }
+    let after = versions(run, writer, &file)?;
+    if !after.iter().any(|v| v["size"].as_u64() == Some(14)) {
+        return Err(format!("{} lists no version with the restored-over content: {after:?}", name(writer)));
+    }
+    Ok(format!("{} versions after the restore", after.len()))
+}
+
+/// Names Windows can't have (`a:b.txt`, `what?.md`, `CON.txt`, `trailing.`), a folder named so,
+/// and two names that differ only in case. Linux and macOS sync them; a Windows client leaves them
+/// alone (0.2.0), which must never read as "deleted there".
+const WINDOWS_NAMES: [&str; 7] = ["a:b.txt", "what?.md", "CON.txt", "Nul.log", "trailing.", "Report.txt", "report.txt"];
+
+fn windows_names_from_laptop(run: &mut Run) -> Result<String, String> {
+    windows_names(run, LAPTOP, "winL")
+}
+
+fn windows_names_from_studio(run: &mut Run) -> Result<String, String> {
+    windows_names(run, STUDIO, "winS")
+}
+
+/// `from` makes the names in `folder`, they reach the other side; the other side edits one; after
+/// two more pass pairs from each side all are still on both sides and in the cloud.
+fn windows_names(run: &mut Run, from: Who, folder: &str) -> Result<String, String> {
+    let mut all: Vec<(String, String)> = WINDOWS_NAMES.iter().map(|n| (format!("{folder}/{n}"), format!("{n} from {}", name(from)))).collect();
+    all.push((format!("{folder}/dots./inside.txt"), "inside a folder Windows can't have".to_owned()));
+    for (rel, content) in &all {
+        write(run, from, rel, content.as_bytes())?;
+    }
+    run.pair(from);
+    for (rel, content) in &all {
+        has(run, from.other(), rel, content)?;
+    }
+    let edited = format!("{folder}/CON.txt");
+    write(run, from.other(), &edited, b"edited on the other side")?;
+    run.pair(from.other());
+    if let Some(entry) = all.iter_mut().find(|(rel, _)| *rel == edited) {
+        entry.1 = "edited on the other side".to_owned();
+    }
+    for _ in 0..2 {
+        run.pair(from);
+        run.pair(from.other());
+    }
+    for who in [LAPTOP, STUDIO] {
+        for (rel, content) in &all {
+            has(run, who, rel, content)?;
+        }
+    }
+    let mut cloud = BTreeMap::new();
+    cloud_tree(run, folder, 0, &mut cloud)?;
+    let missing: Vec<&str> = all.iter().map(|(rel, _)| rel.as_str()).filter(|rel| !cloud.contains_key(*rel)).collect();
+    if !missing.is_empty() {
+        return Err(format!("not in the cloud: {missing:?}"));
+    }
+    Ok(format!("{} names, on both sides and in the cloud", all.len()))
+}
+
+/// What a client leaves in its sync folder that is never user data: a download's part file, in
+/// the old form (0.1.x: `.<name>.<version>.craftcloud-part`) and the short form 0.2.0 uses for
+/// long names (`.ccpart-<hex>.craftcloud-part`), a Craft app's save in progress (`.craft_tmp`), and
+/// a `.craftcloud/` folder of its own.
+fn leftover_names(who: Who) -> Vec<String> {
+    let w = name(who).to_lowercase();
+    vec![
+        format!(".left-{w}.txt.abc123-1794700000.craftcloud-part"),
+        format!(".ccpart-0123456789abcdef01234567{w}.craftcloud-part"),
+        format!("draft-{w}.craft_tmp"),
+        format!(".craftcloud/stray-{w}.json"),
+    ]
+}
+
+/// Each client plants the leftovers; after pass pairs from both sides none is on the other side
+/// or in the cloud (the run's folder listed with `--all`), each is still where it was left, and
+/// the cloud's own `.craftcloud/` holds no client's sync state.
+fn leftovers(run: &mut Run) -> Result<String, String> {
+    for who in [LAPTOP, STUDIO] {
+        for rel in leftover_names(who) {
+            write(run, who, &rel, b"not user data")?;
+        }
+    }
+    run.pair(LAPTOP);
+    run.pair(STUDIO);
+    for who in [LAPTOP, STUDIO] {
+        for rel in leftover_names(who) {
+            has(run, who, &rel, "not user data").map_err(|e| format!("{e} (taken from the client that left it)"))?;
+            gone(run, who.other(), &rel)?;
+        }
+    }
+    let cloud = run.cloud.clone();
+    let listed = run.cli_json(LAPTOP, &["ls", &cloud, "--all"])?;
+    let names: Vec<&str> = listed.as_array().map(Vec::as_slice).unwrap_or_default().iter().filter_map(|i| i["name"].as_str()).collect();
+    let leaked: Vec<&&str> =
+        names.iter().filter(|n| n.starts_with(".left-") || n.starts_with(".ccpart-") || n.ends_with(".craft_tmp") || **n == ".craftcloud").collect();
+    if !leaked.is_empty() {
+        return Err(format!("in the cloud's run folder: {leaked:?}"));
+    }
+    let own = run.cli_json(LAPTOP, &["ls", ".craftcloud"])?;
+    let own: Vec<&str> = own.as_array().map(Vec::as_slice).unwrap_or_default().iter().filter_map(|i| i["name"].as_str()).collect();
+    if let Some(state) = own.iter().find(|n| n.contains("state") || n.ends_with(".json")) {
+        return Err(format!("a client's state reached the cloud: .craftcloud/{state} (the cloud's .craftcloud/ holds {own:?})"));
+    }
+    Ok(format!("the cloud's .craftcloud/ holds {own:?}"))
 }
 
 fn temp_names(run: &mut Run) -> Result<String, String> {
@@ -323,8 +511,8 @@ fn temp_names_stay(run: &mut Run) -> Result<String, String> {
     in_cloud(run, &["projekt.tmp"], &["notes.tmp"]).map(|()| String::new())
 }
 
-/// Files (path → size) under `dir` on this computer, without CraftCloud's own folder and the
-/// temporary-looking files the sync leaves alone.
+/// Files (path → size) under `dir` on this computer, without CraftCloud's own folder, part files,
+/// Craft apps' saves in progress and the temporary-looking files the sync leaves alone.
 fn local_tree(dir: &Path, prefix: &str, depth: u32, out: &mut BTreeMap<String, u64>) {
     let Ok(entries) = fs::read_dir(dir) else { return };
     for e in entries.flatten() {
@@ -332,7 +520,7 @@ fn local_tree(dir: &Path, prefix: &str, depth: u32, out: &mut BTreeMap<String, u
         let rel = format!("{prefix}{name}");
         match e.metadata() {
             Ok(m) if m.is_dir() && name != ".craftcloud" && depth < 16 => local_tree(&e.path(), &format!("{rel}/"), depth + 1, out),
-            Ok(m) if m.is_file() && !name.ends_with(".tmp") => {
+            Ok(m) if m.is_file() && ![".tmp", ".craftcloud-part", ".craft_tmp"].iter().any(|s| name.ends_with(s)) => {
                 out.insert(rel, m.len());
             }
             _ => {}
