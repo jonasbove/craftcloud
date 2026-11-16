@@ -2,8 +2,8 @@
 
 **Stage: early alpha** · version 0.1.1 (fixes for 0.1.0, the first release: a published image and desktop builds)
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-14 · **Change:** major (first version, built from the
-> README's roadmap, the docs and the git history up to `1a37a72`)
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (M9, any WebDAV server as the
+> storage)
 
 CraftCloud is a self-hosted cloud for the Craft apps: the unmodified OxiCloud server in a Docker image, CraftCloud's
 own web frontend (Rust, egui, WebAssembly), a desktop sync client with a command line, and a small admin service.
@@ -45,12 +45,13 @@ backup of anything you sync with it.
 | M0 Server image | OxiCloud unmodified behind Caddy, CraftCloud's settings service, slim and `-apps` images, NixOS module | Done |
 | M1 Sync client | Device sign-in, a two-way sync folder with guarded writes, versions and conflict copies, tray | Done; hardening continues from testers' reports |
 | M2 Web frontend | Setup, sign-in, device approval, home, the file browser, admin, single sign-on | Done, except the share-link sheet |
-| M3 Command line and integration | `craftcloud <command>` for files, sync, sharing, versions and admin; the contract the Craft apps and the launcher can use | Done; the Windows terminal launcher is untried on Windows |
+| M3 Command line and integration | `craftcloud <command>` for files, sync, sharing, versions and admin; the contract the Craft apps and the launcher can use | Done; the command line prints in Windows terminals too (tried on Windows 11) |
 | M4 First release | Published images, a tagged desktop release, release notes | Not started |
 | M5 Craft web apps in the browser | Open a cloud file in its Craft web app from the web file browser and save it back (`craft-web-host`, the shim for the others) | Serving and gating done; the editor page and the shim not built |
 | M6 Files on demand | Placeholders that download when opened (Windows, Linux, macOS) | Design only |
 | M7 Signed desktop builds | Signed and notarized macOS builds, signed Windows builds | Not started; v1 is unsigned |
 | M8 Native NixOS deployment | OxiCloud, Caddy and craftcloud-admin as NixOS services without Docker, with the Craft web apps built by Nix from `apps.toml` | Not started; the NixOS module runs the Docker image today |
+| M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Not started; tried by hand against Nextcloud, ownCloud and OpenCloud |
 
 ## Current focus
 
@@ -67,24 +68,36 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
    `packaging/arch/`, with [RELEASE-NOTES.md](RELEASE-NOTES.md).
 2. **Craft web apps in the browser:** the page that frames an app and talks `craft-web-host`, and the shim for the
    apps without it ([CRAFT-INTEGRATION.md § 6](CRAFT-INTEGRATION.md#6-the-craft-web-apps-in-the-browser)).
-4. **macOS deep links:** an Apple Event (`kAEGetURL`) handler, so a `craftcloud://` click opens the file.
-5. **The command line on Windows:** try `craftcloud.com`, the MSI's PATH entry and its uninstall on Windows 11.
-6. **Files on demand,** in the stages of [FILES-ON-DEMAND.md § 6](FILES-ON-DEMAND.md#6-staged-plan).
-7. **Upstream:** the drafts in [UPSTREAM.md](UPSTREAM.md) and server-side versioning for OxiCloud, filed only after
 3. **macOS deep links:** an Apple Event (`kAEGetURL`) handler, so a `craftcloud://` click opens the file.
-4. **The command line on Windows:** a console build, so release builds print to the terminal.
-5. **Files on demand,** in the stages of [FILES-ON-DEMAND.md § 6](FILES-ON-DEMAND.md#6-staged-plan).
-6. **Upstream:** the drafts in [UPSTREAM.md](UPSTREAM.md) and server-side versioning for OxiCloud, filed only after
+4. **Files on demand,** in the stages of [FILES-ON-DEMAND.md § 6](FILES-ON-DEMAND.md#6-staged-plan).
+5. **Upstream:** the drafts in [UPSTREAM.md](UPSTREAM.md) and server-side versioning for OxiCloud, filed only after
    they are agreed.
-7. **Unmaintained D-Bus crates:** drop the `deny.toml` ignores for zvariant, zvariant_derive and zbus_names
+6. **Unmaintained D-Bus crates:** drop the `deny.toml` ignores for zvariant, zvariant_derive and zbus_names
    (RUSTSEC-2026-0370 to 0372) once egui (accesskit) and keyring move to zbus 6.
-9. **A native NixOS deployment (M8):** today `nix/module.nix` runs the Docker image, which already holds the Craft
+7. **A native NixOS deployment (M8):** today `nix/module.nix` runs the Docker image, which already holds the Craft
    web apps. A Nix derivation (`nix/apps.nix`) would read `apps.toml` with `builtins.fromTOML`, fetch each pinned
    release zip with `fetchurl` and its sha256, unpack and precompress it, and write `apps.json`: reproducible,
    cached in the Nix store, and no network during the build. It is worth doing together with running OxiCloud,
    Caddy and `craftcloud-admin` as NixOS services, not while the module runs the image, since two ways of
    fetching the apps would drift apart. `scripts/bump-apps` (moving to `cargo xtask` in 0.2.0) stays the way to
    move the pins.
+8. **Any WebDAV server as the storage (M9):** the desktop client and the command line sync with a WebDAV server of
+   the person's choosing, not only OxiCloud. First the sync engine moves behind a storage layer that says what the
+   server guarantees, with OxiCloud as its first driver; then generic WebDAV:
+   - **A check on connect.** In `.craftcloud/probe/` the client tries what the sync relies on: create only if absent
+     (`If-None-Match: *`), overwrite only if unchanged (`If-Match`, a 412 when stale), an ETag that changes on every
+     write and survives a `MOVE`, folder ETags that follow their contents, `Depth: infinity`, and what a `PUT` into a
+     missing folder answers.
+   - **What the server lacks, the client makes up for.** A WebDAV `DELETE` is taken as permanent, so a delete is a
+     `MOVE` into `.craftcloud/trash/`; versions stay in `.craftcloud/versions/`; where folder ETags follow their
+     contents, unchanged folders are skipped.
+   - **Never a weaker two-way sync.** A server that ignores either guarded write gets a one-way or read-only mode,
+     never two-way. Servers differ here, so the check runs against each, not once per product.
+   - **Known servers add what they have.** Nextcloud and ownCloud: their own trash, versions and file ids, and
+     Nextcloud's sign-in in the browser (Login Flow v2). Elsewhere the person signs in with an app password made on
+     the server, never the account's password.
+   - Desktop and command line only; the web frontend stays with OxiCloud. It changes how the sync decides, so it
+     comes with an "upgrade all devices together" entry in [RELEASE-NOTES.md](RELEASE-NOTES.md).
 
 ## Progress log
 
@@ -252,3 +265,4 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 |---|---|---|
 | 2026-11-14 | major | First version: the README's roadmap moves here, rebuilt from the docs and the git history. |
 | 2026-11-15 | minor | M8, a native NixOS deployment, with the Craft web apps built by Nix from `apps.toml`. |
+| 2026-11-16 | minor | M9, any WebDAV server as the storage; the Upcoming list put back in order after a merge, without the Windows command line, which is done. |
