@@ -124,7 +124,7 @@ jobs:
             echo '```'
             if [ "$status" -ne 0 ]; then
               echo
-              echo 'Run `cargo xtask bump-apps` in a pull request of its own (docs/RELEASING.md).'
+              echo 'Run cargo xtask bump-apps in a pull request of its own (docs/RELEASING.md).'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$status" -ne 0 ]; then
