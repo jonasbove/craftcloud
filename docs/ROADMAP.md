@@ -101,6 +101,11 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-16: Tests: `cargo xtask e2e-web` runs the web frontend in headless Chromium (chromedriver, through a
+  small WebDriver client of its own over `ureq`; no new dependency) against a fresh server: first-run setup, sign-out and sign-in with the session cookie's flags,
+  an upload, a share link opened in a second, signed-out browser and downloaded there, a device code approved on
+  `/device`, a new user on Admin › Users with the CSRF header, and forged admin writes refused. It works the canvas
+  with the keyboard and checks the server, the cookie jar and the network log ([TESTING.md](TESTING.md)). Not in CI.
 - 2026-11-16: Sync: one file is in one move at most. A file moved here onto a synced file that was renamed in the
   cloud was taken both as that move and as the rename (two moves through one path); the move here now wins and the
   renamed cloud file comes down as new. The other way round (a file moved onto another in the cloud while that one
