@@ -439,3 +439,47 @@ fn an_edit_follows_a_rename_made_elsewhere() {
     let p = plan(&s, &local(&[("renamed-B.txt", 3, 100)], &[]), &remote(&[("f.txt", "\"h9-2\"", 7)], &[]));
     assert_eq!(p, [Action::MoveRemote { from: "f.txt".into(), to: "renamed-B.txt".into(), etag: "\"h9-2\"".into() }]);
 }
+
+/// Found by the property tests (`properties.rs`), not fixed yet: one changed local file is taken
+/// both as where a file moved to here and as where a file was renamed from in the cloud, so the
+/// plan holds two moves through the same path. Carried out in path order, either the second move
+/// fails and the next cycle uploads over the renamed cloud file (its bytes kept only as a version),
+/// or both run and the two sides keep different bytes under one name, recorded as synced.
+#[test]
+#[ignore = "known bug: one file in two moves (fix in its own pull request)"]
+fn one_file_is_never_two_moves() {
+    // Here: `a.txt` moved onto `B/a.txt`, replacing it. In the cloud: `B/a.txt` renamed to `b.md`.
+    let s = state(&[("a.txt", known("e0", 5, 100)), ("B/a.txt", known("e3", 7, 200))], &["B"]);
+    let l = local(&[("B/a.txt", 5, 100)], &["B"]);
+    let r = remote(&[("a.txt", "e0", 5), ("b.md", "e3", 7)], &["B"]);
+    let p = plan(&s, &l, &r);
+    let moves = |end: fn(&Action) -> Option<&String>| p.iter().filter_map(end).collect::<Vec<_>>();
+    let from = moves(|a| match a {
+        Action::MoveRemote { from, .. } | Action::MoveLocal { from, .. } => Some(from),
+        _ => None,
+    });
+    let to = moves(|a| match a {
+        Action::MoveRemote { to, .. } | Action::MoveLocal { to, .. } => Some(to),
+        _ => None,
+    });
+    assert!(!to.iter().any(|t| from.contains(t)), "{p:?}");
+}
+
+/// Found by the property tests (`properties.rs`), not fixed yet: when a synced folder is replaced
+/// by a file here, everything touching it is put first, in the order removals, folders to make,
+/// the rest. A file moved out of that folder then comes after the folder's removal (which finds it
+/// not empty and does nothing) and before the folder it moves into is made (so the move fails).
+/// Nothing is lost, but it takes extra passes, with errors in the activity list on the way.
+#[test]
+#[ignore = "known bug: a replaced folder is removed before files are moved out of it (fix in its own pull request)"]
+fn a_replaced_folder_is_emptied_before_it_goes() {
+    // Here: `A/S/S` moved to the new folder `B`, then a file saved as `A/S` where the folder was.
+    let s = state(&[("A/S/S", known("e0", 3, 100))], &["A", "A/S"]);
+    let l = local(&[("A/S", 5, 200), ("B/a.txt", 3, 100)], &["A", "B"]);
+    let r = remote(&[("A/S/S", "e0", 3)], &["A", "A/S"]);
+    let p = plan(&s, &l, &r);
+    let at = |want: &Action| p.iter().position(|a| a == want).unwrap_or(usize::MAX);
+    let moved = at(&Action::MoveRemote { from: "A/S/S".into(), to: "B/a.txt".into(), etag: "e0".into() });
+    assert!(at(&Action::MakeRemoteFolder("B".into())) < moved, "{p:?}");
+    assert!(moved < at(&Action::RemoveRemoteFolder("A/S".into())), "{p:?}");
+}

@@ -2,8 +2,8 @@
 
 **Stage: early alpha** · version 0.1.1 (fixes for 0.1.0, the first release: a published image and desktop builds)
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (M9, any WebDAV server as the
-> storage)
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (property tests of the sync
+> decisions)
 
 CraftCloud is a self-hosted cloud for the Craft apps: the unmodified OxiCloud server in a Docker image, CraftCloud's
 own web frontend (Rust, egui, WebAssembly), a desktop sync client with a command line, and a small admin service.
@@ -106,6 +106,14 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   signed out and waiting for you (mass delete) share the paused icon, so the menu said "Resume syncing" and the pick
   paused. "Resume syncing" now shows only while paused, as in the frame (`tray.rs`, `MenuState`, tested). Not in
   the frame yet: the tray dot stays green for "1 conflict" and "N not synced", where the header's dot is amber.
+- 2026-11-16: Sync: property tests of the decisions (`crates/core/src/reconcile/properties.rs`, proptest). Generated
+  states, scans and listings check the rules in AGENTS.md: only unchanged synced files are deleted, never on a side
+  that changed; writes name the version they replace; changes in two places become a conflict; a folder goes to
+  the trash whole only as it was synced; mass deletes wait; a place held as last synced (unreadable, or a missing
+  sync folder) is never deleted, moved away or forgotten in the cloud; a skipped name is never planned; and plans
+  carried out cycle by cycle settle with both sides the same and no change lost. They found two rare plans, not
+  fixed yet (each with an ignored test in `reconcile/tests.rs`): one file taken as two moves, and a folder replaced
+  by a file removed before files are moved out of it.
 - 2026-11-16: Roadmap: M9, sync with any WebDAV server (Nextcloud, ownCloud, a NAS …), planned for 0.2.0 on the
   branch `feature/webdav-support`. The Windows command line (`craftcloud.com`, the PATH entry, the uninstall's
   cleanup) leaves Upcoming: it was tried on Windows 11.

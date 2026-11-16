@@ -5,6 +5,7 @@ The layers, from the fastest to the slowest:
 | What | Runs | Needs |
 |---|---|---|
 | `cargo xtask ci` | fmt check, clippy (`-D warnings`), the workspace tests, the wasm build: the gate before every commit, and what CI runs | nothing |
+| `PROPTEST_CASES=50000 cargo test -p craftcloud-core properties` | the property tests of the sync decisions with more generated cases than the gate's 256 | nothing |
 | `crates/native/tests/live.rs` | the sync engine against a real server: two computers in one process, renames, folder moves, deletes, quota, resumed downloads, a silent connection | a throwaway server |
 | `apps/craftcloud/tests/cli_live.rs` | every command of the command line against a real server | a throwaway server |
 | `cargo xtask e2e-sync` | two separate clients, the built `craftcloud` program, syncing through a server pass by pass: the smoke test before a release or after a sync change | any server, and an account to test with |
