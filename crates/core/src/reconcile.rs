@@ -642,3 +642,6 @@ pub fn original_of_conflict(path: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod properties;

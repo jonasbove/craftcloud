@@ -21,3 +21,8 @@ craft-xml = { workspace = true }
 # Share-link expiry (presets, dates, times). No time zone database: the web passes the browser's
 # offset, and nothing here reads the system clock (that would panic on wasm32).
 jiff = { version = "0.2", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# Property tests of the sync decisions (src/reconcile/properties.rs). Without the default `fork`
+# and `timeout` features: no subprocesses, fewer crates.
+proptest = { version = "1.12", default-features = false, features = ["std"] }
