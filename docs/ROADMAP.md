@@ -2,8 +2,8 @@
 
 **Stage: early alpha** · version 0.1.1 (fixes for 0.1.0, the first release: a published image and desktop builds)
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (property tests of the sync
-> decisions)
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (one file is in one move at
+> most)
 
 CraftCloud is a self-hosted cloud for the Craft apps: the unmodified OxiCloud server in a Docker image, CraftCloud's
 own web frontend (Rust, egui, WebAssembly), a desktop sync client with a command line, and a small admin service.
@@ -101,6 +101,13 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-16: Sync: one file is in one move at most. A file moved here onto a synced file that was renamed in the
+  cloud was taken both as that move and as the rename (two moves through one path); the move here now wins and the
+  renamed cloud file comes down as new. The other way round (a file moved onto another in the cloud while that one
+  was renamed here), the cloud file is no longer moved to the new name, where the next pass downloaded it over the
+  renamed file. `pair_moves` in `crates/core/src/reconcile.rs`; plan tests in `reconcile/tests.rs`, end-state
+  tests and the properties (no more exclusion, 50 000 cases) in `reconcile/properties.rs`. Upgrade all devices
+  together.
 - 2026-11-16: Desktop: the tray checked item by item against the v2 tray frame (#25). Order, labels, separators,
   the status line, Recent files, the folder-missing items and the four icon looks matched; the pause item didn't:
   signed out and waiting for you (mass delete) share the paused icon, so the menu said "Resume syncing" and the pick

@@ -257,11 +257,17 @@ fn same_etag(a: &str, b: &str) -> bool {
 /// - In the cloud: a synced file is gone and a new one has its ETag (OxiCloud's ETag is the
 ///   content hash and time, and a `MOVE` keeps it) → [`Action::MoveLocal`].
 ///
-/// Only one-to-one matches pair; anything ambiguous stays a delete plus a new file.
+/// Only one-to-one matches pair; anything ambiguous stays a delete plus a new file. Each file is
+/// in one move at most: a local file that is where a synced file moved to here is that file, not
+/// an edit of the one synced at its path, so that one's rename in the cloud is not followed here
+/// (its new name then comes down as a new file, and both are kept). The same the other way round:
+/// a cloud file with the ETag of another synced file (gone from its own place) is that file moved
+/// onto it, not an edit, so it isn't moved along with a rename made here.
 fn pair_moves(state: &State, local: &Tree<LocalFile>, remote: &Tree<RemoteFile>, files: Vec<Action>) -> Vec<Action> {
     let unique = |mut v: Vec<String>| if v.len() == 1 { v.pop() } else { None };
     let mut moves: BTreeMap<String, Action> = BTreeMap::new();
     let mut taken: BTreeSet<String> = BTreeSet::new();
+    // Moves here first, so that their new names are known before a cloud rename claims one.
     for action in &files {
         match action {
             Action::DeleteRemote { path: from, etag } => {
@@ -273,26 +279,35 @@ fn pair_moves(state: &State, local: &Tree<LocalFile>, remote: &Tree<RemoteFile>,
                     moves.insert(from.clone(), Action::MoveRemote { from: from.clone(), to, etag: etag.clone() });
                 }
             }
-            // Renamed in the cloud; here it's unchanged (a delete) or changed meanwhile (an upload
-            // of a file that's gone there): either way it's renamed here too, and a change then
-            // goes up under the new name.
-            Action::DeleteLocal(from) | Action::UploadNew(from) if !remote.files.contains_key(from) => {
-                let Some(k) = state.files.get(from) else { continue };
-                let same = |a: &Action| matches!(a, Action::Download(p) if !state.files.contains_key(p) && remote.files.get(p).is_some_and(|r| same_etag(&r.etag, &k.etag)));
-                let Some(to) = unique(files.iter().filter(|a| same(a)).map(|a| action_path(a).to_owned()).collect()) else { continue };
-                if taken.insert(to.clone()) {
-                    moves.insert(from.clone(), Action::MoveLocal { from: from.clone(), to });
-                }
-            }
             // Renamed here while it changed in the cloud: moved there too (the cloud's version, by
-            // its ETag now), and the change then comes down under the new name.
+            // its ETag now), and the change then comes down under the new name. Not when the cloud
+            // file there is another synced file moved onto it (its ETag, gone from its own place).
             Action::Download(from) if !local.files.contains_key(from) => {
                 let (Some(k), Some(r)) = (state.files.get(from), remote.files.get(from)) else { continue };
+                if state.files.iter().any(|(p, other)| p != from && same_etag(&other.etag, &r.etag) && !remote.files.contains_key(p)) {
+                    continue;
+                }
                 let same =
                     |a: &Action| matches!(a, Action::UploadNew(p) if local.files.get(p).is_some_and(|l| l.size == k.size && l.mtime == k.mtime));
                 let Some(to) = unique(files.iter().filter(|a| same(a)).map(|a| action_path(a).to_owned()).collect()) else { continue };
                 if taken.insert(to.clone()) {
                     moves.insert(from.clone(), Action::MoveRemote { from: from.clone(), to, etag: r.etag.clone() });
+                }
+            }
+            _ => {}
+        }
+    }
+    for action in &files {
+        match action {
+            // Renamed in the cloud; here it's unchanged (a delete) or changed meanwhile (an upload
+            // of a file that's gone there): either way it's renamed here too, and a change then
+            // goes up under the new name. Not when the file here is one moved there from elsewhere.
+            Action::DeleteLocal(from) | Action::UploadNew(from) if !remote.files.contains_key(from) && !taken.contains(from) => {
+                let Some(k) = state.files.get(from) else { continue };
+                let same = |a: &Action| matches!(a, Action::Download(p) if !state.files.contains_key(p) && remote.files.get(p).is_some_and(|r| same_etag(&r.etag, &k.etag)));
+                let Some(to) = unique(files.iter().filter(|a| same(a)).map(|a| action_path(a).to_owned()).collect()) else { continue };
+                if taken.insert(to.clone()) {
+                    moves.insert(from.clone(), Action::MoveLocal { from: from.clone(), to });
                 }
             }
             _ => {}

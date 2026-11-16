@@ -440,29 +440,34 @@ fn an_edit_follows_a_rename_made_elsewhere() {
     assert_eq!(p, [Action::MoveRemote { from: "f.txt".into(), to: "renamed-B.txt".into(), etag: "\"h9-2\"".into() }]);
 }
 
-/// Found by the property tests (`properties.rs`), not fixed yet: one changed local file is taken
-/// both as where a file moved to here and as where a file was renamed from in the cloud, so the
-/// plan holds two moves through the same path. Carried out in path order, either the second move
-/// fails and the next cycle uploads over the renamed cloud file (its bytes kept only as a version),
-/// or both run and the two sides keep different bytes under one name, recorded as synced.
+/// Found by the property tests (`properties.rs`): one changed local file was taken both as where a
+/// file moved to here and as where a file was renamed from in the cloud, so the plan held two moves
+/// through the same path. Carried out in path order, either the second move failed and the next
+/// cycle uploaded over the renamed cloud file (its bytes kept only as a version), or both ran and
+/// the two sides kept different bytes under one name, recorded as synced. Now the move here wins
+/// (the file here is the one moved in, not an edit), and the renamed cloud file comes down as new.
 #[test]
-#[ignore = "known bug: one file in two moves (fix in its own pull request)"]
 fn one_file_is_never_two_moves() {
     // Here: `a.txt` moved onto `B/a.txt`, replacing it. In the cloud: `B/a.txt` renamed to `b.md`.
     let s = state(&[("a.txt", known("e0", 5, 100)), ("B/a.txt", known("e3", 7, 200))], &["B"]);
     let l = local(&[("B/a.txt", 5, 100)], &["B"]);
     let r = remote(&[("a.txt", "e0", 5), ("b.md", "e3", 7)], &["B"]);
-    let p = plan(&s, &l, &r);
-    let moves = |end: fn(&Action) -> Option<&String>| p.iter().filter_map(end).collect::<Vec<_>>();
-    let from = moves(|a| match a {
-        Action::MoveRemote { from, .. } | Action::MoveLocal { from, .. } => Some(from),
-        _ => None,
-    });
-    let to = moves(|a| match a {
-        Action::MoveRemote { to, .. } | Action::MoveLocal { to, .. } => Some(to),
-        _ => None,
-    });
-    assert!(!to.iter().any(|t| from.contains(t)), "{p:?}");
+    assert_eq!(
+        plan(&s, &l, &r),
+        [Action::MoveRemote { from: "a.txt".into(), to: "B/a.txt".into(), etag: "e0".into() }, Action::Download("b.md".into())]
+    );
+}
+
+/// The other way round: a file moved in the cloud onto one renamed here. The cloud file at the old
+/// name is the moved one (its ETag), not an edit of the renamed one, so it isn't moved to the new
+/// name (where the next pass would download it over the renamed file): both are kept.
+#[test]
+fn a_file_moved_onto_in_the_cloud_is_not_followed_to_a_rename_here() {
+    // In the cloud: `a.txt` moved onto `B/a.txt`, replacing it. Here: `B/a.txt` renamed to `b.md`.
+    let s = state(&[("a.txt", known("e0", 5, 100)), ("B/a.txt", known("e3", 7, 200))], &["B"]);
+    let l = local(&[("a.txt", 5, 100), ("b.md", 7, 200)], &["B"]);
+    let r = remote(&[("B/a.txt", "e0", 5)], &["B"]);
+    assert_eq!(plan(&s, &l, &r), [Action::Download("B/a.txt".into()), Action::DeleteLocal("a.txt".into()), Action::UploadNew("b.md".into())]);
 }
 
 /// Found by the property tests (`properties.rs`), not fixed yet: when a synced folder is replaced
