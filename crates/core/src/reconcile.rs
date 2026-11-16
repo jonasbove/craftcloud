@@ -14,6 +14,8 @@
 //! - A rename or move is one move on the other side, never a delete plus a new file: a file is
 //!   paired by size and time (here) or ETag (in the cloud); a whole folder by its files'
 //!   relative paths, see [`folder_moves`] (done before the plan, so the folder keeps its id).
+//!   The one exception: a file moved to where its own folder was, or into a folder in its own
+//!   place, which no single move can do.
 //! - Folders are created on whichever side lacks them, and removed only once empty.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -139,7 +141,8 @@ impl std::fmt::Display for Refusal {
 
 /// The plan, or a refusal when it would delete too much at once. `confirm_deletes` lifts the limit.
 /// Order: folders to create (parents first), then file actions, then empty folders to remove
-/// (deepest first).
+/// (deepest first); a path that is a file on one side and a folder on the other changes that a
+/// little (see `settle_clashes`), so that every action can be done in one pass, in plan order.
 pub fn reconcile(state: &State, local: &Tree<LocalFile>, remote: &Tree<RemoteFile>, confirm_deletes: bool) -> Result<Vec<Action>, Refusal> {
     let paths: BTreeSet<&String> = state.files.keys().chain(local.files.keys()).chain(remote.files.keys()).collect();
     let files: Vec<Action> =
@@ -173,9 +176,14 @@ pub fn reconcile(state: &State, local: &Tree<LocalFile>, remote: &Tree<RemoteFil
 ///   change is as it was at the last sync (a synced folder replaced by a file here while the cloud
 ///   folder is unchanged, a synced file replaced by a folder in the cloud while the local file is
 ///   unchanged, …). The plan then already removes the old one on the unchanged side (a folder as
-///   one trash item); it only has to come first: everything at or under the path is put in the
-///   order removals (files, then folders, deepest first), folders to make, transfers, ahead of the
-///   rest of the plan (the parents are there on both sides, or there would be no clash).
+///   one trash item, or once empty); it only has to go before the new one takes its place, so the
+///   plan keeps its order (folders to make, files, removals) with two changes. A file replaced by
+///   a folder is deleted first of all (a delete needs nothing before it). A folder replaced by a
+///   file is emptied with the rest of the files (moves out of it included, each after the folder
+///   it moves into is made), then removed, its subfolders first, ahead of the other removals; the
+///   file then takes its place, still ahead of the other removals, so a file moved there from a
+///   folder that goes leaves it before it is removed. (The parents are there on both sides, or
+///   there would be no clash.)
 /// - Otherwise both sides changed it (T-029): nothing can be copied across there (a download onto
 ///   a folder, an upload under a file): the local one is set aside as a conflict copy first
 ///   ([`Action::LocalClash`]), and everything at or under the path waits for the next cycle.
@@ -206,19 +214,93 @@ fn settle_clashes(local: &Tree<LocalFile>, remote: &Tree<RemoteFile>, actions: V
         Action::MoveRemote { from, to, .. } | Action::MoveLocal { from, to } => at(set, from) || at(set, to),
         other => at(set, action_path(other)),
     };
+    // A replaced folder goes as a folder (removed once empty, or trashed whole); a replaced file
+    // as a file.
+    let folder_gone = |t: &str| {
+        actions.iter().any(|a| match a {
+            Action::RemoveRemoteFolder(p) | Action::RemoveLocalFolder(p) | Action::DeleteRemoteFolder { path: p, .. } => p == t,
+            _ => false,
+        })
+    };
+    let (folders, files): (Vec<&String>, Vec<&String>) = replacements.iter().copied().partition(|t| folder_gone(t));
+    // The file that takes a replaced folder's place: whatever puts a file there.
+    let takes = |a: &Action| match a {
+        Action::UploadNew(p)
+        | Action::UploadChange { path: p, .. }
+        | Action::Download(p)
+        | Action::Conflict(p)
+        | Action::MoveRemote { to: p, .. }
+        | Action::MoveLocal { to: p, .. } => at(&folders, p),
+        _ => false,
+    };
     let rank = |a: &Action| match a {
-        Action::DeleteRemote { .. } | Action::DeleteLocal(_) | Action::DeleteRemoteFolder { .. } | Action::Forget(_) => 0,
-        Action::RemoveRemoteFolder(_) | Action::RemoveLocalFolder(_) => 1,
-        Action::MakeRemoteFolder(_) | Action::MakeLocalFolder(_) => 2,
-        _ => 3,
+        Action::DeleteRemote { path, .. } | Action::DeleteLocal(path) if files.contains(&path) => 0,
+        Action::MakeRemoteFolder(_) | Action::MakeLocalFolder(_) => 1,
+        Action::RemoveRemoteFolder(f) | Action::RemoveLocalFolder(f) if at(&folders, f) => 3,
+        _ if takes(a) => 4,
+        Action::RemoveRemoteFolder(_) | Action::RemoveLocalFolder(_) => 5,
+        _ => 2,
     };
     let mut out: Vec<Action> = clashes.iter().map(|t| Action::LocalClash((*t).clone())).collect();
-    let (mut first, rest): (Vec<Action>, Vec<Action>) =
-        actions.into_iter().filter(|a| !touches(&clashes, a)).partition(|a| touches(&replacements, a));
-    // Stable: each kind keeps its order (parents before children, the deepest folder removed first).
-    first.sort_by_key(rank);
-    out.extend(first);
+    let (dropped, kept): (Vec<Action>, Vec<Action>) = actions.into_iter().partition(|a| touches(&clashes, a));
+    // A folder that a set-aside path was going to leave (a move out of it, a delete in it) isn't
+    // emptied this cycle: its removal waits too.
+    let left = |f: &str| {
+        dropped.iter().any(|a| match a {
+            Action::MoveRemote { from: p, .. }
+            | Action::MoveLocal { from: p, .. }
+            | Action::DeleteRemote { path: p, .. }
+            | Action::DeleteLocal(p) => p.starts_with(&format!("{f}/")),
+            _ => false,
+        })
+    };
+    let mut rest: Vec<Action> =
+        kept.into_iter().filter(|a| !matches!(a, Action::RemoveRemoteFolder(f) | Action::RemoveLocalFolder(f) if left(f))).collect();
+    // Stable: each kind keeps its order (parents made before children, the deepest folder removed
+    // first).
+    rest.sort_by_key(rank);
+    let first = rest.iter().position(|a| rank(a) >= 3).unwrap_or(rest.len());
+    let after = rest.iter().position(|a| rank(a) >= 5).unwrap_or(rest.len());
+    let tail = rest.split_off(after);
+    let swaps = rest.split_off(first);
     out.extend(rest);
+    out.extend(swap_in(swaps));
+    out.extend(tail);
+    out
+}
+
+/// The removals of folders replaced by a file, and the files that take their places, in an order
+/// where each folder is removed after everything moves out of it (and after its subfolders), and
+/// each file comes after the folder at its place is gone: a file can move from one replaced folder
+/// to where another one was. Where no order works (two files that swap places with each other's
+/// folder), the rest stays as it was, removals first, and the next cycle finishes it.
+fn swap_in(mut pending: Vec<Action>) -> Vec<Action> {
+    fn removed(a: &Action) -> Option<&str> {
+        match a {
+            Action::RemoveRemoteFolder(f) | Action::RemoveLocalFolder(f) => Some(f),
+            _ => None,
+        }
+    }
+    fn under(p: &str, f: &str) -> bool {
+        p.strip_prefix(f).is_some_and(|rest| rest.starts_with('/'))
+    }
+    fn ready(a: &Action, pending: &[Action]) -> bool {
+        match removed(a) {
+            Some(f) => !pending.iter().any(|b| match b {
+                Action::MoveRemote { from, .. } | Action::MoveLocal { from, .. } => under(from, f),
+                other => removed(other).is_some_and(|g| under(g, f)),
+            }),
+            None => {
+                let at = action_path(a);
+                !pending.iter().filter_map(removed).any(|f| at == f || under(at, f))
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(pending.len());
+    while let Some(next) = pending.iter().position(|a| ready(a, &pending)) {
+        out.push(pending.remove(next));
+    }
+    out.extend(pending);
     out
 }
 
@@ -263,7 +345,13 @@ fn same_etag(a: &str, b: &str) -> bool {
 /// (its new name then comes down as a new file, and both are kept). The same the other way round:
 /// a cloud file with the ETag of another synced file (gone from its own place) is that file moved
 /// onto it, not an edit, so it isn't moved along with a rename made here.
+/// A file moved to where the folder holding it was, or into a folder that took its own place, also
+/// stays a delete plus a new file.
 fn pair_moves(state: &State, local: &Tree<LocalFile>, remote: &Tree<RemoteFile>, files: Vec<Action>) -> Vec<Action> {
+    // A file moved to where the folder holding it was (`a/b` → `a`), or into a folder that took its
+    // own place (`a` → `a/b`), can't be one move on the other side: the folder (or file) in the way
+    // goes only once the file is out of it. It stays a delete plus a new file.
+    let nested = |from: &str, to: &str| from.starts_with(&format!("{to}/")) || to.starts_with(&format!("{from}/"));
     let unique = |mut v: Vec<String>| if v.len() == 1 { v.pop() } else { None };
     let mut moves: BTreeMap<String, Action> = BTreeMap::new();
     let mut taken: BTreeSet<String> = BTreeSet::new();
@@ -275,7 +363,7 @@ fn pair_moves(state: &State, local: &Tree<LocalFile>, remote: &Tree<RemoteFile>,
                 let same =
                     |a: &Action| matches!(a, Action::UploadNew(p) if local.files.get(p).is_some_and(|l| l.size == k.size && l.mtime == k.mtime));
                 let Some(to) = unique(files.iter().filter(|a| same(a)).map(|a| action_path(a).to_owned()).collect()) else { continue };
-                if taken.insert(to.clone()) {
+                if !nested(from, &to) && taken.insert(to.clone()) {
                     moves.insert(from.clone(), Action::MoveRemote { from: from.clone(), to, etag: etag.clone() });
                 }
             }
@@ -290,7 +378,7 @@ fn pair_moves(state: &State, local: &Tree<LocalFile>, remote: &Tree<RemoteFile>,
                 let same =
                     |a: &Action| matches!(a, Action::UploadNew(p) if local.files.get(p).is_some_and(|l| l.size == k.size && l.mtime == k.mtime));
                 let Some(to) = unique(files.iter().filter(|a| same(a)).map(|a| action_path(a).to_owned()).collect()) else { continue };
-                if taken.insert(to.clone()) {
+                if !nested(from, &to) && taken.insert(to.clone()) {
                     moves.insert(from.clone(), Action::MoveRemote { from: from.clone(), to, etag: r.etag.clone() });
                 }
             }
@@ -306,7 +394,7 @@ fn pair_moves(state: &State, local: &Tree<LocalFile>, remote: &Tree<RemoteFile>,
                 let Some(k) = state.files.get(from) else { continue };
                 let same = |a: &Action| matches!(a, Action::Download(p) if !state.files.contains_key(p) && remote.files.get(p).is_some_and(|r| same_etag(&r.etag, &k.etag)));
                 let Some(to) = unique(files.iter().filter(|a| same(a)).map(|a| action_path(a).to_owned()).collect()) else { continue };
-                if taken.insert(to.clone()) {
+                if !nested(from, &to) && taken.insert(to.clone()) {
                     moves.insert(from.clone(), Action::MoveLocal { from: from.clone(), to });
                 }
             }

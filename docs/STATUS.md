@@ -51,9 +51,6 @@ What no test reaches, from a coverage run, is in [TESTING.md › Coverage](TESTI
   except the one the computer already has. macOS is usually case-insensitive too, but has no such check yet: there
   the download guard keeps the second name from replacing the first, and it is retried each pass. Checked by unit
   tests on Linux with the Windows rules (`names::Platform`); not yet on Windows itself.
-- **A rare sync plan found by the property tests is not fixed yet.** A folder replaced by a file here, with files
-  moved out of it, takes extra passes with errors on the way. An ignored test in
-  `crates/core/src/reconcile/tests.rs` shows it.
 - **A file saved in the last two seconds waits for the next pass** (an app may still be writing it).
   `craftcloud sync --once` waits that out once and syncs it in a second pass; a file still being written after
   that is listed as `waiting` (and in the headline), and the exit code stays 0.

@@ -259,23 +259,6 @@ fn remote_writes(action: &Action) -> Option<&str> {
     }
 }
 
-/// Whether a folder is removed before a file is moved out of it, or a file is moved before the
-/// folder it goes into is made: a known bug in how a folder replaced by a file (or the other way
-/// round) is put first, not fixed here (`a_replaced_folder_is_emptied_before_it_goes` in
-/// `tests.rs`, ignored until it is). Plans with it are left out of the properties below, so that
-/// they keep checking everything else; once it is fixed, this goes.
-/// Only `settle_clashes` reorders a plan (otherwise: folders to make, files, removals), so this
-/// can only match a plan with a file and a folder at one path.
-fn known_replacement_order(plan: &[Action]) -> bool {
-    plan.iter().enumerate().any(|(i, a)| match a {
-        Action::RemoveRemoteFolder(f) | Action::RemoveLocalFolder(f) | Action::DeleteRemoteFolder { path: f, .. } => {
-            plan[i..].iter().any(|b| matches!(b, Action::MoveRemote { from, .. } | Action::MoveLocal { from, .. } if strictly_under(f, from)))
-        }
-        Action::MoveRemote { to, .. } => plan[i..].iter().any(|b| matches!(b, Action::MakeRemoteFolder(f) if strictly_under(f, to))),
-        _ => false,
-    })
-}
-
 /// The rules every plan keeps, whatever the inputs.
 fn check_plan(c: &Case, plan: &[Action]) -> Result<(), TestCaseError> {
     let (state, local, remote) = (&c.state, &c.local, &c.remote);
@@ -452,7 +435,6 @@ proptest! {
     #[test]
     fn every_plan_keeps_the_rules(c in case(false)) {
         let plan = reconcile(&c.state, &c.local, &c.remote, true).map_err(|e| TestCaseError::fail(format!("{e:?}")))?;
-        prop_assume!(!known_replacement_order(&plan));
         check_plan(&c, &plan)?;
     }
 
@@ -608,6 +590,11 @@ struct Sim {
     remote: BTreeMap<String, (RemoteFile, u32)>,
     remote_folders: BTreeSet<String>,
     tick: i64,
+    /// Actions that ran but did nothing they were planned for (a folder removal that found it not
+    /// empty, a guarded delete or move that found something else there, a conflict copy that
+    /// couldn't go up). With nothing changing between the scan and the plan, each is a plan that
+    /// can't work in one pass.
+    noops: Vec<String>,
 }
 
 impl Sim {
@@ -619,6 +606,7 @@ impl Sim {
             remote: c.remote.files.iter().map(|(p, r)| (p.clone(), (r.clone(), c.remote_bytes.get(p).copied().unwrap_or_default()))).collect(),
             remote_folders: c.remote.folders.clone(),
             tick: 1000,
+            noops: Vec::new(),
         }
     }
 
@@ -691,7 +679,9 @@ impl Sim {
         self.local.insert(path.to_owned(), (LocalFile { size: r.size, mtime }, theirs));
         self.state.files.insert(path.to_owned(), Known { etag: r.etag, size: r.size, mtime, hash: None });
         // A failed upload of the copy is retried as a new file next cycle.
-        let _ = self.put(&copy, None);
+        if !matches!(self.put(&copy, None), Ok(true)) {
+            self.noops.push(format!("conflict {path}: the copy {copy} didn't go up"));
+        }
         Ok(())
     }
 
@@ -721,6 +711,8 @@ impl Sim {
             Action::DeleteRemote { path, etag } => {
                 if self.remote.get(path).is_some_and(|(r, _)| same_etag(&r.etag, etag)) {
                     self.remote.remove(path);
+                } else {
+                    self.noops.push(format!("delete {path}: changed in the cloud"));
                 }
                 self.state.files.remove(path);
             }
@@ -732,6 +724,8 @@ impl Sim {
                     self.remote.retain(|p, _| !strictly_under(path, p));
                     self.remote_folders.retain(|f| !within(path, f));
                     self.state.files.retain(|p, _| !strictly_under(path, p));
+                } else {
+                    self.noops.push(format!("trash folder {path}: it holds something else"));
                 }
             }
             Action::DeleteLocal(p) => {
@@ -750,6 +744,7 @@ impl Sim {
                     let synced = old.map_or_else(|| etag.clone(), |k| k.etag);
                     self.state.files.insert(to.clone(), Known { etag: synced, size: l.size, mtime: l.mtime, hash: None });
                 } else {
+                    self.noops.push(format!("move {from} to {to}: uploaded instead"));
                     self.state.files.remove(from);
                     if !self.put(to, None)? {
                         self.conflict(to)?;
@@ -800,12 +795,16 @@ impl Sim {
                 let empty = !self.remote.keys().any(|p| strictly_under(f, p)) && !self.remote_folders.iter().any(|p| strictly_under(f, p));
                 if empty {
                     self.remote_folders.remove(f);
+                } else {
+                    self.noops.push(format!("remove folder {f} in the cloud: not empty"));
                 }
             }
             Action::RemoveLocalFolder(f) => {
                 let empty = !self.local.keys().any(|p| strictly_under(f, p)) && !self.local_folders.iter().any(|p| strictly_under(f, p));
                 if empty {
                     self.local_folders.remove(f);
+                } else {
+                    self.noops.push(format!("remove folder {f} here: not empty"));
                 }
             }
         }
@@ -817,9 +816,6 @@ impl Sim {
     fn cycle(&mut self, errors: &mut Vec<String>) -> Result<Vec<Action>, TestCaseError> {
         let (local, remote) = self.trees();
         let plan = reconcile(&self.state, &local, &remote, true).map_err(|e| TestCaseError::fail(format!("{e:?}")))?;
-        if known_replacement_order(&plan) {
-            return Err(TestCaseError::reject("a known bug (see known_replacement_order)"));
-        }
         for a in &plan {
             if let Err(e) = self.apply(a) {
                 errors.push(e);
@@ -860,6 +856,18 @@ proptest! {
         for b in &work {
             prop_assert!(kept.contains(b), "a change ({b}) was lost: {plans:#?}");
         }
+    }
+
+    /// Every action's preconditions hold when it runs, in plan order: carried out once, with
+    /// nothing changing meanwhile, no action fails or finds it can't do what it was planned for
+    /// (its folder not made yet, a folder it removes not emptied yet, a file it writes where a
+    /// folder still is), so a plan never needs a second pass to finish.
+    #[test]
+    fn a_plan_works_in_one_pass(c in any::<bool>().prop_flat_map(case)) {
+        let mut sim = Sim::new(&c);
+        let mut errors = Vec::new();
+        let plan = sim.cycle(&mut errors)?;
+        prop_assert!(errors.is_empty() && sim.noops.is_empty(), "{plan:#?}\nerrors: {errors:#?}\nno-ops: {:#?}", sim.noops);
     }
 }
 

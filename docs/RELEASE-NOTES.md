@@ -67,6 +67,13 @@
   moved onto another in the cloud while that one was renamed here) could replace the renamed file here. Now the
   moved file goes to its new place and the renamed one is kept under its new name, on both sides. This changes how
   the sync decides, so update every computer together: an older one can still make the old plan.
+- **Sync: a folder replaced by a file syncs in one pass.** When a synced folder was replaced by a file of the same
+  name (or a file by a folder) and files had been moved out of it, the sync needed extra passes, with "couldn't
+  move" errors in the activity list on the way; nothing was lost. The steps now run in an order that works the
+  first time. A file moved to where its own folder was (`Photos/Photos` renamed to `Photos`, with the folder gone)
+  used to fail on every pass; it now syncs as a new file in its new place (the old one in the cloud goes to its
+  trash, as a delete does, so a share link to it stops working and its kept versions stay under the old name).
+  Nothing to do when updating: devices on different versions still agree on every file.
 - **Sync: a failed download leaves no part file.** A download that couldn't be put in place used to leave its
   hidden `.<name>.<version>.craftcloud-part` file in the sync folder. It is removed now on every failure but a
   broken-off transfer (kept to resume from), and part files left for more than a day (after a crash) are cleaned up.
