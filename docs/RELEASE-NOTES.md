@@ -14,6 +14,13 @@
   name (`a:b.txt`, `CON.txt`, a trailing dot) was listed as "a name the cloud can't take". It now says "a name this
   computer (Windows) can't have", and two cloud names that differ only in upper and lower case say so. `--json`'s
   `reason` stays `name`.
+- **Linux: without a tray host, closing the window quits.** On a desktop with no StatusNotifier host (stock
+  GNOME without the AppIndicator extension) the client took its icon as shown when nothing showed it, so
+  closing the window left it running with no icon and no window, and a start at login showed nothing at all.
+  It now follows the host on the session bus: with none, closing the window quits and `--hidden` opens the
+  window; when a host comes up later (a bar that starts after the client), the icon shows and the window hides
+  into it as before. On Sway or Hyprland a bar that starts more than three seconds after `craftcloud --hidden`
+  now gets a window at login; start the bar first, or the client after it.
 - **Desktop: an idle window uses next to no CPU** (#3). The desktop client's window drew itself four times a second for as
   long as it was open, even with nothing to show. Without a graphics card (a virtual machine, or a computer that
   draws in software) that kept several cores busy. Now it draws when something changes (a sync, an answer from
