@@ -437,8 +437,10 @@ struct Window<'a> {
 }
 
 impl<'a> Window<'a> {
-    /// `saved` is the window's place and size from the last run, as eframe keeps it.
+    /// `saved` is the window's place and size from the last run, as eframe keeps it. A window
+    /// that can't hide (Wayland) is shown whatever was asked: it opens after all.
     fn new(client: &'a mut Client, cjk: Option<Receiver<Option<FontFile>>>, shown: bool, saved: Option<String>) -> Self {
+        let shown = shown || !client.can_hide;
         Self { client, quitting: false, cjk, shown, placed: false, geometry: geometry::Keeper::new(saved) }
     }
 
@@ -480,7 +482,8 @@ const SHOW: [egui::ViewportCommand; 3] =
 
 impl eframe::App for Window<'_> {
     /// The tray, the control channel and Quit are handled here, not in `ui`: eframe calls only
-    /// `logic` while the window is minimised or hidden, so a Show handled in `ui` never came.
+    /// `logic` while the window is minimised or hidden (and `ui` draws nothing while it is hidden),
+    /// so a Show handled in `ui` never came.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.place(ctx);
         for request in self.client.tray_tick() {
@@ -501,6 +504,7 @@ impl eframe::App for Window<'_> {
         }
         // With a tray, closing the window keeps syncing in the background: the window hides where
         // it can, and otherwise (Wayland) really closes while the client carries on in the tray.
+        let mut closing = false;
         if self.client.has_tray() && !self.quitting && ctx.input(|i| i.viewport().close_requested()) {
             match on_close(self.client.can_hide, cfg!(target_os = "macos")) {
                 OnClose::Minimize => {
@@ -510,8 +514,8 @@ impl eframe::App for Window<'_> {
                 }
                 OnClose::Hide => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                     self.shown = false;
+                    closing = true;
                 }
                 OnClose::ToTray => self.client.closed_to_tray = true,
             }
@@ -523,10 +527,20 @@ impl eframe::App for Window<'_> {
         }
         let shown = self.shown;
         self.geometry.look(ctx.input(|i| geometry::worth_keeping(shown, i.viewport())));
+        // Whether eframe takes the window as one to draw: `None` where the window system says
+        // nothing about occlusion (Windows), which eframe reads as drawn.
+        let drawn = ctx.input(|i| i.viewport().visible()).unwrap_or(true);
+        // A window that isn't shown is hidden now, whatever eframe did with it (#9): eframe makes
+        // every window hidden and shows it itself after the first frame it paints, also one that
+        // asked to start hidden (`post_rendering`). This command runs after that in the same pass,
+        // so the window is hidden again before the event loop goes on. It also hides a window just
+        // closed into the tray. Not on Wayland, where a hide is ignored (`can_hide`).
+        if !self.shown && (drawn || closing) && self.client.can_hide && !self.quitting {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
         // The tray, the control channel and the sync wake this pass themselves; the tick is a
         // spare for a window that isn't drawn, where a pass runs only this. On a shown window it
         // would be a full frame a second, drawn on the CPU by a software renderer (#3).
-        let drawn = ctx.input(|i| i.viewport().visible()).unwrap_or(true);
         if let Some(tick) = logic_tick(self.shown, drawn) {
             ctx.request_repaint_after(tick);
         }
@@ -539,7 +553,13 @@ impl eframe::App for Window<'_> {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        self.client.desktop.ui(ui);
+        // A hidden window draws nothing. On Windows the window system says nothing about
+        // occlusion, so eframe takes a hidden window for a drawn one and runs `ui` and paints a
+        // frame nobody sees at every tick; drawn in software, a full frame a second kept a core
+        // busy. The frame that shows the window comes with Show, in the same pass as its commands.
+        if self.shown {
+            self.client.desktop.ui(ui);
+        }
         if self.client.desktop.host.quit {
             // Quit was picked: `logic` closes the window on the next pass.
             ctx.request_repaint();
@@ -838,6 +858,56 @@ mod tests {
         assert_eq!(input.viewports[&ViewportId::ROOT].visible(), Some(false), "eframe skips `ui` for this window");
         let out = egui::Context::default().run_logic(&input, |ctx| eframe::App::logic(window, ctx, &mut eframe::Frame::_new_kittest()));
         out.viewport_commands.get(&ViewportId::ROOT).cloned().unwrap_or_default()
+    }
+
+    /// One pass as eframe runs it on Windows for a window that isn't minimised, hidden or not:
+    /// the window system says nothing about occlusion there, so eframe takes the window as drawn
+    /// and runs `logic` and `ui`, then paints. Returns the viewport commands and how many shapes
+    /// `ui` drew.
+    fn windows_pass(window: &mut Window<'_>) -> (Vec<egui::ViewportCommand>, usize) {
+        let mut input = egui::RawInput::default();
+        input.viewports.insert(ViewportId::ROOT, ViewportInfo { minimized: Some(false), ..ViewportInfo::default() });
+        assert_eq!(input.viewports[&ViewportId::ROOT].visible(), None, "eframe reads this as drawn and runs `ui` too");
+        let mut frame = eframe::Frame::_new_kittest();
+        let out = egui::Context::default().run_ui(input, |ui| {
+            eframe::App::logic(window, ui.ctx(), &mut frame);
+            eframe::App::ui(window, ui, &mut frame);
+        });
+        // egui's own `SetTheme` from the first pass is not the window's doing.
+        let commands = out.viewport_output.get(&ViewportId::ROOT).map(|v| v.commands.clone()).unwrap_or_default();
+        let commands = commands.into_iter().filter(|c| !matches!(c, egui::ViewportCommand::SetTheme(_))).collect();
+        let shapes = out.shapes.len();
+        out.drop_without_applying_deltas();
+        (commands, shapes)
+    }
+
+    /// #9: `craftcloud --hidden` on Windows showed the window. eframe makes every window hidden
+    /// and shows it itself after the first frame it paints, whatever the viewport asked for; the
+    /// pass's commands run after that, so a hidden window hides itself again in every pass eframe
+    /// draws, and draws nothing in it.
+    #[test]
+    fn a_hidden_start_keeps_the_window_hidden_and_draws_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut client, show) = client(dir.path());
+        let mut window = Window::new(&mut client, None, false, None);
+        let (commands, shapes) = windows_pass(&mut window);
+        assert_eq!(commands, [egui::ViewportCommand::Visible(false)], "hidden again, after eframe's own show");
+        assert_eq!(shapes, 0, "a hidden window draws nothing");
+        assert_eq!(windows_pass(&mut window).0, [egui::ViewportCommand::Visible(false)], "and stays so");
+        // The tray's Show (or a second start): shown and drawn in the same pass, not hidden again.
+        show.send(ToWindow::Show).unwrap();
+        let (commands, shapes) = windows_pass(&mut window);
+        assert_eq!(commands, SHOW);
+        assert!(shapes > 0, "the frame that shows the window is a real one");
+        let (commands, shapes) = windows_pass(&mut window);
+        assert!(commands.is_empty(), "a shown window is left alone: {commands:?}");
+        assert!(shapes > 0);
+        // Where a hide is ignored (Wayland), a window that couldn't start in the tray opens after all.
+        client.can_hide = false;
+        let mut window = Window::new(&mut client, None, false, None);
+        let (commands, shapes) = windows_pass(&mut window);
+        assert!(commands.is_empty(), "{commands:?}");
+        assert!(shapes > 0);
     }
 
     #[test]
