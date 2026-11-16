@@ -11,6 +11,8 @@
   there such a command exited with 1. It now goes by the kind of error, the same on every system and in every
   language. A server name that can't be looked up now also gives 8 on Linux, as do a connection that was reset
   and one that timed out.
+- **For people building CraftCloud:** the release checklist ([RELEASING.md](RELEASING.md)) now starts with
+  `cargo xtask bump-apps --check`, and the Release workflow reports the Craft web app pins in its run summary.
 - **A kept version's time is never after it was replaced.** `craftcloud versions` (and `--json`'s `modified`)
   and the web frontend's Versions sheet show when a version's content was last changed. That time comes from the
   server and the replacement time from the computer that replaced it, so a server that rounds up or whose clock

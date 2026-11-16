@@ -103,6 +103,34 @@ jobs:
           path: dist/release/*
           if-no-files-found: error
           retention-days: 30
+      # Are the Craft web app pins in apps.toml behind the apps' latest releases? Read-only, once per
+      # run, reported in the run's summary (docs/RELEASING.md). A stale pin or an API hiccup never
+      # fails the build or the release: the step goes red, the job stays green.
+      - name: Craft web app pins
+        if: matrix.arch == 'x86_64'
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # read-only; only lifts the API's unauthenticated limit
+        run: |
+          # `cargo xtask bump-apps --check`, spelt out so that cargo's own lines stay out of the summary.
+          status=0
+          out="$(cargo run --locked -q -p xtask -- bump-apps --check 2>&1)" || status=$?
+          printf '%s\n' "$out"
+          {
+            echo "## Craft web app pins"
+            echo
+            echo '```'
+            printf '%s\n' "$out"
+            echo '```'
+            if [ "$status" -ne 0 ]; then
+              echo
+              echo 'Run cargo xtask bump-apps in a pull request of its own (docs/RELEASING.md).'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            echo "::warning::Craft web app pins: some are behind their latest release, or GitHub could not be asked (see the run's summary)."
+          fi
+          exit "$status"
 
   flatpak:
     name: Flatpak ${{ matrix.arch }}

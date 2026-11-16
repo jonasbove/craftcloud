@@ -29,29 +29,37 @@ Nothing is released by itself: a person publishes the draft.
 
 ## Checklist
 
-Steps 1 and 2 are one pull request ("🔖 Release <version>"), merged like any other: by a maintainer's explicit
-confirmation.
+Step 1 comes before the release pull request. Steps 2 and 3 are that pull request ("🔖 Release <version>"), merged
+like any other: by a maintainer's explicit confirmation.
 
-1. **Release notes:** turn `## Unreleased` in [RELEASE-NOTES.md](RELEASE-NOTES.md) into `## <version>`, with what
+1. **Craft web app pins:** run `cargo xtask bump-apps --check` with `GITHUB_TOKEN` set (for example
+   `GITHUB_TOKEN="$(gh auth token)"`; without it the GitHub API allows 60 requests an hour). It says, app by app,
+   whether the pins in `apps.toml` are at the apps' latest releases, and fails when one is behind. If anything is
+   out of date, run `cargo xtask bump-apps` in a pull request of its own, build the `-apps` image from it
+   (`docker build --target with-apps -t craftcloud:dev .`), run `WEB_APPS=on scripts/smoke-test craftcloud:dev
+   <port>` on it, and merge it before the release. The Release workflow (on a tag or by hand) runs the same check
+   and reports it in the run's summary under "Craft web app pins"; a stale pin never fails the release there, so
+   this step is where it is caught.
+2. **Release notes:** turn `## Unreleased` in [RELEASE-NOTES.md](RELEASE-NOTES.md) into `## <version>`, with what
    changed and, first, anything that needs care when updating ("upgrade all devices together"). Start a new empty
    `## Unreleased` above it.
-2. **Version:** set `version` in the root `Cargo.toml` and run `cargo update -w`. Update the stage line in
+3. **Version:** set `version` in the root `Cargo.toml` and run `cargo update -w`. Update the stage line in
    [ROADMAP.md](ROADMAP.md) and the README's Status section if they name the version.
-3. **Gate:** `cargo xtask ci` must say `all 4 steps passed`. Build the image and run `scripts/smoke-test` on it.
+4. **Gate:** `cargo xtask ci` must say `all 4 steps passed`. Build the image and run `scripts/smoke-test` on it.
    To try the whole release without publishing anything, start the Release workflow by hand (on `main` or a
    branch): it builds every file and runs the package tests, and makes no draft (that needs a tag).
-4. **Before a bigger release, on a desktop:** install the new packages on a Fedora VM (`.rpm`) and a Debian VM
+5. **Before a bigger release, on a desktop:** install the new packages on a Fedora VM (`.rpm`) and a Debian VM
    (`.deb`), each with a desktop session, and check what containers can't: the tray icon and its menu, the sign-in
    kept in the keychain across a restart, the browser sign-in (the code page opens and approving it signs in), and
    start at login. A `craftcloud://` link from the browser opening the client is worth a click too.
-5. **Tag** `main` after the release pull request is merged: `git pull`, then
+6. **Tag** `main` after the release pull request is merged: `git pull`, then
    `git tag -a v<version> -m "CraftCloud <version>"` on the merge commit and `git push origin v<version>`. Tags
    can't be moved or deleted afterwards, so check the commit first.
-6. **Watch** the Release and Server image runs. A failed package test means no draft: its log shows the distro,
+7. **Watch** the Release and Server image runs. A failed package test means no draft: its log shows the distro,
    the step and, for a sync failure, the server's log; fix it and tag a new version. When the draft has every file
    (and FreeBSD/riscv64, or their jobs have given up), read it over and **publish** it. Published releases are immutable: their files can't be
    changed afterwards.
-7. **After publishing:**
+8. **After publishing:**
    - Update the AUR recipes in `packaging/arch/` (`pkgver`, `updpkgsums`, `makepkg --printsrcinfo > .SRCINFO`) and
      push them to the AUR.
    - Redeploy your own servers from the new image, after reading the release notes.
