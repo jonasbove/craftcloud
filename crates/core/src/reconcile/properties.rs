@@ -979,7 +979,11 @@ proptest! {
             let inside = format!("{p}/{child}");
             prop_assert!(skipped(&inside, true, platform) && skipped(&inside, false, platform), "{inside}");
         }
-        if let Some(rel) = crate::sync::local_relative_on(&p, platform) {
+        // A path below the local folder is a path of the computer the test runs on, so it is
+        // checked with that computer's rule, as the client always does (`local_relative`, the
+        // sync engine: `Platform::current()`). With the other rule it means nothing: on Windows,
+        // `a:` under Linux's rule would read as a drive.
+        if let Some(rel) = crate::sync::local_relative_on(&p, Platform::current()) {
             prop_assert!(rel.components().all(|c| matches!(c, std::path::Component::Normal(_))), "{p} → {rel:?}");
         }
     }
