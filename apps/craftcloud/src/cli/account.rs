@@ -62,6 +62,11 @@ pub fn login(ctx: &mut Ctx, server: Option<&str>, no_browser: bool) -> Result<()
         ctx.store.set(Prefs(settings));
         ctx.store.flush().map_err(|e| CliError::error(format!("couldn't save the settings: {e}")))?;
     }
+    // A desktop client running and waiting for a sign-in takes this one (one that isn't, finds it
+    // when it starts next).
+    if default && let Some(dir) = ctx.dir() {
+        control::signed_in(&dir);
+    }
     if ctx.json {
         print_json(&json!({"signed_in": true, "server": server.to_string(), "username": username, "default": default}))
     } else {

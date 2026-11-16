@@ -58,7 +58,7 @@ one-line summary and at least one example (a test checks it).
 
 | Command | What it does |
 |---|---|
-| `login [SERVER] [--no-browser]` | Signs this computer in: prints a code and an address, opens the browser there, waits for you to approve the code. Without `SERVER`, the desktop client's server. If the desktop client has no server yet, this becomes its server |
+| `login [SERVER] [--no-browser]` | Signs this computer in: prints a code and an address, opens the browser there, waits for you to approve the code. Without `SERVER`, the desktop client's server. If the desktop client has no server yet, this becomes its server, and the desktop client starts signed in (running already, it takes the sign-in at once): it asks which folders to sync, or syncs when a folder is set |
 | `logout` | Ends the sign-in on the server and forgets it here (the desktop client is signed out too) |
 | `usage` | Storage used and the limit, and how much of it kept versions take (`1.1 GB of 10 GB used (200 MB in earlier versions)`). Sizes are decimal everywhere (1 MB = 1,000,000 bytes) |
 

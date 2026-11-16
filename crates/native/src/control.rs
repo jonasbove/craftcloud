@@ -1,7 +1,8 @@
 //! The running desktop client's control channel, for `craftcloud status|sync|pause|resume`, for
 //! `craftcloud://` links opened while a client runs (the link is handed over, see [`send_link`]),
 //! for `craftcloud files` (the synced files here, from the client's local view, see [`files`]), and
-//! for starting the app again while it runs in the tray (its window comes up, see [`show_window`]).
+//! for starting the app again while it runs in the tray (its window comes up, see [`show_window`]),
+//! and for `craftcloud login` while a client waits for a sign-in (it takes it, see [`signed_in`]).
 //!
 //! The client listens on a loopback TCP port (any free one) and writes the port and a random
 //! secret to `control.json` in its settings folder, readable only by the user. A command connects,
@@ -55,6 +56,9 @@ pub enum Request {
     },
     /// Show the desktop client's window: the app was started again while it runs.
     Show,
+    /// A sign-in was saved (`craftcloud login`): a desktop client waiting for one reads the
+    /// settings and the keychain again and goes on with it.
+    SignedIn,
 }
 
 /// The client's state, as `craftcloud status --json` prints it.
@@ -301,8 +305,17 @@ pub struct Attached {
 
 pub type Slot = Arc<Mutex<Option<Attached>>>;
 
-/// Brings up the desktop client's window (asked for by [`Request::Show`]).
-pub type ShowWindow = Arc<dyn Fn() + Send + Sync>;
+/// What the desktop client's window is asked to do from outside.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToWindow {
+    /// Come up ([`Request::Show`]).
+    Show,
+    /// Take the sign-in just saved ([`Request::SignedIn`]).
+    SignedIn,
+}
+
+/// Passes [`ToWindow`] asks to the desktop client's window.
+pub type ShowWindow = Arc<dyn Fn(ToWindow) + Send + Sync>;
 
 /// Keeps the channel open; dropping it removes `control.json` (when it is still ours).
 pub struct Server {
@@ -391,10 +404,14 @@ fn same(a: &str, b: &str) -> bool {
 }
 
 fn handle(request: &Request, slot: &Slot, tickets: &AtomicU64, show: Option<&ShowWindow>) -> Answer {
-    if *request == Request::Show {
+    if let Some(ask) = match request {
+        Request::Show => Some(ToWindow::Show),
+        Request::SignedIn => Some(ToWindow::SignedIn),
+        _ => None,
+    } {
         // `craftcloud daemon` has no window: the sender starts its own.
         let Some(show) = show else { return Answer::error("this CraftCloud has no window") };
-        show();
+        show(ask);
         return Answer::status(Status::default());
     }
     let attached = slot.lock().unwrap_or_else(PoisonError::into_inner).clone();
@@ -417,8 +434,8 @@ fn handle(request: &Request, slot: &Slot, tickets: &AtomicU64, show: Option<&Sho
     };
     let snapshot = |a: &Attached| Status::from_progress(&a.progress.lock().unwrap_or_else(PoisonError::into_inner), &a.server, &a.local_folder);
     match request {
-        // (Links, file lists and Show are answered above.)
-        Request::Status | Request::Link { .. } | Request::Files { .. } | Request::Show => {}
+        // (Links, file lists, Show and SignedIn are answered above.)
+        Request::Status | Request::Link { .. } | Request::Files { .. } | Request::Show | Request::SignedIn => {}
         Request::Pause | Request::Resume => {
             let _ = a.commands.send(Command::Pause(matches!(request, Request::Pause)));
             let _ = a.commands.send(Command::SyncNow);
@@ -564,6 +581,13 @@ pub fn show_window(dir: &Path) -> bool {
     matches!(exchange(dir, &Request::Show), Ok(Answer { error: None, .. }))
 }
 
+/// Tells a running desktop client that a sign-in was saved, so one waiting for a sign-in takes
+/// it; `false` when none takes the news (none runs, or it is `craftcloud daemon` or a version that
+/// doesn't know the request: it finds the sign-in when it starts next).
+pub fn signed_in(dir: &Path) -> bool {
+    matches!(exchange(dir, &Request::SignedIn), Ok(Answer { error: None, .. }))
+}
+
 /// The synced files in the running client's local folder with one of these extensions (any case,
 /// with or without the dot; empty: all), from its local view: no server round trip.
 /// [`SendError::NotRunning`] when no client runs; [`SendError::Failed`] when it isn't signed in or
@@ -598,7 +622,7 @@ fn exchange(dir: &Path, request: &Request) -> Result<Answer, SendError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Attached, LinkHandoff, Request, SendError, Slot, files, send, send_link, serve, serve_window, show_window};
+    use super::{Attached, LinkHandoff, Request, SendError, Slot, ToWindow, files, send, send_link, serve, serve_window, show_window, signed_in};
     use crate::open::OpenError;
     use crate::sync::Command;
     use craftcloud_core::sync::{FileStatus, SyncPlan, SyncProgress, SyncState};
@@ -648,14 +672,12 @@ mod tests {
     #[test]
     fn starting_again_shows_the_running_clients_window() {
         let dir = tempfile::tempdir().unwrap();
-        let shown = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counter = Arc::clone(&shown);
-        let show = Arc::new(move || {
-            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        });
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&asked);
+        let show = Arc::new(move |ask| seen.lock().unwrap().push(ask));
         let server = serve_window(dir.path(), Arc::new(Mutex::new(None)), show).unwrap();
         assert!(show_window(dir.path()), "signed in or not, the window comes up");
-        assert_eq!(shown.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(*asked.lock().unwrap(), [ToWindow::Show]);
         drop(server);
         assert!(!show_window(dir.path()), "none running: the new start opens its own window");
 
@@ -663,6 +685,18 @@ mod tests {
         let _daemon = serve(dir.path(), Arc::new(Mutex::new(None))).unwrap();
         assert!(!show_window(dir.path()));
         assert_eq!(serde_json::to_value(Request::Show).unwrap(), serde_json::json!({"cmd": "show"}));
+    }
+
+    #[test]
+    fn a_sign_in_on_the_command_line_reaches_the_running_client() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!signed_in(dir.path()), "none running: it reads the sign-in when it starts");
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&asked);
+        let _server = serve_window(dir.path(), Arc::new(Mutex::new(None)), Arc::new(move |ask| seen.lock().unwrap().push(ask))).unwrap();
+        assert!(signed_in(dir.path()));
+        assert_eq!(*asked.lock().unwrap(), [ToWindow::SignedIn]);
+        assert_eq!(serde_json::to_value(Request::SignedIn).unwrap(), serde_json::json!({"cmd": "signed_in"}));
     }
 
     #[test]

@@ -447,6 +447,122 @@ fn a_missing_folder_turns_off_sync_now_and_open_folder() {
     assert_eq!(h.state().host.opened_folders, 1);
 }
 
+/// Starting the client as `main` does: the settings now, the keychain's answer to come.
+fn starting(settings: ClientSettings) -> H {
+    let app = DesktopApp::waiting_for_keychain(&egui::Context::default(), FakeDesktop::default(), settings);
+    Harness::builder().with_size(egui::vec2(960.0, 640.0)).build_ui_state(|ui, app: &mut DesktopApp<FakeDesktop>| app.ui(ui), app)
+}
+
+/// What `craftcloud login` leaves: the server in the settings, the tokens in the keychain.
+fn after_cli_login() -> ClientSettings {
+    ClientSettings { server: "http://127.0.0.1:8093".into(), ..ClientSettings::default() }
+}
+
+fn tokens() -> Tokens {
+    Tokens { access_token: "a".into(), refresh_token: "r".into() }
+}
+
+#[test]
+fn a_sign_in_from_the_command_line_goes_on_to_choosing_folders() {
+    let mut h = starting(after_cli_login());
+    assert!(h.state().wants_keychain(), "the keychain is asked, not the Connect sheet");
+    h.run();
+    h.state_mut().keychain_answered(Some(tokens()));
+    h.run();
+    assert_eq!(h.state().host.net.last_to("/webdav/").header_value("Authorization"), Some("Bearer a"));
+    h.state_mut().host.net.answer("/webdav/", Ok(HttpResponse::new(207, ROOT.as_bytes().to_vec())));
+    h.run();
+    h.get_by_label("Choose what to sync");
+    h.get_by_label("Documents");
+    h.get_by_label("START SYNCING").click();
+    h.run();
+    let (settings, saved) = h.state().host.saved.clone().expect("session saved");
+    assert_eq!((settings.local_folder.as_str(), saved), ("/home/john/CraftCloud", tokens()));
+    assert_eq!(h.state().host.started.len(), 1);
+    assert!(matches!(h.state().screen, Screen::Main(Tab::Activity)));
+}
+
+#[test]
+fn a_command_line_sign_in_an_hour_old_is_refreshed_once() {
+    let mut h = starting(after_cli_login());
+    h.run();
+    h.state_mut().keychain_answered(Some(tokens()));
+    h.run();
+    h.state_mut().host.net.answer("/webdav/", Ok(HttpResponse::new(401, Vec::new())));
+    h.run();
+    let refresh: serde_json::Value = serde_json::from_slice(&h.state().host.net.last_to("/api/auth/refresh").body).unwrap();
+    assert_eq!(refresh["refresh_token"], "r");
+    h.state_mut().host.net.answer("/api/auth/refresh", ok(br#"{"access_token":"a2","refresh_token":"r2"}"#));
+    h.run();
+    let fresh = Tokens { access_token: "a2".into(), refresh_token: "r2".into() };
+    assert_eq!(h.state().host.saved.clone().map(|(_, t)| t), Some(fresh), "the new refresh token is kept");
+    assert_eq!(h.state().host.net.last_to("/webdav/").header_value("Authorization"), Some("Bearer a2"));
+    h.state_mut().host.net.answer("/webdav/", Ok(HttpResponse::new(207, ROOT.as_bytes().to_vec())));
+    h.run();
+    h.get_by_label("Choose what to sync");
+
+    // Run out altogether (revoked on the server): back to the Connect sheet, saying so.
+    let mut h = starting(after_cli_login());
+    h.run();
+    h.state_mut().keychain_answered(Some(tokens()));
+    h.run();
+    h.state_mut().host.net.answer("/webdav/", Ok(HttpResponse::new(401, Vec::new())));
+    h.run();
+    h.state_mut().host.net.answer("/api/auth/refresh", Ok(HttpResponse::new(401, Vec::new())));
+    h.run();
+    assert!(matches!(h.state().screen, Screen::Connect(_)));
+    h.get_by_label("The saved sign-in has run out. Connect again.");
+    // The server not answering: the same sheet, with the reason.
+    let mut h = starting(after_cli_login());
+    h.run();
+    h.state_mut().keychain_answered(Some(tokens()));
+    h.run();
+    h.state_mut().host.net.answer("/webdav/", Err("connection refused".into()));
+    h.run();
+    assert!(matches!(h.state().screen, Screen::Connect(_)), "never stuck on the keychain sheet");
+}
+
+#[test]
+fn a_saved_server_without_a_sign_in_asks_to_connect_without_alarm() {
+    // A server typed on the Connect sheet, or left after signing out: the keychain has nothing.
+    let mut h = starting(after_cli_login());
+    h.run();
+    h.state_mut().keychain_answered(None);
+    h.run();
+    assert!(matches!(h.state().screen, Screen::Connect(_)));
+    assert!(h.query_by_label_contains("isn't in the keychain").is_none(), "nothing was lost");
+    // Signed in here before, folder and all: the sign-in went missing, which is news.
+    let mut h = starting(signed_in_settings());
+    h.run();
+    h.state_mut().keychain_answered(None);
+    h.run();
+    h.get_by_label("The saved sign-in isn't in the keychain any more. Connect again.");
+}
+
+#[test]
+fn a_running_client_takes_a_sign_in_made_on_the_command_line() {
+    let mut h = starting(ClientSettings::default());
+    h.run();
+    assert!(matches!(h.state().screen, Screen::Connect(_)));
+    assert!(h.state_mut().signed_in_elsewhere(after_cli_login()));
+    assert!(h.state().wants_keychain());
+    h.run();
+    h.state_mut().keychain_answered(Some(tokens()));
+    h.run();
+    h.state_mut().host.net.answer("/webdav/", Ok(HttpResponse::new(207, ROOT.as_bytes().to_vec())));
+    h.run();
+    h.get_by_label("Choose what to sync");
+    // Choosing folders, or signed in and syncing: left as it is.
+    assert!(!h.state_mut().signed_in_elsewhere(after_cli_login()));
+    let mut h = signed_in();
+    h.run();
+    assert!(!h.state_mut().signed_in_elsewhere(after_cli_login()));
+    assert!(matches!(h.state().screen, Screen::Main(_)));
+    // No server in the settings: nothing to take.
+    let mut h = starting(ClientSettings::default());
+    assert!(!h.state_mut().signed_in_elsewhere(ClientSettings::default()));
+}
+
 #[test]
 fn offline_retries_and_signed_out_signs_in_again() {
     let mut h = with_state(SyncState::Offline("connection refused".into()));

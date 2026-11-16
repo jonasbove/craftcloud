@@ -7,6 +7,22 @@
   `craftcloud.com`, a console program that runs `craftcloud.exe` and shows its output; both shells pick the `.com`
   when you type `craftcloud`. The MSI adds its folder to your PATH (for you only): open a new terminal after
   updating. Scripts that read the output through a pipe or a file work as before.
+- **Desktop: Show brings back a minimised window** (#2). With the window minimised to the taskbar, the tray's
+  "Show CraftCloud" (and starting CraftCloud again) left it there; a window closed to the tray came back only after a
+  few seconds. The tray, Quit and the status line now keep working while the window is minimised or hidden, and
+  Show brings the window out of the taskbar and in front at once.
+- **Desktop: one CraftCloud at a time, on every system.** Starting CraftCloud again while it runs (from the Start
+  menu, the Dock or the app menu) brings the running one's window to the front, also when it is minimised, instead of
+  opening a second copy that said "another CraftCloud is already syncing". A start at login while one runs ends
+  quietly.
+- **Desktop: the window comes back at its size.** A window minimised or hidden in the tray when CraftCloud quit
+  (or when it saved its place, every 30 seconds) came back as a 64×64 square in the screen's corner on Windows. The
+  window's place is now saved only while it is shown, and a window that would come back smaller than it can be
+  opens at its default size in the middle of the screen, once; after that it keeps its place again.
+- **Desktop: a sign-in on the command line reaches the window.** After `craftcloud login <server>`, the desktop
+  client stayed on its first setup step with the server filled in, even after a restart. It now starts signed in
+  with that sign-in and goes on to choosing folders (or straight to syncing when a folder is set); a client already
+  running and waiting for a sign-in takes it at once.
 - **Windows: uninstalling turns off start at login.** The MSI used to leave the "Start at login" entry behind,
   starting a program that was no longer there. Uninstalling now removes it (and takes the folder off PATH); an
   update keeps it. If you uninstalled an earlier version with start at login on, remove the leftover entry with

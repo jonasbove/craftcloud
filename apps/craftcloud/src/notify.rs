@@ -136,6 +136,16 @@ impl Notifier {
         }
     }
 
+    /// No notifications (tests).
+    #[cfg(test)]
+    pub fn off() -> Self {
+        Self {
+            watch: Watch::default(),
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            notes: None,
+        }
+    }
+
     /// Tells the person about anything new in this progress that needs them.
     pub fn see(&mut self, p: &SyncProgress) {
         let notes = self.watch.see(p);
