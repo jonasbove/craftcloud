@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Signing out now also ends the session on the server.** `craftcloud logout` and the desktop client's
+  Sign out forgot the sign-in on the computer, but the server kept the session open (it needs the device's refresh
+  token to know which one to end, and the client didn't send it). Now both end it there too. When the server
+  can't be told (offline, or it refuses), the sign-in is still forgotten on the computer and they say so:
+  `craftcloud logout` then exits with code 8 or 1 and `--json` has `"server_session_ended": false`; the desktop
+  client shows a note on the sign-in screen.
 - **Windows: the command line prints in a terminal** (#4). `craftcloud status` in Command Prompt or PowerShell
   showed nothing, because `craftcloud.exe` is a GUI program. The MSI and the portable zip now also hold
   `craftcloud.com`, a console program that runs `craftcloud.exe` and shows its output; both shells pick the `.com`

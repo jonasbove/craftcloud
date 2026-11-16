@@ -316,6 +316,76 @@ fn a_saved_session_goes_straight_to_syncing() {
     h.run();
     assert!(h.state().host.signed_out);
     assert!(matches!(h.state().screen, Screen::Connect(_)));
+    // The sign-in ends on the server too: the logout names the session by its refresh token
+    // (without it OxiCloud answered 401 and the session stayed).
+    let logout = h.state().host.net.last_to("/api/auth/logout").clone();
+    let body: serde_json::Value = serde_json::from_slice(&logout.body).unwrap();
+    assert_eq!(body["refresh_token"], "r");
+    assert_eq!(logout.header_value("Authorization"), Some("Bearer a"));
+    h.state_mut().host.net.answer("/api/auth/logout", Ok(HttpResponse::new(200, b"{}".to_vec())));
+    h.run();
+    assert!(h.state().note.is_none());
+}
+
+/// Signs out from Settings (the sign-in is over here at once, the logout still under way).
+fn signed_out_from_settings() -> H {
+    let mut h = with_state(SyncState::UpToDate);
+    h.get_by_label("SETTINGS").click();
+    h.run();
+    h.get_by_label("SIGN OUT").click();
+    h.run();
+    assert!(h.state().host.signed_out);
+    h
+}
+
+#[test]
+fn a_logout_the_server_refuses_leaves_a_note() {
+    let mut h = signed_out_from_settings();
+    h.state_mut().host.net.answer("/api/auth/logout", Ok(HttpResponse::new(500, Vec::new())));
+    h.run();
+    assert!(matches!(h.state().screen, Screen::Connect(_)));
+    h.get_by_label(super::LOGOUT_NOTE);
+
+    let mut h = signed_out_from_settings();
+    h.state_mut().host.net.answer("/api/auth/logout", Err("Can't connect to the server (refused).".into()));
+    h.run();
+    h.get_by_label(super::LOGOUT_NOTE);
+    assert!(h.state().error.is_none(), "signing out worked here: no error");
+}
+
+#[test]
+fn a_logout_with_a_run_out_access_token_refreshes_once() {
+    let mut h = signed_out_from_settings();
+    h.state_mut().host.net.answer("/api/auth/logout", Ok(HttpResponse::new(401, Vec::new())));
+    h.run();
+    let refresh: serde_json::Value = serde_json::from_slice(&h.state().host.net.last_to("/api/auth/refresh").body).unwrap();
+    assert_eq!(refresh["refresh_token"], "r");
+    h.state_mut().host.net.answer("/api/auth/refresh", Ok(HttpResponse::new(200, br#"{"access_token":"a2","refresh_token":"r2"}"#.to_vec())));
+    h.run();
+    // Again, with the new refresh token: the spent one names no session.
+    let again: serde_json::Value = serde_json::from_slice(&h.state().host.net.last_to("/api/auth/logout").body).unwrap();
+    assert_eq!(again["refresh_token"], "r2");
+    h.state_mut().host.net.answer("/api/auth/logout", Ok(HttpResponse::new(200, b"{}".to_vec())));
+    h.run();
+    assert!(h.state().note.is_none());
+    assert_eq!(h.state().host.net.sent_to("/api/auth/logout"), 2);
+}
+
+#[test]
+fn a_session_the_server_ended_is_not_logged_out_again() {
+    // The Activity tab's "Sign in" after the server ended the sign-in: nothing to end there.
+    let mut h = with_state(SyncState::SignedOut);
+    h.get_by_label("SIGN IN AGAIN").click();
+    h.run();
+    assert!(h.state().host.signed_out);
+    assert_eq!(h.state().host.net.sent_to("/api/auth/logout"), 0);
+
+    // Signing out to choose another folder (the folder is missing): a live sign-in, ended there.
+    let mut h = with_state(SyncState::FolderMissing);
+    h.get_by_label("SIGN OUT").click();
+    h.run();
+    assert!(h.state().host.signed_out);
+    assert_eq!(h.state().host.net.sent_to("/api/auth/logout"), 1);
 }
 
 #[test]

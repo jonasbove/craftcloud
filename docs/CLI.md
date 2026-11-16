@@ -59,7 +59,7 @@ one-line summary and at least one example (a test checks it).
 | Command | What it does |
 |---|---|
 | `login [SERVER] [--no-browser]` | Signs this computer in: prints a code and an address, opens the browser there, waits for you to approve the code. Without `SERVER`, the desktop client's server. If the desktop client has no server yet, this becomes its server, and the desktop client starts signed in (running already, it takes the sign-in at once): it asks which folders to sync, or syncs when a folder is set |
-| `logout` | Ends the sign-in on the server and forgets it here (the desktop client is signed out too) |
+| `logout` | Ends the sign-in on the server and forgets it here (the desktop client is signed out too). It is forgotten here even when the server can't end it; then it says so, and exits with code 8 (the server can't be reached) or 1 (the server refused): the sign-in may still be active on the server until it runs out |
 | `usage` | Storage used and the limit, and how much of it kept versions take (`1.1 GB of 10 GB used (200 MB in earlier versions)`). Sizes are decimal everywhere (1 MB = 1,000,000 bytes) |
 
 ### The desktop client's sync
@@ -260,7 +260,7 @@ exits 0 when the run ended up to date (with or without `waiting`), 3 when signed
 | Command | Prints |
 |---|---|
 | `login` | `{"user_code", "verification_uri", "expires_in"}`, then `{"signed_in": true, "server", "username", "default"}` (`default`: it is the desktop client's server) |
-| `logout` | `{"signed_out": true, "server", "was_signed_in"}` |
+| `logout` | `{"signed_out": true, "server", "was_signed_in", "server_session_ended"}` (`server_session_ended`: the server ended the sign-in, or had already; `false` when it wasn't signed in here or the server couldn't end it, with exit code 8 or 1 in that last case) |
 | `usage` | `{"username", "used_bytes", "quota_bytes", "versions_bytes"}` (`quota_bytes` 0 = no limit; `versions_bytes`: what kept versions take, part of `used_bytes`) |
 | `get` | `{"path", "saved_to", "size"}` |
 | `put` | `{"path", "size", "replaced"}` |
