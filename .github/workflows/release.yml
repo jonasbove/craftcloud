@@ -16,6 +16,9 @@
 # upgrade from the previous release, removal). It runs on every run, also by hand from a branch, and
 # the draft is made only when it passes.
 #
+# `windows-test` runs the workspace tests (`cargo test --workspace`) on Windows x64, which ci.yml
+# runs on Linux only.
+#
 # On a `v*` tag the `release` job makes a **draft** GitHub release with those files, SHA256SUMS.txt
 # and the version's section of docs/RELEASE-NOTES.md. In a public repository each file also gets a
 # signed build-provenance attestation. With the RELEASE_SIGNING_KEY secret set (an ASCII-armoured
@@ -282,6 +285,30 @@ jobs:
           path: dist/release/*
           if-no-files-found: error
           retention-days: 30
+
+  # The workspace tests on Windows itself: the Windows rules in core::names, craftcloud.com's console
+  # relay (apps/craftcloud-cli), the window geometry, the Windows paths of `open` and the local files,
+  # which ci.yml tests only on Linux. Here and not in ci.yml because Windows minutes cost 2x in a
+  # private repository. The live tests skip themselves without a server; the screenshot tests are
+  # `#[ignore]`d and behind the `shots` feature.
+  windows-test:
+    name: Windows tests (x64)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # installs the toolchain named below
+        with:
+          toolchain: 1.100.0  # = rust-toolchain.toml
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: test-windows-x64
+      - name: cargo test
+        run: cargo test --workspace --locked --no-fail-fast
 
   # CraftCloud has never been built on FreeBSD: this job may fail, and the release goes out
   # without its files when it does. The VM is x86_64; aarch64 is cross-compiled in it with
@@ -598,13 +625,13 @@ jobs:
     name: release (draft)
     # Doesn't wait for the untried FreeBSD and riscv64 builds (up to two hours): `late` adds them to
     # the draft when they finish. Their artifacts are named `late-*`, so `release-*` never picks them up.
-    # No draft unless every Linux package passed its install test.
-    needs: [linux, flatpak, arch, macos, windows, package-test]
+    # No draft unless every Linux package passed its install test and the tests passed on Windows.
+    needs: [linux, flatpak, arch, macos, windows, package-test, windows-test]
     if: >-
       ${{ !cancelled() && startsWith(github.ref, 'refs/tags/v')
       && needs.linux.result == 'success' && needs.flatpak.result == 'success' && needs.arch.result == 'success'
       && needs.macos.result == 'success' && needs.windows.result == 'success'
-      && needs.package-test.result == 'success' }}
+      && needs.package-test.result == 'success' && needs.windows-test.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     # RELEASE_SIGNING_KEY lives in the `release` environment, which only `v*` tags may use, so no
