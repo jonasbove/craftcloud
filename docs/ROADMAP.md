@@ -125,6 +125,12 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   `HostNotFound`, `ConnectionFailed` and connect timeouts, Winsock's lookup codes), and the CLI asks
   `http::is_unreachable`. A name that can't be looked up was missed on Linux too. The new `http` tests with
   Windows- and Linux-shaped errors and a real lookup of a `.invalid` name fail without the fix.
+- 2026-11-16: Tests: the sync's skip-rule property test (`the_skip_rule_holds_whole_folders`) passes on Windows.
+  It checked that a cloud path becomes a plain local path under both name rules, and on a Windows computer Linux's
+  rule let `a:` through, which Windows reads as a drive. The client itself always uses the rule of the computer it
+  runs on (`local_relative` and the sync engine take `Platform::current()`; the one other use, the "won't sync to
+  a Windows computer" warning, builds no path), so the test now checks the local path with that rule only.
+  Found by the new Windows tests job in the Release workflow.
 - 2026-11-16: Versions: a kept version's content time is never shown after its replacement time
   (`versions::Version::modified_at`, which the command line and the web frontend both use). OxiCloud rounds
   `getlastmodified` to the nearest second (UPSTREAM.md C17) and the replacement time is the client's clock, so a
