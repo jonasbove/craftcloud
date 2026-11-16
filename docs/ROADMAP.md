@@ -4,6 +4,9 @@
 
 > **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (trace logs leave out HTTP
 > bodies and headers; a cloud file listed without an ETag is never trashed; an idle window uses next to no CPU)
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (the release checklist and the
+> Release workflow check the Craft web app pins; trace logs leave out HTTP bodies and headers; a cloud file listed
+> without an ETag is never trashed)
 
 CraftCloud is a self-hosted cloud for the Craft apps: the unmodified OxiCloud server in a Docker image, CraftCloud's
 own web frontend (Rust, egui, WebAssembly), a desktop sync client with a command line, and a small admin service.
@@ -131,6 +134,10 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   runs on (`local_relative` and the sync engine take `Platform::current()`; the one other use, the "won't sync to
   a Windows computer" warning, builds no path), so the test now checks the local path with that rule only.
   Found by the new Windows tests job in the Release workflow.
+- 2026-11-16: Releases: the Craft web app pins are checked before a release. [RELEASING.md](RELEASING.md)'s checklist
+  starts with `cargo xtask bump-apps --check` (a stale pin is moved in a pull request of its own, built and
+  smoke-tested as the `-apps` image), and the Release workflow runs the same check in its Linux x86_64 job and writes
+  the result to the run's summary ("Craft web app pins"), without ever failing the release on it.
 - 2026-11-16: Versions: a kept version's content time is never shown after its replacement time
   (`versions::Version::modified_at`, which the command line and the web frontend both use). OxiCloud rounds
   `getlastmodified` to the nearest second (UPSTREAM.md C17) and the replacement time is the client's clock, so a
