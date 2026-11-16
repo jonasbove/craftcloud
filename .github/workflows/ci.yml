@@ -115,21 +115,30 @@ jobs:
         run: |
           cargo test -p craftcloud --test cli_live --no-run
           cargo test -p craftcloud-native --test live --no-run
-      - name: Run the live tests
+      - name: A password for the test owner
+        # A throwaway owner on the throwaway server above; masked before it is kept, so it stays
+        # out of the log.
+        run: |
+          pw="live-$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
+          echo "::add-mask::$pw"
+          echo "CRAFTCLOUD_TEST_PASSWORD=$pw" >> "$GITHUB_ENV"
+      # The command line first: its sign-in doesn't wait out the server's limit on sign-ins per
+      # minute (429), live.rs's does. Both run, whatever the first one's result.
+      - name: Live tests of the command line (cli_live.rs)
+        id: cli
+        env:
+          CRAFTCLOUD_TEST_SERVER: http://127.0.0.1:8098
+          CRAFTCLOUD_TEST_USER: john
+          CRAFTCLOUD_HTTP_IDLE_SECS: "5"
+        run: cargo test -p craftcloud --test cli_live -- --test-threads 1
+      - name: Live tests of the sync engine (live.rs)
+        if: ${{ !cancelled() && (steps.cli.outcome == 'success' || steps.cli.outcome == 'failure') }}
         env:
           CRAFTCLOUD_TEST_SERVER: http://127.0.0.1:8098
           CRAFTCLOUD_TEST_USER: john
           # The silent-connection test needs a short idle limit and is skipped without one.
           CRAFTCLOUD_HTTP_IDLE_SECS: "5"
-        run: |
-          # A throwaway owner on the throwaway server above; the password stays out of the log.
-          CRAFTCLOUD_TEST_PASSWORD="live-$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
-          echo "::add-mask::$CRAFTCLOUD_TEST_PASSWORD"
-          export CRAFTCLOUD_TEST_PASSWORD
-          # The command line first: its sign-in doesn't wait out the server's limit on sign-ins
-          # per minute (429), live.rs's does.
-          cargo test -p craftcloud --test cli_live -- --test-threads 1
-          cargo test -p craftcloud-native --test live -- --test-threads 1
+        run: cargo test -p craftcloud-native --test live -- --test-threads 1
       - name: Server logs
         if: failure()
         run: |
