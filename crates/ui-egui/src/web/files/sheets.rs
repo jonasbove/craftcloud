@@ -42,6 +42,8 @@ pub enum Sheet {
     EmptyTrash,
     /// A trashed item's old place is taken: restore it under another name?
     RestoreTaken(Box<Item>),
+    /// A file's kept versions.
+    Versions(Box<super::versions::History>),
     /// Make a share link (drawn by [`super::share`]).
     Share(Box<super::share::ShareSheet>),
 }
@@ -66,6 +68,8 @@ impl Files {
         let clash = self.clash_name();
         let place = self.place_name();
         let waiting = self.uploads.list.iter().filter(|u| u.state == super::upload::UpState::Exists).count();
+        let clock = self.clock;
+        let mut version_pick = None;
         let more = waiting > 1 || self.uploads.list.iter().any(|u| u.state == super::upload::UpState::Queued);
         let Some(sheet) = &mut self.sheet else { return };
         let mut choice = Choice::None;
@@ -85,6 +89,7 @@ impl Files {
             Sheet::DeleteForever(ids) => (format!("Delete {} for good?", count(ids.len(), "item")), "Trash".into(), egui::vec2(520.0, 280.0)),
             Sheet::EmptyTrash => ("Empty the trash?".into(), "Trash".into(), egui::vec2(520.0, 280.0)),
             Sheet::RestoreTaken(item) => (format!("“{}” is already there", item.name), item.path.clone(), egui::vec2(560.0, 320.0)),
+            Sheet::Versions(h) => (format!("Versions of {}", h.item.name), super::versions::place(&h.item.path), egui::vec2(720.0, 600.0)),
             Sheet::Share(_) => return,
         };
         let mut open_folder: Option<usize> = None;
@@ -96,7 +101,7 @@ impl Files {
             &chrome::Hero {
                 title: &title,
                 caption: &caption,
-                keep_case: matches!(sheet, Sheet::NewFolder { .. } | Sheet::Rename { .. } | Sheet::RestoreTaken(_)),
+                keep_case: matches!(sheet, Sheet::NewFolder { .. } | Sheet::Rename { .. } | Sheet::RestoreTaken(_) | Sheet::Versions(_)),
             },
             |ui, part| match (&mut *sheet, part) {
                 (Sheet::NewFolder { name } | Sheet::Rename { name, .. }, chrome::Part::Body) => {
@@ -182,6 +187,8 @@ impl Files {
                             .color(t.muted),
                     );
                 }
+                (Sheet::Versions(h), chrome::Part::Body) => version_pick = super::versions::body(ui, h, clock),
+                (Sheet::Versions(_), chrome::Part::ActionsLeft) => {}
                 (Sheet::Share(_), chrome::Part::Body) => {}
                 (Sheet::Clash { .. }, chrome::Part::ActionsLeft) => {
                     if chrome::button(ui, "Skip", ButtonKind::Secondary, None, true).clicked() {
@@ -236,6 +243,11 @@ impl Files {
                             choice = Choice::Confirm;
                         }
                     }
+                    Sheet::Versions(_) => {
+                        if chrome::button(ui, "Close", ButtonKind::Primary, None, true).clicked() {
+                            choice = Choice::Cancel;
+                        }
+                    }
                     Sheet::Share(_) => {}
                 },
                 (_, chrome::Part::HeroRight) => {}
@@ -261,6 +273,9 @@ impl Files {
                 let g = self.picker_generation;
                 self.net.send(backend, Key::Picker(g), folders::contents(&self.server, &id, Some(super::PAGE), None));
             }
+        }
+        if let Some(pick) = version_pick {
+            self.versions_pick(backend, pick);
         }
         match choice {
             Choice::None => {}
@@ -349,7 +364,7 @@ impl Files {
                 let after = Self::history_gone(self.trash_all.iter().map(|i| i.path.clone()));
                 self.change_then(backend, vec![req], "Emptied the trash".into(), None, after);
             }
-            Some(other @ (Sheet::Clash { .. } | Sheet::Share(_))) => self.sheet = Some(other),
+            Some(other @ (Sheet::Clash { .. } | Sheet::Versions(_) | Sheet::Share(_))) => self.sheet = Some(other),
             None => {}
         }
     }

@@ -101,7 +101,6 @@ impl Item {
 
     /// "DOCX document", "PNG image", "Folder" — what kind of file, in words. A file is named by its
     /// format, never by another vendor's product: the Craft app that opens it is said beside it.
-    #[allow(dead_code)] // For the details and previews that follow.
     pub fn kind_label(&self) -> String {
         if self.is_folder() {
             return "Folder".into();

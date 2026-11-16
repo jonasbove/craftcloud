@@ -25,7 +25,7 @@ backup of anything you sync with it.
 | Single sign-on (OpenID Connect) | done; tested end to end with Keycloak | [OIDC.md](OIDC.md) |
 | Two-way sync folder, versions, conflict copies | done; hardening from testers' reports | [ARCHITECTURE.md › Sync](ARCHITECTURE.md#sync) |
 | Desktop client (tray, Activity, Folders, Settings, start at login) | done | [README](../README.md#downloads) |
-| Web file browser (upload, download, rename, move, delete, trash, versions, recent, starred, search) | done | [design-notes/pass-2.md](design-notes/pass-2.md) |
+| Web file browser (upload, download, rename, move, delete, trash, versions, details, recent, starred, search) | done | [design-notes/pass-2.md](design-notes/pass-2.md) |
 | Share links | done: public share page, CLI, the web's "Share link" sheet and "Your share links" page | [CLI.md › Share links](CLI.md#share-links) |
 | Admin (users, server settings, Craft web apps on or off) | done, on the web and in the CLI | [CLI.md](CLI.md#server-administration-owners-and-admins) |
 | Command line | done; on Windows through `craftcloud.com` (untried on Windows) | [CLI.md](CLI.md) |
@@ -88,6 +88,16 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-15: Web: the file browser's **details panel** (#24). On a wide page, the one file selected shows beside the
+  list: a preview (the image, or the mark of the Craft app that opens it), its name and star, "DOCX document · 248 KB
+  · opens in WordCraft", DOWNLOAD, SHARE… and the "…" menu, when it changed, where it is, its owner and whether it is shared,
+  and its newest kept versions to restore, with ALL VERSIONS… for the rest. "Open in <app>" is left out until the
+  page that frames a Craft web app is built (M5). SHARE… beside DOWNLOAD opens the share-link sheet.
+- 2026-11-15: Web: the file browser follows the v2 Files frames (#24). A file's "…" menu has **Versions…**: the
+  current file and the versions kept in `.craftcloud/versions/` (the newest 5), each to download or restore. A
+  restore keeps the current file as a version first and writes with `If-Match`, so a change made meanwhile is never
+  overwritten. The menu says "Move to trash" where it said "Delete". Uploading over a taken name, restoring from the
+  trash with a new name, Recent's OPENED column and the phone layout already matched the frames.
 - 2026-11-15: Build: the Craft web builds are fetched by `cargo xtask fetch-apps` and their pins updated by
   `cargo xtask bump-apps`, in Rust; the Python scripts `scripts/fetch-apps` and `scripts/bump-apps` are gone, and the
   image build no longer needs Python. The `-apps` image serves the same files and `apps.json`.
