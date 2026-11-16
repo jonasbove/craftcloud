@@ -101,6 +101,12 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-16: Versions: a kept version's content time is never shown after its replacement time
+  (`versions::Version::modified_at`, which the command line and the web frontend both use). OxiCloud rounds
+  `getlastmodified` to the nearest second (UPSTREAM.md C16) and the replacement time is the client's clock, so a
+  `put --force` within half a second of the first `put` showed `modified` a second after `replaced_at`; a server
+  clock ahead of the client's did the same by more. Found by `cli_live` in the new CI `live` job.
+  `a_versions_content_is_never_newer_than_its_replacement` fails without the fix.
 - 2026-11-16: Logging: trace logs no longer include HTTP request bodies and headers. The desktop client, the
   command line and `craftcloud-admin` log through one filter (`craftcloud_core::logging::WireCapped`) that stops the
   HTTP library (`ureq`, `ureq_proto`) at debug level whatever `RUST_LOG` asks for. `tokens_never_reach_the_trace_log`

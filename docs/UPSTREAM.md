@@ -332,6 +332,17 @@ fix below would remove some of that glue.
 > Ask: distinct keys, e.g. `account_not_provisioned` and `client_auth_failed` (the latter is an admin problem,
 > the former a user one).
 
+### C16. `getlastmodified` is rounded to the nearest second, `Date` truncated
+
+> **A file written at 16:11:13.66 says `getlastmodified` 16:11:14 in a `PROPFIND` answered with `Date` 16:11:13**
+>
+> Seen on 2026-11-16 with v0.10.0: `PUT`s at .32 and .66 past the same second came back as that second and the
+> next. So a file's time can be up to half a second after the moment it was written, and after a client's own
+> clock reading taken just after the write. CraftCloud never shows a kept version's content as changed after it
+> was replaced (`versions::Version::modified_at`), which also covers a server clock that runs ahead.
+>
+> Ask: truncate `getlastmodified` (and `Last-Modified`) to the second, as the `Date` header is.
+
 ## D. craft-common-actions (github.com/storytold/craft-common-actions)
 
 CraftCloud builds its desktop releases with its own `.github/workflows/release.yml`, which makes the same files
