@@ -2,8 +2,8 @@
 
 **Stage: early alpha** · version 0.1.1 (fixes for 0.1.0, the first release: a published image and desktop builds)
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (one file is in one move at
-> most; a replaced folder syncs in one pass)
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (tests of the sync engine's
+> guards and the sign-in against a scripted server)
 
 CraftCloud is a self-hosted cloud for the Craft apps: the unmodified OxiCloud server in a Docker image, CraftCloud's
 own web frontend (Rust, egui, WebAssembly), a desktop sync client with a command line, and a small admin service.
@@ -106,6 +106,14 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   an upload, a share link opened in a second, signed-out browser and downloaded there, a device code approved on
   `/device`, a new user on Admin › Users with the CSRF header, and forged admin writes refused. It works the canvas
   with the keyboard and checks the server, the cookie jar and the network log ([TESTING.md](TESTING.md)). Not in CI.
+- 2026-11-16: Tests: the top three gaps of [TESTING.md › Coverage](TESTING.md#the-gaps-worth-a-test-by-risk), with
+  the real engine and session against a scripted local server (`crates/native/src/fake_server.rs`), in
+  `cargo xtask ci`: switching a folder off keeps files changed since the last sync (size or time) and says so; a
+  file or folder changed in the cloud since the plan, or whose listing fails, is never trashed; an expired token
+  is refreshed once and the request sent again, another process's tokens are taken over (and refreshed with their
+  own refresh token when stale), a refused refresh (401, 403, 404) signs out. `crates/native` 55% → 67% of lines,
+  `session.rs` 13% → 73%. Two known bugs, each an ignored test, not fixed here: a cloud file listed without an
+  ETag is trashed (`still_at`), and at trace level ureq-proto logs a refresh's tokens.
 - 2026-11-16: Sync: one file is in one move at most. A file moved here onto a synced file that was renamed in the
   cloud was taken both as that move and as the rename (two moves through one path); the move here now wins and the
   renamed cloud file comes down as new. The other way round (a file moved onto another in the cloud while that one
