@@ -126,6 +126,12 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   ends with its refresh token. Run on Linux against a throwaway
   server with 0.1.1 on one side and this tree on the other, both ways round: every sync case passed. The Windows-only
   name rule of 0.2.0 isn't exercised on Linux ([TESTING.md](TESTING.md#mixed-versions-an-older-release-on-one-side)).
+- 2026-11-16: Tests: the live sync tests (`crates/native/tests/live.rs`) no longer depend on what is on the test
+  account. Each test syncs only top-level folders of its own (`live-<test>-<seconds>-<pid>-…`), with every folder
+  the account had before switched off, and when it ends, failed or not, its folders and kept versions go to the
+  trash and from there for good. A whole run, or one test twice in a row, passes on an account with leftovers (an
+  old `t5/`, a conflict copy in `Documents/`). The offline computer in the rename-and-edit test is paused while
+  offline, so its folder watcher no longer races the other computer.
 - 2026-11-16: Roadmap: M9, sync with any WebDAV server (Nextcloud, ownCloud, a NAS …), planned for 0.2.0 on the
   branch `feature/webdav-support`. The Windows command line (`craftcloud.com`, the PATH entry, the uninstall's
   cleanup) leaves Upcoming: it was tried on Windows 11.

@@ -8,14 +8,22 @@
 //! ```
 //!
 //! On a fresh server it creates the owner with those details first. Use a throwaway container.
+//!
+//! Each test keeps to a corner of the account of its own ([`Live`]): its top-level folders are
+//! named `live-<test>-<seconds>-<pid>-<name>`, its computers switch off every folder the account
+//! had before it started (as the Folders tab does), and when it ends, failed or not, its folders
+//! and their kept versions go to the trash and from there for good. So what is already on the
+//! account never changes what a test sees, and a run leaves nothing behind. (The quota tests make
+//! a user of their own each run; the server has no call to delete one, so those users stay.)
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use craftcloud_core::ServerUrl;
 use craftcloud_core::api::auth::{self, Tokens};
-use craftcloud_core::api::resources::Kind;
+use craftcloud_core::api::resources::{Kind, Resource};
+use craftcloud_core::api::trash::TrashItem;
 use craftcloud_core::api::{admin, dav, favorites, folders, trash};
 use craftcloud_core::sync::{ActivityKind, Keep, SyncPlan, SyncState};
 use craftcloud_native::http::{ThreadBackend, execute};
@@ -37,17 +45,205 @@ fn sign_in(server: &ServerUrl, user: &str, password: &str) -> Tokens {
     if !status.initialized {
         auth::parse_setup(&execute(&auth::setup(server, user, &format!("{user}@example.org"), password)).unwrap()).unwrap();
     }
-    let tokens = auth::parse_login(&execute(&auth::login(server, user, password)).unwrap()).unwrap();
+    let tokens = login(server, user, password);
     *kept = Some(tokens.clone());
     tokens
 }
 
-fn computer(server: &ServerUrl, tokens: &Tokens, local: &Path, name: &str) -> Handle {
-    // Setup makes the folder; the sync never does.
-    std::fs::create_dir_all(local).unwrap();
-    let plan =
-        SyncPlan { server: server.to_string(), local_folder: local.display().to_string(), excluded: vec![], folders: vec![], sync_root_files: false };
-    craftcloud_native::sync::start(plan, tokens.clone(), name.into(), Box::new(|_| {}), Arc::new(|| {}))
+/// Signs `user` in, waiting out the server's limit on sign-ins per minute (a run right after
+/// another one, or a new user's first sign-in, can meet it). OxiCloud answers 429 with
+/// `Retry-After: 60`, and a try within that minute starts it again, so the next try waits it out.
+fn login(server: &ServerUrl, user: &str, password: &str) -> Tokens {
+    let deadline = Instant::now() + Duration::from_secs(300);
+    loop {
+        match auth::parse_login(&execute(&auth::login(server, user, password)).unwrap()) {
+            Ok(tokens) => return tokens,
+            Err(e) if e.status() == Some(429) && Instant::now() < deadline => std::thread::sleep(Duration::from_secs(65)),
+            Err(e) => panic!("signing in as {user}: {e}"),
+        }
+    }
+}
+
+/// Seconds since 1970 and this process: what makes a test's names its own.
+fn run_id() -> String {
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    format!("{secs}-{}", std::process::id())
+}
+
+/// Bounds every paged listing: a server that keeps handing out cursors doesn't hang a test.
+const PAGES: usize = 100;
+
+/// Everything in the cloud folder `id` (CraftCloud's own items too), page by page.
+fn children(server: &ServerUrl, tokens: &Tokens, id: &str) -> Result<Vec<Resource>, String> {
+    let mut out = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..PAGES {
+        let resp = execute(&tokens.authorize(folders::contents(server, id, Some(200), cursor.as_deref())))?;
+        let page = folders::parse_contents_all(&resp).map_err(|e| e.to_string())?;
+        out.extend(page.items);
+        cursor = page.next_cursor.filter(|c| !c.is_empty());
+        if cursor.is_none() {
+            return Ok(out);
+        }
+    }
+    Err("the folder listing didn't end".to_owned())
+}
+
+/// The REST id of the account's top folder.
+fn root_id(server: &ServerUrl, tokens: &Tokens) -> Result<String, String> {
+    let roots = folders::parse_roots(&execute(&tokens.authorize(folders::roots(server)))?).map_err(|e| e.to_string())?;
+    roots.into_iter().find(|f| f.parent_id.is_none()).map(|f| f.id).ok_or_else(|| "no top folder".to_owned())
+}
+
+/// Everything in the trash (CraftCloud's own items too), page by page, soonest to expire first.
+fn trash_all(server: &ServerUrl, tokens: &Tokens) -> Result<Vec<TrashItem>, String> {
+    let mut out = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..PAGES {
+        let resp = execute(&tokens.authorize(trash::list(server, Some(200), cursor.as_deref())))?;
+        let page = trash::parse_list_all(&resp).map_err(|e| e.to_string())?;
+        out.extend(page.items);
+        cursor = page.next_cursor.filter(|c| !c.is_empty());
+        if cursor.is_none() {
+            return Ok(out);
+        }
+    }
+    Err("the trash listing didn't end".to_owned())
+}
+
+/// One test's corner of the account: top-level folders of its own, computers that sync only
+/// those, and a cleanup when the test ends, passed or failed.
+///
+/// Make it before the test's computers: locals drop in reverse, so the computers stop first.
+struct Live {
+    server: ServerUrl,
+    tokens: Tokens,
+    /// `live-<test>-<seconds>-<pid>`: every top-level folder of the test is named `<base>-…`.
+    base: String,
+    /// The top-level folders the account had before the test: switched off on its computers.
+    others: Vec<String>,
+    dirs: tempfile::TempDir,
+}
+
+impl Live {
+    /// As the test user (made first on a fresh server); `None` when no test server is set.
+    fn new(test: &str) -> Option<Self> {
+        let (server, user, password) = env()?;
+        let tokens = sign_in(&server, &user, &password);
+        Some(Self::with(server, tokens, test))
+    }
+
+    /// As the account `tokens` belongs to.
+    fn with(server: ServerUrl, tokens: Tokens, test: &str) -> Self {
+        let root = root_id(&server, &tokens).unwrap();
+        let others =
+            children(&server, &tokens, &root).unwrap().into_iter().filter(|r| r.kind() == Kind::Folder).map(|r| r.name().to_owned()).collect();
+        Self { base: format!("live-{test}-{}", run_id()), others, dirs: tempfile::tempdir().unwrap(), server, tokens }
+    }
+
+    /// The test's own path for `rel`, in the cloud and in a sync folder alike: its first part
+    /// becomes a top-level folder of the test (`Shared/notes.md` → `live-…-Shared/notes.md`).
+    fn p(&self, rel: &str) -> String {
+        format!("{}-{rel}", self.base)
+    }
+
+    /// Whether a top-level name is one of the test's folders.
+    fn mine(&self, top: &str) -> bool {
+        top.starts_with(&format!("{}-", self.base))
+    }
+
+    /// A folder in the test's scratch space on this computer.
+    fn local(&self, name: &str) -> PathBuf {
+        self.dirs.path().join(name)
+    }
+
+    /// What a computer with its sync folder at `local` syncs: every folder but the account's
+    /// others and `off` (new ones too, whichever side makes them), and no files at the top.
+    fn plan(&self, local: &Path, off: &[String]) -> SyncPlan {
+        SyncPlan {
+            server: self.server.to_string(),
+            local_folder: local.display().to_string(),
+            excluded: self.others.iter().chain(off).cloned().collect(),
+            folders: vec![],
+            sync_root_files: false,
+        }
+    }
+
+    fn computer(&self, local: &Path, name: &str) -> Handle {
+        self.start(self.plan(local, &[]), name)
+    }
+
+    fn start(&self, plan: SyncPlan, name: &str) -> Handle {
+        // Setup makes the folder; the sync never does.
+        std::fs::create_dir_all(&plan.local_folder).unwrap();
+        craftcloud_native::sync::start(plan, self.tokens.clone(), name.into(), Box::new(|_| {}), Arc::new(|| {}))
+    }
+
+    /// Whether a cloud path is the test's: in one of its folders, or in their kept versions.
+    fn owns(&self, cloud_path: &str) -> bool {
+        let rest = cloud_path.strip_prefix(&format!("{}/versions/", dav::CRAFTCLOUD_DIR)).unwrap_or(cloud_path);
+        self.mine(rest.split('/').next().unwrap_or_default())
+    }
+
+    /// Trashes the test's folders and their kept versions, then deletes those and everything
+    /// else the test trashed for good. Never panics: it runs while a failed test unwinds, where a
+    /// panic would abort the whole run.
+    fn clean_up(&self) -> Result<(), String> {
+        let (server, tokens) = (&self.server, &self.tokens);
+        let root = root_id(server, tokens)?;
+        let mut trashed: Vec<String> = Vec::new();
+        // Looked for again in case a stopped computer's last cycle still made a folder.
+        for _ in 0..3 {
+            std::thread::sleep(Duration::from_secs(1));
+            let top = children(server, tokens, &root)?;
+            let mut found: Vec<String> = top.iter().filter(|r| r.kind() == Kind::Folder && self.mine(r.name())).map(|r| r.id().to_owned()).collect();
+            if let Some(internal) = top.iter().find(|r| r.kind() == Kind::Folder && r.name() == dav::CRAFTCLOUD_DIR)
+                && let Some(versions) =
+                    children(server, tokens, internal.id())?.into_iter().find(|r| r.kind() == Kind::Folder && r.name() == "versions")
+            {
+                found.extend(children(server, tokens, versions.id())?.iter().filter(|r| self.mine(r.name())).map(|r| r.id().to_owned()));
+            }
+            if found.is_empty() {
+                break;
+            }
+            for id in found {
+                let resp = execute(&tokens.authorize(folders::trash(server, &id)))?;
+                if !resp.is_success() {
+                    return Err(format!("trashing a folder answered {}", resp.status));
+                }
+                trashed.push(id);
+            }
+        }
+        // A folder just trashed can take a moment to show in the trash listing (seen once: it
+        // showed only after the purge, and stayed), so the purge goes on until every folder
+        // trashed above has been seen and deleted, and nothing of the test is left.
+        let mut expected = trashed;
+        for _ in 0..10 {
+            let ours: Vec<TrashItem> =
+                trash_all(server, tokens)?.into_iter().filter(|i| i.resource.cloud_path().is_some_and(|p| self.owns(&p))).collect();
+            if ours.is_empty() && expected.is_empty() {
+                return Ok(());
+            }
+            for item in &ours {
+                // Best effort: an item inside a folder deleted just before may be gone with it.
+                let _ = execute(&tokens.authorize(trash::delete(server, item.resource.id())));
+                expected.retain(|id| id != item.resource.id());
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        Err(format!("its trash wasn't emptied ({} trashed folders never showed in the trash)", expected.len()))
+    }
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        // The computers have stopped (they drop first); without their local copies nothing a
+        // last cycle still runs can bring a folder back.
+        let _ = std::fs::remove_dir_all(self.dirs.path());
+        if let Err(e) = self.clean_up() {
+            eprintln!("cleaning up {}: {e}", self.base);
+        }
+    }
 }
 
 /// Runs one more cycle (one that starts after this call) and waits for it to finish.
@@ -84,8 +280,8 @@ fn counted(h: &Handle, folder: &str, files: u64, bytes: u64) {
 
 /// The trash id of the newest trashed item that was at `cloud_path`.
 fn in_trash(server: &ServerUrl, tokens: &Tokens, cloud_path: &str) -> Option<String> {
-    let page = trash::parse_list(&execute(&tokens.authorize(trash::list(server, Some(200), None))).unwrap()).unwrap();
-    page.items.iter().rev().find(|i| i.resource.cloud_path().as_deref() == Some(cloud_path)).map(|i| i.resource.id().to_owned())
+    let items = trash_all(server, tokens).unwrap();
+    items.iter().rev().find(|i| i.resource.cloud_path().as_deref() == Some(cloud_path)).map(|i| i.resource.id().to_owned())
 }
 
 fn read(path: &Path) -> String {
@@ -100,91 +296,91 @@ fn names_in(dir: &Path) -> Vec<String> {
 
 #[test]
 fn two_computers_stay_in_sync() {
-    let Some((server, user, password)) = env() else {
+    let Some(live) = Live::new("two") else {
         eprintln!("skipped: CRAFTCLOUD_TEST_SERVER not set");
         return;
     };
-    let tokens = sign_in(&server, &user, &password);
-    let dirs = tempfile::tempdir().unwrap();
-    let (a_root, b_root) = (dirs.path().join("A"), dirs.path().join("B"));
-    let a = computer(&server, &tokens, &a_root, "Alpha");
-    let b = computer(&server, &tokens, &b_root, "Beta");
+    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let (a_root, b_root) = (live.local("A"), live.local("B"));
+    let a = live.computer(&a_root, "Alpha");
+    let b = live.computer(&b_root, "Beta");
     sync(&a);
     sync(&b);
+    let (shared, notes) = (live.p("Shared"), live.p("Shared/notes.md"));
 
     // A new file on A reaches B.
-    write(&a_root.join("Shared/notes.md"), "one");
+    write(&a_root.join(&notes), "one");
     sync(&a);
     sync(&b);
-    assert_eq!(read(&b_root.join("Shared/notes.md")), "one");
-    counted(&b, "Shared", 1, 3);
+    assert_eq!(read(&b_root.join(&notes)), "one");
+    counted(&b, &shared, 1, 3);
 
     // An edit on A reaches B, and the cloud keeps the previous version.
-    write(&a_root.join("Shared/notes.md"), "two");
+    write(&a_root.join(&notes), "two");
     sync(&a);
     sync(&b);
-    assert_eq!(read(&b_root.join("Shared/notes.md")), "two");
-    let versions = execute(&tokens.authorize(dav::list(&server, &dav::versions_folder("Shared/notes.md")))).unwrap();
+    assert_eq!(read(&b_root.join(&notes)), "two");
+    let versions = execute(&tokens.authorize(dav::list(&server, &dav::versions_folder(&notes)))).unwrap();
     let kept: Vec<_> = dav::parse_list(&versions).unwrap().into_iter().filter(|e| !e.is_folder).collect();
     assert_eq!(kept.len(), 1, "{kept:?}");
 
     // Both edit the same file: one keeps its version as a conflict copy, on both sides.
-    write(&a_root.join("Shared/notes.md"), "from A");
-    write(&b_root.join("Shared/notes.md"), "from B, longer");
+    write(&a_root.join(&notes), "from A");
+    write(&b_root.join(&notes), "from B, longer");
     sync(&a);
     sync(&b);
     sync(&a);
-    assert_eq!(read(&a_root.join("Shared/notes.md")), "from A");
-    assert_eq!(read(&b_root.join("Shared/notes.md")), "from A");
-    let in_a = names_in(&a_root.join("Shared"));
-    let in_b = names_in(&b_root.join("Shared"));
+    assert_eq!(read(&a_root.join(&notes)), "from A");
+    assert_eq!(read(&b_root.join(&notes)), "from A");
+    let in_a = names_in(&a_root.join(&shared));
+    let in_b = names_in(&b_root.join(&shared));
     assert_eq!(in_a, in_b);
     let copies: Vec<&String> = in_a.iter().filter(|n| n.contains("(conflict ")).collect();
     assert_eq!(copies.len(), 1, "{in_a:?}");
     assert!(copies[0].contains("Beta") && copies[0].ends_with(".md"), "{copies:?}");
-    assert_eq!(read(&a_root.join("Shared").join(copies[0])), "from B, longer");
+    assert_eq!(read(&a_root.join(&shared).join(copies[0])), "from B, longer");
 
     // Settling it on A: "keep mine" (the copy's text) replaces the original everywhere.
     let conflict = a.progress.lock().unwrap().conflicts.clone();
     assert_eq!(conflict.len(), 1, "{conflict:?}");
-    assert_eq!(conflict[0].original, "Shared/notes.md");
+    assert_eq!(conflict[0].original, notes);
     a.send(Command::Resolve(conflict[0].clone(), Keep::Mine));
     sync(&a);
     sync(&b);
-    assert_eq!(read(&a_root.join("Shared/notes.md")), "from B, longer");
-    assert_eq!(read(&b_root.join("Shared/notes.md")), "from B, longer");
-    assert!(names_in(&b_root.join("Shared")).iter().all(|n| !n.contains("(conflict ")), "{:?}", names_in(&b_root.join("Shared")));
+    assert_eq!(read(&a_root.join(&notes)), "from B, longer");
+    assert_eq!(read(&b_root.join(&notes)), "from B, longer");
+    assert!(names_in(&b_root.join(&shared)).iter().all(|n| !n.contains("(conflict ")), "{:?}", names_in(&b_root.join(&shared)));
     assert!(a.progress.lock().unwrap().conflicts.is_empty());
 
     // A delete on A removes it on B, and the cloud keeps it in the trash (never deleted for good).
-    std::fs::remove_file(a_root.join("Shared/notes.md")).unwrap();
+    std::fs::remove_file(a_root.join(&notes)).unwrap();
     sync(&a);
     sync(&b);
-    assert!(!b_root.join("Shared/notes.md").exists());
-    let trashed = in_trash(&server, &tokens, "Shared/notes.md").expect("the deleted file is in the cloud's trash");
+    assert!(!b_root.join(&notes).exists());
+    let trashed = in_trash(&server, &tokens, &notes).expect("the deleted file is in the cloud's trash");
     execute(&tokens.authorize(trash::restore(&server, &trashed))).unwrap();
     sync(&a);
     sync(&b);
-    assert_eq!(read(&b_root.join("Shared/notes.md")), "from B, longer", "restored from the trash, it syncs back");
-    std::fs::remove_file(b_root.join("Shared/notes.md")).unwrap();
+    assert_eq!(read(&b_root.join(&notes)), "from B, longer", "restored from the trash, it syncs back");
+    std::fs::remove_file(b_root.join(&notes)).unwrap();
     sync(&b);
     sync(&a);
-    assert!(!a_root.join("Shared/notes.md").exists());
+    assert!(!a_root.join(&notes).exists());
 
     // An emptied folder goes to the trash too.
-    write(&a_root.join("Shared/Old/gone.md"), "x");
+    write(&a_root.join(live.p("Shared/Old/gone.md")), "x");
     sync(&a);
-    std::fs::remove_file(a_root.join("Shared/Old/gone.md")).unwrap();
-    std::fs::remove_dir(a_root.join("Shared/Old")).unwrap();
+    std::fs::remove_file(a_root.join(live.p("Shared/Old/gone.md"))).unwrap();
+    std::fs::remove_dir(a_root.join(live.p("Shared/Old"))).unwrap();
     sync(&a);
     sync(&a);
-    assert!(in_trash(&server, &tokens, "Shared/Old").is_some(), "the emptied folder is in the trash");
-    let listed = execute(&tokens.authorize(dav::list(&server, "Shared"))).unwrap();
-    assert!(dav::parse_list(&listed).unwrap().iter().all(|e| e.path != "Shared/Old"), "the empty folder is gone from the cloud");
+    assert!(in_trash(&server, &tokens, &live.p("Shared/Old")).is_some(), "the emptied folder is in the trash");
+    let listed = execute(&tokens.authorize(dav::list(&server, &shared))).unwrap();
+    assert!(dav::parse_list(&listed).unwrap().iter().all(|e| e.path != live.p("Shared/Old")), "the empty folder is gone from the cloud");
 
     // The folder watcher: a change on A is synced without asking.
     let before = a.progress.lock().unwrap().cycles;
-    std::fs::write(a_root.join("Shared/watched.md"), "seen").unwrap();
+    std::fs::write(a_root.join(live.p("Shared/watched.md")), "seen").unwrap();
     let deadline = Instant::now() + Duration::from_secs(15);
     while a.progress.lock().unwrap().cycles == before {
         assert!(Instant::now() < deadline, "the watcher didn't start a sync");
@@ -194,242 +390,235 @@ fn two_computers_stay_in_sync() {
     std::thread::sleep(Duration::from_millis(2_200));
     sync(&a);
     sync(&b);
-    assert_eq!(read(&b_root.join("Shared/watched.md")), "seen");
+    assert_eq!(read(&b_root.join(live.p("Shared/watched.md"))), "seen");
 
     // A save in progress (CraftCloud's own temporary names, the Craft apps' .craft_tmp) is never uploaded.
-    write(&a_root.join("Shared/.report.99-1.craft_tmp"), "half a save");
+    write(&a_root.join(live.p("Shared/.report.99-1.craft_tmp")), "half a save");
     sync(&a);
     sync(&b);
-    assert!(!b_root.join("Shared/.report.99-1.craft_tmp").exists());
+    assert!(!b_root.join(live.p("Shared/.report.99-1.craft_tmp")).exists());
 
     // Switching a folder off on B removes B's copy; the cloud (and A) keep it. What B still has
     // there is reported, not silently skipped.
-    b.send(Command::Replan(SyncPlan {
-        server: server.to_string(),
-        local_folder: b_root.display().to_string(),
-        excluded: vec!["Shared".into()],
-        folders: vec![],
-        sync_root_files: false,
-    }));
+    b.send(Command::Replan(live.plan(&b_root, std::slice::from_ref(&shared))));
     sync(&b);
-    assert!(!b_root.join("Shared/watched.md").exists());
+    assert!(!b_root.join(live.p("Shared/watched.md")).exists());
     sync(&a);
-    assert_eq!(read(&a_root.join("Shared/watched.md")), "seen");
-    std::fs::create_dir_all(b_root.join("Shared")).unwrap();
-    write(&b_root.join("Shared/local only.md"), "here");
+    assert_eq!(read(&a_root.join(live.p("Shared/watched.md"))), "seen");
+    std::fs::create_dir_all(b_root.join(&shared)).unwrap();
+    write(&b_root.join(live.p("Shared/local only.md")), "here");
     sync(&b);
-    let skipped = b.progress.lock().unwrap().activity.iter().any(|e| e.kind == ActivityKind::Skipped && e.path == "Shared");
+    let skipped = b.progress.lock().unwrap().activity.iter().any(|e| e.kind == ActivityKind::Skipped && e.path == shared);
     assert!(skipped, "the switched-off folder is reported");
     sync(&a);
-    assert!(!a_root.join("Shared/local only.md").exists());
+    assert!(!a_root.join(live.p("Shared/local only.md")).exists());
 }
 
 #[test]
 fn folders_made_anywhere_join_the_sync() {
-    let Some((server, user, password)) = env() else { return };
-    let tokens = sign_in(&server, &user, &password);
-    let dirs = tempfile::tempdir().unwrap();
-    let (a_root, b_root) = (dirs.path().join("A"), dirs.path().join("B"));
-    let a = computer(&server, &tokens, &a_root, "Alpha");
-    let b = computer(&server, &tokens, &b_root, "Beta");
+    let Some(live) = Live::new("join") else { return };
+    let (a_root, b_root) = (live.local("A"), live.local("B"));
+    let a = live.computer(&a_root, "Alpha");
+    let b = live.computer(&b_root, "Beta");
     sync(&a);
     sync(&b);
+    let ete = live.p("Été");
 
     // Folders made on one computer join the sync (only folders switched off stay out), however
     // many files they hold and whatever their names.
-    write(&a_root.join("Été/fichier.txt"), "x");
+    write(&a_root.join(&ete).join("fichier.txt"), "x");
     for i in 0..300 {
-        std::fs::write(a_root.join("Été").join(format!("{i:03}.txt")), i.to_string()).unwrap();
+        std::fs::write(a_root.join(&ete).join(format!("{i:03}.txt")), i.to_string()).unwrap();
     }
     std::thread::sleep(Duration::from_millis(2_200));
     sync(&a);
     sync(&b);
-    assert_eq!(read(&b_root.join("Été/fichier.txt")), "x");
-    assert_eq!(names_in(&b_root.join("Été")).len(), 301);
-    let ups = a.progress.lock().unwrap().activity.iter().filter(|e| e.path.starts_with("Été/")).count();
+    assert_eq!(read(&b_root.join(&ete).join("fichier.txt")), "x");
+    assert_eq!(names_in(&b_root.join(&ete)).len(), 301);
+    let ups = a.progress.lock().unwrap().activity.iter().filter(|e| e.path.starts_with(&format!("{ete}/"))).count();
     // Each upload is in the activity list (which keeps the newest 200).
     assert_eq!(ups, craftcloud_core::sync::ACTIVITY_KEPT);
 
     // Moving a file into a new folder moves it everywhere (it is never lost on the way).
-    std::fs::create_dir_all(b_root.join("sub/deep")).unwrap();
-    std::fs::rename(b_root.join("Été/000.txt"), b_root.join("sub/deep/000.txt")).unwrap();
+    std::fs::create_dir_all(b_root.join(live.p("sub/deep"))).unwrap();
+    std::fs::rename(b_root.join(&ete).join("000.txt"), b_root.join(live.p("sub/deep/000.txt"))).unwrap();
     std::thread::sleep(Duration::from_millis(2_200));
     sync(&b);
     sync(&a);
-    assert_eq!(read(&a_root.join("sub/deep/000.txt")), "0");
-    assert!(!a_root.join("Été/000.txt").exists());
+    assert_eq!(read(&a_root.join(live.p("sub/deep/000.txt"))), "0");
+    assert!(!a_root.join(&ete).join("000.txt").exists());
 
     // Moving one into a folder switched off on that computer keeps it in the cloud, and says so.
-    b.send(Command::Replan(SyncPlan {
-        server: server.to_string(),
-        local_folder: b_root.display().to_string(),
-        excluded: vec!["Private".into()],
-        folders: vec![],
-        sync_root_files: false,
-    }));
-    std::fs::create_dir_all(b_root.join("Private")).unwrap();
-    std::fs::rename(b_root.join("Été/001.txt"), b_root.join("Private/001.txt")).unwrap();
+    let private = live.p("Private");
+    b.send(Command::Replan(live.plan(&b_root, std::slice::from_ref(&private))));
+    std::fs::create_dir_all(b_root.join(&private)).unwrap();
+    std::fs::rename(b_root.join(&ete).join("001.txt"), b_root.join(&private).join("001.txt")).unwrap();
     std::thread::sleep(Duration::from_millis(2_200));
     sync(&b);
     sync(&a);
-    assert_eq!(read(&a_root.join("Été/001.txt")), "1", "the cloud keeps it");
-    let said = b.progress.lock().unwrap().activity.iter().any(|e| e.kind == ActivityKind::Skipped && e.path == "Été/001.txt");
+    assert_eq!(read(&a_root.join(&ete).join("001.txt")), "1", "the cloud keeps it");
+    let moved_out = format!("{ete}/001.txt");
+    let said = b.progress.lock().unwrap().activity.iter().any(|e| e.kind == ActivityKind::Skipped && e.path == moved_out);
     assert!(said, "the move out of the synced folders is reported");
 }
 
 #[test]
 fn renames_and_moves_are_moves_on_both_sides() {
-    let Some((server, user, password)) = env() else { return };
-    let tokens = sign_in(&server, &user, &password);
-    let dirs = tempfile::tempdir().unwrap();
-    let (a_root, b_root) = (dirs.path().join("A"), dirs.path().join("B"));
-    let a = computer(&server, &tokens, &a_root, "Alpha");
-    let b = computer(&server, &tokens, &b_root, "Beta");
-    write(&a_root.join("Moves/c1.txt"), "rename me");
+    let Some(live) = Live::new("moves") else { return };
+    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let (a_root, b_root) = (live.local("A"), live.local("B"));
+    let a = live.computer(&a_root, "Alpha");
+    let b = live.computer(&b_root, "Beta");
+    let m = |rel: &str| live.p(&format!("Moves/{rel}"));
+    write(&a_root.join(m("c1.txt")), "rename me");
     sync(&a);
     sync(&b);
-    assert_eq!(read(&b_root.join("Moves/c1.txt")), "rename me");
+    assert_eq!(read(&b_root.join(m("c1.txt"))), "rename me");
     let moved = |h: &Handle, path: &str| h.progress.lock().unwrap().activity.iter().any(|e| e.kind == ActivityKind::Moved && e.path == path);
 
     // A rename here is one MOVE in the cloud (no upload, nothing in the trash) and a rename there.
-    std::fs::rename(a_root.join("Moves/c1.txt"), a_root.join("Moves/c1-renamed.txt")).unwrap();
+    std::fs::rename(a_root.join(m("c1.txt")), a_root.join(m("c1-renamed.txt"))).unwrap();
     sync(&a);
-    assert!(moved(&a, "Moves/c1-renamed.txt"), "{:?}", a.progress.lock().unwrap().activity.last());
-    assert!(in_trash(&server, &tokens, "Moves/c1.txt").is_none(), "nothing went to the trash");
+    assert!(moved(&a, &m("c1-renamed.txt")), "{:?}", a.progress.lock().unwrap().activity.last());
+    assert!(in_trash(&server, &tokens, &m("c1.txt")).is_none(), "nothing went to the trash");
     sync(&b);
-    assert!(moved(&b, "Moves/c1-renamed.txt"), "{:?}", b.progress.lock().unwrap().activity.last());
-    assert_eq!(read(&b_root.join("Moves/c1-renamed.txt")), "rename me");
-    assert!(!b_root.join("Moves/c1.txt").exists());
+    assert!(moved(&b, &m("c1-renamed.txt")), "{:?}", b.progress.lock().unwrap().activity.last());
+    assert_eq!(read(&b_root.join(m("c1-renamed.txt"))), "rename me");
+    assert!(!b_root.join(m("c1.txt")).exists());
 
     // A move into new folders, the same way.
-    std::fs::create_dir_all(b_root.join("Moves/sub/deep")).unwrap();
-    std::fs::rename(b_root.join("Moves/c1-renamed.txt"), b_root.join("Moves/sub/deep/c1-renamed.txt")).unwrap();
+    std::fs::create_dir_all(b_root.join(m("sub/deep"))).unwrap();
+    std::fs::rename(b_root.join(m("c1-renamed.txt")), b_root.join(m("sub/deep/c1-renamed.txt"))).unwrap();
     sync(&b);
-    assert!(moved(&b, "Moves/sub/deep/c1-renamed.txt"), "{:#?}", b.progress.lock().unwrap().activity.iter().rev().take(4).collect::<Vec<_>>());
+    assert!(moved(&b, &m("sub/deep/c1-renamed.txt")), "{:#?}", b.progress.lock().unwrap().activity.iter().rev().take(4).collect::<Vec<_>>());
     sync(&a);
-    assert!(moved(&a, "Moves/sub/deep/c1-renamed.txt"));
-    assert_eq!(read(&a_root.join("Moves/sub/deep/c1-renamed.txt")), "rename me");
-    assert!(!a_root.join("Moves/c1-renamed.txt").exists());
+    assert!(moved(&a, &m("sub/deep/c1-renamed.txt")));
+    assert_eq!(read(&a_root.join(m("sub/deep/c1-renamed.txt"))), "rename me");
+    assert!(!a_root.join(m("c1-renamed.txt")).exists());
 }
 
 /// The REST id of the top-level cloud folder `name`.
 fn folder_id(server: &ServerUrl, tokens: &Tokens, name: &str) -> Option<String> {
-    let roots = folders::parse_roots(&execute(&tokens.authorize(folders::roots(server))).unwrap()).unwrap();
-    let root = roots.into_iter().find(|f| f.parent_id.is_none()).unwrap().id;
-    let page = folders::parse_contents_all(&execute(&tokens.authorize(folders::contents(server, &root, Some(200), None))).unwrap()).unwrap();
-    page.items.iter().find(|r| r.kind() == Kind::Folder && r.name() == name).map(|r| r.id().to_owned())
+    let root = root_id(server, tokens).unwrap();
+    children(server, tokens, &root).unwrap().iter().find(|r| r.kind() == Kind::Folder && r.name() == name).map(|r| r.id().to_owned())
 }
 
 #[test]
 fn a_renamed_folder_is_one_move_and_keeps_its_id() {
-    let Some((server, user, password)) = env() else { return };
-    let tokens = sign_in(&server, &user, &password);
-    let dirs = tempfile::tempdir().unwrap();
-    let (a_root, b_root) = (dirs.path().join("A"), dirs.path().join("B"));
-    let a = computer(&server, &tokens, &a_root, "Alpha");
-    let b = computer(&server, &tokens, &b_root, "Beta");
-    write(&a_root.join("Proj/a.txt"), "one");
-    write(&a_root.join("Proj/Sub/b.txt"), "two");
+    let Some(live) = Live::new("proj") else { return };
+    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let (a_root, b_root) = (live.local("A"), live.local("B"));
+    let a = live.computer(&a_root, "Alpha");
+    let b = live.computer(&b_root, "Beta");
+    let (proj, proj2, proj3) = (live.p("Proj"), live.p("Proj2"), live.p("Proj3"));
+    write(&a_root.join(&proj).join("a.txt"), "one");
+    write(&a_root.join(&proj).join("Sub/b.txt"), "two");
     sync(&a);
     sync(&b);
-    let id = folder_id(&server, &tokens, "Proj").expect("the folder is in the cloud");
+    let id = folder_id(&server, &tokens, &proj).expect("the folder is in the cloud");
     execute(&tokens.authorize(favorites::add(&server, Kind::Folder, &id))).unwrap();
     let moved = |h: &Handle, path: &str| h.progress.lock().unwrap().activity.iter().any(|e| e.kind == ActivityKind::Moved && e.path == path);
 
     // Renamed on A: one MOVE in the cloud. The folder keeps its id and its star; nothing is trashed.
-    std::fs::rename(a_root.join("Proj"), a_root.join("Proj2")).unwrap();
+    std::fs::rename(a_root.join(&proj), a_root.join(&proj2)).unwrap();
     sync(&a);
-    assert!(moved(&a, "Proj2"), "{:#?}", a.progress.lock().unwrap().activity.iter().rev().take(4).collect::<Vec<_>>());
-    assert_eq!(folder_id(&server, &tokens, "Proj2").as_deref(), Some(id.as_str()), "same folder, new name");
-    assert_eq!(folder_id(&server, &tokens, "Proj"), None);
+    assert!(moved(&a, &proj2), "{:#?}", a.progress.lock().unwrap().activity.iter().rev().take(4).collect::<Vec<_>>());
+    assert_eq!(folder_id(&server, &tokens, &proj2).as_deref(), Some(id.as_str()), "same folder, new name");
+    assert_eq!(folder_id(&server, &tokens, &proj), None);
     let stars = favorites::parse_list_all(&execute(&tokens.authorize(favorites::list(&server, Some(200), None))).unwrap()).unwrap();
     assert!(stars.items.iter().any(|f| f.resource.id() == id), "still starred");
-    assert!(in_trash(&server, &tokens, "Proj/a.txt").is_none() && in_trash(&server, &tokens, "Proj").is_none(), "nothing went to the trash");
+    assert!(
+        in_trash(&server, &tokens, &format!("{proj}/a.txt")).is_none() && in_trash(&server, &tokens, &proj).is_none(),
+        "nothing went to the trash"
+    );
 
     // B renames its local folder to match.
     sync(&b);
-    assert!(moved(&b, "Proj2"));
-    assert_eq!(read(&b_root.join("Proj2/Sub/b.txt")), "two");
-    assert!(!b_root.join("Proj").exists());
+    assert!(moved(&b, &proj2));
+    assert_eq!(read(&b_root.join(&proj2).join("Sub/b.txt")), "two");
+    assert!(!b_root.join(&proj).exists());
 
     // B renames it while offline, A edits a file in it meanwhile: one folder in the end, holding the edit.
-    std::fs::rename(b_root.join("Proj2"), b_root.join("Proj3")).unwrap();
-    write(&a_root.join("Proj2/a.txt"), "edited on A");
+    std::fs::rename(b_root.join(&proj2), b_root.join(&proj3)).unwrap();
+    write(&a_root.join(&proj2).join("a.txt"), "edited on A");
     sync(&a);
     sync(&b);
     sync(&a);
     for root in [&a_root, &b_root] {
-        assert_eq!(read(&root.join("Proj3/a.txt")), "edited on A", "{}", root.display());
-        assert_eq!(read(&root.join("Proj3/Sub/b.txt")), "two");
-        assert!(!root.join("Proj2").exists(), "{:?}", names_in(root));
+        assert_eq!(read(&root.join(&proj3).join("a.txt")), "edited on A", "{}", root.display());
+        assert_eq!(read(&root.join(&proj3).join("Sub/b.txt")), "two");
+        assert!(!root.join(&proj2).exists(), "{:?}", names_in(root));
     }
-    assert_eq!(folder_id(&server, &tokens, "Proj3").as_deref(), Some(id.as_str()));
+    assert_eq!(folder_id(&server, &tokens, &proj3).as_deref(), Some(id.as_str()));
 }
 
 #[test]
 fn a_deleted_folder_goes_to_the_trash_whole() {
-    let Some((server, user, password)) = env() else { return };
-    let tokens = sign_in(&server, &user, &password);
-    let dirs = tempfile::tempdir().unwrap();
-    let (a_root, b_root) = (dirs.path().join("A"), dirs.path().join("B"));
-    let a = computer(&server, &tokens, &a_root, "Alpha");
-    let b = computer(&server, &tokens, &b_root, "Beta");
+    let Some(live) = Live::new("gone") else { return };
+    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let (a_root, b_root) = (live.local("A"), live.local("B"));
+    let a = live.computer(&a_root, "Alpha");
+    let b = live.computer(&b_root, "Beta");
+    let gone = live.p("Gone");
     // (Few enough files not to pause for a mass delete.)
     for i in 0..2 {
-        std::fs::create_dir_all(a_root.join("Gone/Sub")).unwrap();
-        std::fs::write(a_root.join(format!("Gone/{i}.txt")), i.to_string()).unwrap();
-        std::fs::write(a_root.join(format!("Gone/Sub/{i}.txt")), i.to_string()).unwrap();
+        std::fs::create_dir_all(a_root.join(&gone).join("Sub")).unwrap();
+        std::fs::write(a_root.join(&gone).join(format!("{i}.txt")), i.to_string()).unwrap();
+        std::fs::write(a_root.join(&gone).join(format!("Sub/{i}.txt")), i.to_string()).unwrap();
     }
     std::thread::sleep(Duration::from_millis(2_200));
     sync(&a);
     sync(&b);
-    assert_eq!(read(&b_root.join("Gone/Sub/1.txt")), "1");
+    assert_eq!(read(&b_root.join(&gone).join("Sub/1.txt")), "1");
 
     // Deleted on A: one item in the trash (the folder), not one per file and folder.
-    std::fs::remove_dir_all(a_root.join("Gone")).unwrap();
+    std::fs::remove_dir_all(a_root.join(&gone)).unwrap();
     sync(&a);
-    let trashed = in_trash(&server, &tokens, "Gone").expect("the folder is in the trash");
-    assert!(in_trash(&server, &tokens, "Gone/0.txt").is_none() && in_trash(&server, &tokens, "Gone/Sub").is_none(), "only the folder");
+    let trashed = in_trash(&server, &tokens, &gone).expect("the folder is in the trash");
+    assert!(
+        in_trash(&server, &tokens, &format!("{gone}/0.txt")).is_none() && in_trash(&server, &tokens, &format!("{gone}/Sub")).is_none(),
+        "only the folder"
+    );
     sync(&b);
-    assert!(!b_root.join("Gone").exists());
+    assert!(!b_root.join(&gone).exists());
 
     // Restored, it comes back whole.
     execute(&tokens.authorize(trash::restore(&server, &trashed))).unwrap();
     sync(&a);
     sync(&b);
     for root in [&a_root, &b_root] {
-        assert_eq!(read(&root.join("Gone/Sub/1.txt")), "1");
-        assert_eq!(read(&root.join("Gone/0.txt")), "0");
+        assert_eq!(read(&root.join(&gone).join("Sub/1.txt")), "1");
+        assert_eq!(read(&root.join(&gone).join("0.txt")), "0");
     }
 }
 
 #[test]
 fn a_file_and_a_folder_of_one_name_both_survive() {
-    let Some((server, user, password)) = env() else { return };
-    let tokens = sign_in(&server, &user, &password);
-    let dirs = tempfile::tempdir().unwrap();
-    let (a_root, b_root) = (dirs.path().join("A"), dirs.path().join("B"));
-    let a = computer(&server, &tokens, &a_root, "Alpha");
-    let b = computer(&server, &tokens, &b_root, "Beta");
-    write(&a_root.join("t5/keep.txt"), "k");
+    let Some(live) = Live::new("clash") else { return };
+    let (a_root, b_root) = (live.local("A"), live.local("B"));
+    let a = live.computer(&a_root, "Alpha");
+    let b = live.computer(&b_root, "Beta");
+    let t5 = live.p("t5");
+    write(&a_root.join(&t5).join("keep.txt"), "k");
     sync(&a);
     sync(&b);
 
     // A makes a file `t5/clash`, B (not synced meanwhile) a folder of that name.
-    write(&a_root.join("t5/clash"), "a file");
-    write(&b_root.join("t5/clash/inner.txt"), "in a folder");
+    write(&a_root.join(&t5).join("clash"), "a file");
+    write(&b_root.join(&t5).join("clash/inner.txt"), "in a folder");
     sync(&a);
     sync(&b);
     sync(&b);
     sync(&a);
-    let copy = names_in(&b_root.join("t5")).into_iter().find(|n| n.starts_with("clash (conflict ")).expect("B's folder is set aside");
+    let copy = names_in(&b_root.join(&t5)).into_iter().find(|n| n.starts_with("clash (conflict ")).expect("B's folder is set aside");
     assert!(copy.contains("Beta"), "{copy}");
     for root in [&a_root, &b_root] {
-        assert_eq!(read(&root.join("t5/clash")), "a file", "the cloud's file is kept");
-        assert_eq!(read(&root.join("t5").join(&copy).join("inner.txt")), "in a folder");
+        assert_eq!(read(&root.join(&t5).join("clash")), "a file", "the cloud's file is kept");
+        assert_eq!(read(&root.join(&t5).join(&copy).join("inner.txt")), "in a folder");
     }
+    let clash = format!("{t5}/clash");
     let p = b.progress.lock().unwrap();
-    assert_eq!(p.activity.iter().filter(|e| e.kind == ActivityKind::Conflict && e.path == "t5/clash").count(), 1, "said once");
+    assert_eq!(p.activity.iter().filter(|e| e.kind == ActivityKind::Conflict && e.path == clash).count(), 1, "said once");
     assert!(!p.activity.iter().any(|e| e.kind == ActivityKind::Error), "{:?}", p.activity);
     assert!(p.conflicts.is_empty(), "{:?}", p.conflicts);
 }
@@ -438,33 +627,34 @@ fn a_file_and_a_folder_of_one_name_both_survive() {
 /// folder) is a replacement, not a conflict: the cloud and the other computer follow.
 #[test]
 fn a_folder_replaced_by_a_file_replaces_it_everywhere() {
-    let Some((server, user, password)) = env() else { return };
-    let tokens = sign_in(&server, &user, &password);
-    let dirs = tempfile::tempdir().unwrap();
-    let (a_root, b_root) = (dirs.path().join("A"), dirs.path().join("B"));
-    let a = computer(&server, &tokens, &a_root, "Laptop");
-    let b = computer(&server, &tokens, &b_root, "Studio");
-    write(&a_root.join("t17/sw/in.txt"), "in");
-    write(&a_root.join("t17/sf"), "a file");
+    let Some(live) = Live::new("t17") else { return };
+    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let (a_root, b_root) = (live.local("A"), live.local("B"));
+    let a = live.computer(&a_root, "Laptop");
+    let b = live.computer(&b_root, "Studio");
+    let t17 = live.p("t17");
+    let at = |root: &Path, rel: &str| root.join(&t17).join(rel);
+    write(&at(&a_root, "sw/in.txt"), "in");
+    write(&at(&a_root, "sf"), "a file");
     sync(&a);
     sync(&b);
-    assert_eq!(read(&b_root.join("t17/sw/in.txt")), "in");
+    assert_eq!(read(&at(&b_root, "sw/in.txt")), "in");
 
     // On A: `rm -r t17/sw; echo x > t17/sw`, and the file `t17/sf` becomes a folder.
-    std::fs::remove_dir_all(a_root.join("t17/sw")).unwrap();
-    std::fs::remove_file(a_root.join("t17/sf")).unwrap();
-    std::fs::create_dir_all(a_root.join("t17/sf")).unwrap();
-    std::fs::write(a_root.join("t17/sf/a.txt"), "inside").unwrap();
-    write(&a_root.join("t17/sw"), "x\n");
+    std::fs::remove_dir_all(at(&a_root, "sw")).unwrap();
+    std::fs::remove_file(at(&a_root, "sf")).unwrap();
+    std::fs::create_dir_all(at(&a_root, "sf")).unwrap();
+    std::fs::write(at(&a_root, "sf/a.txt"), "inside").unwrap();
+    write(&at(&a_root, "sw"), "x\n");
     sync(&a);
-    assert!(in_trash(&server, &tokens, "t17/sw").is_some(), "the folder is one trash item");
-    assert!(in_trash(&server, &tokens, "t17/sw/in.txt").is_none());
+    assert!(in_trash(&server, &tokens, &format!("{t17}/sw")).is_some(), "the folder is one trash item");
+    assert!(in_trash(&server, &tokens, &format!("{t17}/sw/in.txt")).is_none());
     sync(&b);
     sync(&a);
     for root in [&a_root, &b_root] {
-        assert_eq!(read(&root.join("t17/sw")), "x\n", "{}", root.display());
-        assert_eq!(read(&root.join("t17/sf/a.txt")), "inside", "{}", root.display());
-        assert_eq!(names_in(&root.join("t17")), ["sf", "sw"], "no conflict copies");
+        assert_eq!(read(&at(root, "sw")), "x\n", "{}", root.display());
+        assert_eq!(read(&at(root, "sf/a.txt")), "inside", "{}", root.display());
+        assert_eq!(names_in(&root.join(&t17)), ["sf", "sw"], "no conflict copies");
     }
     for h in [&a, &b] {
         let p = h.progress.lock().unwrap();
@@ -472,17 +662,17 @@ fn a_folder_replaced_by_a_file_replaces_it_everywhere() {
     }
 
     // And back, the other way round on B: the file becomes a folder again, the folder a file.
-    std::fs::remove_file(b_root.join("t17/sw")).unwrap();
-    std::fs::create_dir_all(b_root.join("t17/sw")).unwrap();
-    std::fs::write(b_root.join("t17/sw/again.txt"), "again").unwrap();
-    std::fs::remove_dir_all(b_root.join("t17/sf")).unwrap();
-    write(&b_root.join("t17/sf"), "a file again");
+    std::fs::remove_file(at(&b_root, "sw")).unwrap();
+    std::fs::create_dir_all(at(&b_root, "sw")).unwrap();
+    std::fs::write(at(&b_root, "sw/again.txt"), "again").unwrap();
+    std::fs::remove_dir_all(at(&b_root, "sf")).unwrap();
+    write(&at(&b_root, "sf"), "a file again");
     sync(&b);
     sync(&a);
     for root in [&a_root, &b_root] {
-        assert_eq!(read(&root.join("t17/sw/again.txt")), "again", "{}", root.display());
-        assert_eq!(read(&root.join("t17/sf")), "a file again", "{}", root.display());
-        assert_eq!(names_in(&root.join("t17")), ["sf", "sw"], "no conflict copies");
+        assert_eq!(read(&at(root, "sw/again.txt")), "again", "{}", root.display());
+        assert_eq!(read(&at(root, "sf")), "a file again", "{}", root.display());
+        assert_eq!(names_in(&root.join(&t17)), ["sf", "sw"], "no conflict copies");
     }
     for h in [&a, &b] {
         let p = h.progress.lock().unwrap();
@@ -492,16 +682,16 @@ fn a_folder_replaced_by_a_file_replaces_it_everywhere() {
 
 #[test]
 fn a_vanished_sync_folder_is_never_made_again_on_its_own() {
-    let Some((server, user, password)) = env() else { return };
-    let tokens = sign_in(&server, &user, &password);
-    let dirs = tempfile::tempdir().unwrap();
-    let root = dirs.path().join("A");
-    let a = computer(&server, &tokens, &root, "Alpha");
-    write(&root.join("Vanish/a.txt"), "still here");
+    let Some(live) = Live::new("vanish") else { return };
+    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let root = live.local("A");
+    let a = live.computer(&root, "Alpha");
+    let file = live.p("Vanish/a.txt");
+    write(&root.join(&file), "still here");
     sync(&a);
 
     // Moved away (or its drive unplugged): held, not made again, nothing deleted in the cloud.
-    std::fs::rename(&root, dirs.path().join("Elsewhere")).unwrap();
+    std::fs::rename(&root, live.local("Elsewhere")).unwrap();
     a.send(Command::SyncNow);
     let deadline = Instant::now() + Duration::from_secs(30);
     while a.progress.lock().unwrap().state != SyncState::FolderMissing {
@@ -509,13 +699,13 @@ fn a_vanished_sync_folder_is_never_made_again_on_its_own() {
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(!root.exists(), "the folder is not made again");
-    let listed = execute(&tokens.authorize(dav::list(&server, "Vanish"))).unwrap();
-    assert!(dav::parse_list(&listed).unwrap().iter().any(|e| e.path == "Vanish/a.txt"), "nothing deleted in the cloud");
+    let listed = execute(&tokens.authorize(dav::list(&server, &live.p("Vanish")))).unwrap();
+    assert!(dav::parse_list(&listed).unwrap().iter().any(|e| e.path == file), "nothing deleted in the cloud");
 
     // Put back, it syncs again.
-    std::fs::rename(dirs.path().join("Elsewhere"), &root).unwrap();
+    std::fs::rename(live.local("Elsewhere"), &root).unwrap();
     sync(&a);
-    assert_eq!(read(&root.join("Vanish/a.txt")), "still here");
+    assert_eq!(read(&root.join(&file)), "still here");
 }
 
 /// The kept versions of a cloud file.
@@ -526,118 +716,110 @@ fn versions_of(server: &ServerUrl, tokens: &Tokens, path: &str) -> Vec<craftclou
 
 #[test]
 fn versions_follow_renames_and_are_kept_once() {
-    let Some((server, user, password)) = env() else { return };
-    let tokens = sign_in(&server, &user, &password);
-    let dirs = tempfile::tempdir().unwrap();
-    let root = dirs.path().join("A");
-    let a = computer(&server, &tokens, &root, "Alpha");
-    write(&root.join("Hist/doc.txt"), "one");
+    let Some(live) = Live::new("hist") else { return };
+    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let root = live.local("A");
+    let a = live.computer(&root, "Alpha");
+    let (doc, renamed) = (live.p("Hist/doc.txt"), live.p("Hist/renamed.txt"));
+    let renamed2 = live.p("Hist2/renamed.txt");
+    write(&root.join(&doc), "one");
     sync(&a);
-    write(&root.join("Hist/doc.txt"), "two");
+    write(&root.join(&doc), "two");
     sync(&a);
-    let kept = versions_of(&server, &tokens, "Hist/doc.txt");
+    let kept = versions_of(&server, &tokens, &doc);
     assert_eq!(kept.len(), 1);
     // T-019: the version says when its content was written, before it was replaced.
     let (modified, replaced) = (kept[0].modified_at().expect("the content's time is kept"), kept[0].replaced_at().unwrap());
     assert!(modified < replaced, "{modified} < {replaced}");
 
     // A rename takes the history along.
-    std::fs::rename(root.join("Hist/doc.txt"), root.join("Hist/renamed.txt")).unwrap();
+    std::fs::rename(root.join(&doc), root.join(&renamed)).unwrap();
     sync(&a);
-    assert_eq!(versions_of(&server, &tokens, "Hist/renamed.txt").len(), 1, "the history moved");
-    assert!(versions_of(&server, &tokens, "Hist/doc.txt").is_empty(), "nothing left behind");
+    assert_eq!(versions_of(&server, &tokens, &renamed).len(), 1, "the history moved");
+    assert!(versions_of(&server, &tokens, &doc).is_empty(), "nothing left behind");
 
     // So does a folder rename.
-    std::fs::rename(root.join("Hist"), root.join("Hist2")).unwrap();
+    std::fs::rename(root.join(live.p("Hist")), root.join(live.p("Hist2"))).unwrap();
     sync(&a);
-    assert_eq!(versions_of(&server, &tokens, "Hist2/renamed.txt").len(), 1);
-    assert!(versions_of(&server, &tokens, "Hist/renamed.txt").is_empty());
+    assert_eq!(versions_of(&server, &tokens, &renamed2).len(), 1);
+    assert!(versions_of(&server, &tokens, &renamed).is_empty());
 
     // Keeping the same version twice (an overwrite tried again) adds nothing.
     let mut session = craftcloud_native::session::Session::new(server.clone(), tokens.clone(), Box::new(|_| {}));
-    session.snapshot("Hist2/renamed.txt").unwrap();
-    session.snapshot("Hist2/renamed.txt").unwrap();
-    assert_eq!(versions_of(&server, &tokens, "Hist2/renamed.txt").len(), 2, "the current bytes once, not twice");
+    session.snapshot(&renamed2).unwrap();
+    session.snapshot(&renamed2).unwrap();
+    assert_eq!(versions_of(&server, &tokens, &renamed2).len(), 2, "the current bytes once, not twice");
+}
+
+/// A new user with `quota` bytes, named `<prefix><seconds><pid>` so a test can run again on the
+/// same server: its id and its tokens. Quota is the whole account's, so these tests need one of
+/// their own rather than a folder of their own.
+fn new_user(server: &ServerUrl, owner: &Tokens, prefix: &str, password: &str, quota: u64) -> (String, Tokens) {
+    let name = format!("{prefix}{}", run_id().replace('-', ""));
+    let created =
+        execute(&owner.authorize(admin::create(server, &name, &format!("{name}@example.org"), password, Some(quota), admin::Role::User))).unwrap();
+    let person = admin::parse_create(&created).unwrap();
+    let tokens = login(server, &name, password);
+    (person.id, tokens)
 }
 
 #[test]
 fn a_file_too_big_for_the_quota_waits_without_holding_up_the_rest() {
     let Some((server, user, password)) = env() else { return };
     let owner = sign_in(&server, &user, &password);
-    // A new user each run, so the test can run again on the same server.
-    let name = format!("tiny{}", std::process::id());
-    let created = execute(&owner.authorize(admin::create(
-        &server,
-        &name,
-        &format!("{name}@example.org"),
-        "correct-horse-tiny",
-        Some(100_000),
-        admin::Role::User,
-    )))
-    .unwrap();
-    let tiny = admin::parse_create(&created).unwrap();
-    let tokens = auth::parse_login(&execute(&auth::login(&server, &name, "correct-horse-tiny")).unwrap()).unwrap();
-    let dirs = tempfile::tempdir().unwrap();
-    let root = dirs.path().join("T");
-    let t = computer(&server, &tokens, &root, "Tiny");
+    let (tiny, tokens) = new_user(&server, &owner, "tiny", "correct-horse-tiny", 100_000);
+    let live = Live::with(server.clone(), tokens, "quota");
+    let root = live.local("T");
+    let t = live.computer(&root, "Tiny");
     sync(&t);
+    let (big, small) = (live.p("Big/big.bin"), live.p("Big/small.txt"));
 
-    std::fs::create_dir_all(root.join("Big")).unwrap();
-    std::fs::write(root.join("Big/big.bin"), vec![b'x'; 200_000]).unwrap();
-    write(&root.join("Big/small.txt"), "fits");
+    std::fs::create_dir_all(root.join(live.p("Big"))).unwrap();
+    std::fs::write(root.join(&big), vec![b'x'; 200_000]).unwrap();
+    write(&root.join(&small), "fits");
     sync(&t);
     {
         let p = t.progress.lock().unwrap();
-        assert_eq!(p.no_room, ["Big/big.bin"], "{:?}", p.activity.last());
-        assert!(p.activity.iter().any(|e| e.kind == ActivityKind::Skipped && e.path == "Big/big.bin"));
-        assert!(p.activity.iter().any(|e| e.kind == ActivityKind::Up && e.path == "Big/small.txt"), "the rest syncs");
+        assert_eq!(p.no_room, std::slice::from_ref(&big), "{:?}", p.activity.last());
+        assert!(p.activity.iter().any(|e| e.kind == ActivityKind::Skipped && e.path == big));
+        assert!(p.activity.iter().any(|e| e.kind == ActivityKind::Up && e.path == small), "the rest syncs");
     }
     // Not tried again while there is no room: the next cycles have nothing to do.
     sync(&t);
     assert_eq!(t.progress.lock().unwrap().files_total, 0);
 
     // Room again: it goes up without being asked.
-    execute(&owner.authorize(admin::set_quota(&server, &tiny.id, 1_000_000))).unwrap();
+    execute(&owner.authorize(admin::set_quota(&server, &tiny, 1_000_000))).unwrap();
     sync(&t);
     let p = t.progress.lock().unwrap();
     assert!(p.no_room.is_empty(), "{:?}", p.activity.last());
-    assert!(p.activity.iter().any(|e| e.kind == ActivityKind::Up && e.path == "Big/big.bin"));
+    assert!(p.activity.iter().any(|e| e.kind == ActivityKind::Up && e.path == big));
 }
 
 #[test]
 fn room_freed_by_emptying_the_trash_is_used_once_counted() {
     let Some((server, user, password)) = env() else { return };
     let owner = sign_in(&server, &user, &password);
-    let name = format!("roomy{}", std::process::id());
-    let created = execute(&owner.authorize(admin::create(
-        &server,
-        &name,
-        &format!("{name}@example.org"),
-        "correct-horse-roomy",
-        Some(100_000),
-        admin::Role::User,
-    )))
-    .unwrap();
-    admin::parse_create(&created).unwrap();
-    let tokens = auth::parse_login(&execute(&auth::login(&server, &name, "correct-horse-roomy")).unwrap()).unwrap();
-    let dirs = tempfile::tempdir().unwrap();
-    let root = dirs.path().join("R");
-    let r = computer(&server, &tokens, &root, "Roomy");
-    std::fs::create_dir_all(root.join("Box")).unwrap();
-    std::fs::write(root.join("Box/first.bin"), vec![b'1'; 70_000]).unwrap();
+    let (_, tokens) = new_user(&server, &owner, "roomy", "correct-horse-roomy", 100_000);
+    let live = Live::with(server.clone(), tokens.clone(), "room");
+    let root = live.local("R");
+    let r = live.computer(&root, "Roomy");
+    let (first, second) = (live.p("Box/first.bin"), live.p("Box/second.bin"));
+    std::fs::create_dir_all(root.join(live.p("Box"))).unwrap();
+    std::fs::write(root.join(&first), vec![b'1'; 70_000]).unwrap();
     std::thread::sleep(Duration::from_millis(2_200));
     sync(&r);
 
     // Deleted, the trash emptied: the room is free, but the cloud still counts it.
-    std::fs::remove_file(root.join("Box/first.bin")).unwrap();
+    std::fs::remove_file(root.join(&first)).unwrap();
     sync(&r);
     execute(&tokens.authorize(trash::empty(&server))).unwrap();
-    std::fs::write(root.join("Box/second.bin"), vec![b'2'; 70_000]).unwrap();
+    std::fs::write(root.join(&second), vec![b'2'; 70_000]).unwrap();
     std::thread::sleep(Duration::from_millis(2_200));
     sync(&r);
     {
         let p = r.progress.lock().unwrap();
-        let said = p.activity.iter().find(|e| e.path == "Box/second.bin").map(|e| e.detail.clone()).unwrap_or_default();
+        let said = p.activity.iter().find(|e| e.path == second).map(|e| e.detail.clone()).unwrap_or_default();
         if p.no_room.is_empty() {
             eprintln!("this server counted the freed room at once");
             return;
@@ -650,37 +832,36 @@ fn room_freed_by_emptying_the_trash_is_used_once_counted() {
     sync(&r);
     let p = r.progress.lock().unwrap();
     assert!(p.no_room.is_empty(), "{:?}", p.activity.last());
-    assert!(p.activity.iter().any(|e| e.kind == ActivityKind::Up && e.path == "Box/second.bin"));
+    assert!(p.activity.iter().any(|e| e.kind == ActivityKind::Up && e.path == second));
 }
 
 #[test]
 fn an_interrupted_download_resumes_where_it_stopped() {
-    let Some((server, user, password)) = env() else { return };
-    let tokens = sign_in(&server, &user, &password);
-    let dirs = tempfile::tempdir().unwrap();
-    let (a_root, b_root) = (dirs.path().join("A"), dirs.path().join("B"));
-    let a = computer(&server, &tokens, &a_root, "Alpha");
+    let Some(live) = Live::new("resume") else { return };
+    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let (a_root, b_root) = (live.local("A"), live.local("B"));
+    let a = live.computer(&a_root, "Alpha");
+    let (big, movie) = (live.p("Big"), live.p("Big/movie.bin"));
     let bytes: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
-    std::fs::create_dir_all(a_root.join("Big")).unwrap();
-    std::fs::write(a_root.join("Big/movie.bin"), &bytes).unwrap();
+    std::fs::create_dir_all(a_root.join(&big)).unwrap();
+    std::fs::write(a_root.join(&movie), &bytes).unwrap();
     std::thread::sleep(Duration::from_millis(2_200));
     sync(&a);
 
     // B got the first half before the connection dropped: its part file, named after the version.
-    let listed = dav::parse_list(&execute(&tokens.authorize(dav::list(&server, "Big"))).unwrap()).unwrap();
-    let etag = listed.iter().find(|e| e.path == "Big/movie.bin").and_then(|e| e.etag.clone()).unwrap();
+    let listed = dav::parse_list(&execute(&tokens.authorize(dav::list(&server, &big))).unwrap()).unwrap();
+    let etag = listed.iter().find(|e| e.path == movie).and_then(|e| e.etag.clone()).unwrap();
     let version: String = etag.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
-    std::fs::create_dir_all(b_root.join("Big")).unwrap();
-    std::fs::write(b_root.join(format!("Big/.movie.bin.{version}.craftcloud-part")), &bytes[..120_000]).unwrap();
-    let b = computer(&server, &tokens, &b_root, "Beta");
+    std::fs::create_dir_all(b_root.join(&big)).unwrap();
+    std::fs::write(b_root.join(&big).join(format!(".movie.bin.{version}.craftcloud-part")), &bytes[..120_000]).unwrap();
+    let b = live.computer(&b_root, "Beta");
     sync(&b);
-    assert_eq!(std::fs::read(b_root.join("Big/movie.bin")).unwrap(), bytes, "whole and right");
+    assert_eq!(std::fs::read(b_root.join(&movie)).unwrap(), bytes, "whole and right");
     let p = b.progress.lock().unwrap();
-    let down = p.activity.iter().find(|e| e.path == "Big/movie.bin").unwrap_or_else(|| panic!("{:#?}", p.activity));
+    let down = p.activity.iter().find(|e| e.path == movie).unwrap_or_else(|| panic!("{:#?}", p.activity));
     assert!(down.detail.starts_with("resumed at"), "{down:?}");
-    assert!(names_in(&b_root.join("Big")).iter().all(|n| !n.ends_with(".craftcloud-part")), "no part file left");
+    assert!(names_in(&b_root.join(&big)).iter().all(|n| !n.ends_with(".craftcloud-part")), "no part file left");
 }
-
 /// A TCP forwarder to the test server that can go silent: connections stay open, but no byte
 /// passes (a dropped route after a Wi-Fi change or a suspend), until it is let go again.
 struct Forwarder {
@@ -749,24 +930,26 @@ fn until(h: &Handle, limit: Duration, want: impl Fn(&SyncState) -> bool) {
 /// Needs a short idle limit: `CRAFTCLOUD_HTTP_IDLE_SECS=5` (skipped otherwise).
 #[test]
 fn a_connection_gone_silent_goes_offline_and_recovers_by_itself() {
-    let Some((server, user, password)) = env() else { return };
+    if env().is_none() {
+        return;
+    }
     let idle = craftcloud_native::http::idle();
     if idle > Duration::from_secs(10) {
         eprintln!("skipped: set CRAFTCLOUD_HTTP_IDLE_SECS=5");
         return;
     }
-    let tokens = sign_in(&server, &user, &password);
+    let Some(live) = Live::new("quiet") else { return };
+    let (server, tokens) = (live.server.clone(), live.tokens.clone());
     let forwarder = Forwarder::to(&server);
-    let via = ServerUrl::parse(&forwarder.url).unwrap();
-    let dirs = tempfile::tempdir().unwrap();
-    let root = dirs.path().join("S");
-    let s = computer(&via, &tokens, &root, "Silent");
-    write(&root.join("Quiet/before.txt"), "before");
+    let root = live.local("S");
+    let plan = SyncPlan { server: forwarder.url.clone(), ..live.plan(&root, &[]) };
+    let s = live.start(plan, "Silent");
+    write(&root.join(live.p("Quiet/before.txt")), "before");
     sync(&s);
 
     // The route drops while the client is idle: the kept-alive connections go silent.
     forwarder.silent(true);
-    write(&root.join("Quiet/during.txt"), "during");
+    write(&root.join(live.p("Quiet/during.txt")), "during");
     s.send(Command::SyncNow);
     until(&s, idle * 3 + Duration::from_secs(10), |st| matches!(st, SyncState::Offline(_)));
     let SyncState::Offline(said) = s.progress.lock().unwrap().state.clone() else { unreachable!() };
@@ -780,129 +963,142 @@ fn a_connection_gone_silent_goes_offline_and_recovers_by_itself() {
     // The network is back: it syncs again by itself (no restart, no command).
     forwarder.silent(false);
     until(&s, craftcloud_native::sync::INTERVAL + idle * 3 + Duration::from_secs(10), |st| *st == SyncState::UpToDate);
-    let listed = execute(&tokens.authorize(dav::list(&server, "Quiet"))).unwrap();
-    assert!(dav::parse_list(&listed).unwrap().iter().any(|e| e.path == "Quiet/during.txt"), "the change made offline went up");
+    let listed = execute(&tokens.authorize(dav::list(&server, &live.p("Quiet")))).unwrap();
+    let during = live.p("Quiet/during.txt");
+    assert!(dav::parse_list(&listed).unwrap().iter().any(|e| e.path == during), "the change made offline went up");
 }
 
 #[test]
 fn names_the_cloud_cant_take_are_said_once_and_never_sent() {
-    let Some((server, user, password)) = env() else { return };
-    let tokens = sign_in(&server, &user, &password);
-    let dirs = tempfile::tempdir().unwrap();
-    let root = dirs.path().join("N");
-    let n = computer(&server, &tokens, &root, "Names");
-    write(&root.join("Names/back\\slash.txt"), "never sent");
-    write(&root.join("Names/a:b.txt"), "fine here, not on Windows");
-    write(&root.join("Names/ok.txt"), "ok");
+    let Some(live) = Live::new("names") else { return };
+    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let root = live.local("N");
+    let n = live.computer(&root, "Names");
+    let (slash, colon) = (live.p("Names/back\\slash.txt"), live.p("Names/a:b.txt"));
+    write(&root.join(&slash), "never sent");
+    write(&root.join(&colon), "fine here, not on Windows");
+    write(&root.join(live.p("Names/ok.txt")), "ok");
     sync(&n);
     sync(&n);
     sync(&n);
-    let listed = dav::parse_list(&execute(&tokens.authorize(dav::list(&server, "Names"))).unwrap()).expect("the listing is whole");
+    let listed = dav::parse_list(&execute(&tokens.authorize(dav::list(&server, &live.p("Names")))).unwrap()).expect("the listing is whole");
     let names: Vec<&str> = listed.iter().map(dav::Entry::name).collect();
     assert!(names.contains(&"ok.txt") && names.contains(&"a:b.txt"), "{names:?}");
     assert!(!names.iter().any(|n| n.contains('\\')), "{names:?}");
     let p = n.progress.lock().unwrap();
     let about = |path: &str, kind: ActivityKind| p.activity.iter().filter(|e| e.path == path && e.kind == kind).count();
-    assert_eq!(about("Names/back\\slash.txt", ActivityKind::Skipped), 1, "said once: {:?}", p.activity);
-    assert_eq!(about("Names/a:b.txt", ActivityKind::Warning), 1);
-    assert_eq!(p.not_synced, ["Names/back\\slash.txt"], "never just \"up to date\"");
-    assert_eq!(p.left_out.get("Names/back\\slash.txt"), Some(&craftcloud_core::sync::LeftOut::Name), "left out for good, not a hold");
+    assert_eq!(about(&slash, ActivityKind::Skipped), 1, "said once: {:?}", p.activity);
+    assert_eq!(about(&colon, ActivityKind::Warning), 1);
+    assert_eq!(p.not_synced, std::slice::from_ref(&slash), "never just \"up to date\"");
+    assert_eq!(p.left_out.get(&slash), Some(&craftcloud_core::sync::LeftOut::Name), "left out for good, not a hold");
     assert!(!p.activity.iter().any(|e| e.kind == ActivityKind::Error), "{:?}", p.activity);
 }
 
 #[test]
 fn a_deleted_nested_or_renamed_folder_is_one_trash_item() {
-    let Some((server, user, password)) = env() else { return };
-    let tokens = sign_in(&server, &user, &password);
-    let dirs = tempfile::tempdir().unwrap();
-    let root = dirs.path().join("A");
-    let a = computer(&server, &tokens, &root, "Alpha");
+    let Some(live) = Live::new("nested") else { return };
+    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let root = live.local("A");
+    let a = live.computer(&root, "Alpha");
     for dir in ["t11/top", "t11/top/a", "t11/top/a/x", "t11/top/b", "t9/fold"] {
-        std::fs::create_dir_all(root.join(dir)).unwrap();
+        std::fs::create_dir_all(root.join(live.p(dir))).unwrap();
         for f in ["f1", "f2", "f3"] {
-            std::fs::write(root.join(dir).join(f), format!("{dir}/{f}")).unwrap();
+            std::fs::write(root.join(live.p(dir)).join(f), format!("{dir}/{f}")).unwrap();
         }
     }
     std::thread::sleep(Duration::from_millis(2_200));
     sync(&a);
-    std::fs::rename(root.join("t9/fold"), root.join("t9/fold-ren")).unwrap();
+    std::fs::rename(root.join(live.p("t9/fold")), root.join(live.p("t9/fold-ren"))).unwrap();
     sync(&a);
 
     // Nested: 12 files in four folders, deleted at once (confirmed, it's a mass delete).
-    std::fs::remove_dir_all(root.join("t11/top")).unwrap();
+    std::fs::remove_dir_all(root.join(live.p("t11/top"))).unwrap();
     a.send(Command::ConfirmDeletes);
     sync(&a);
-    assert!(in_trash(&server, &tokens, "t11/top").is_some(), "the folder is in the trash");
+    assert!(in_trash(&server, &tokens, &live.p("t11/top")).is_some(), "the folder is in the trash");
     for inner in ["t11/top/f1", "t11/top/a", "t11/top/a/x", "t11/top/a/x/f1", "t11/top/b"] {
-        assert!(in_trash(&server, &tokens, inner).is_none(), "{inner} is not a trash item of its own");
+        assert!(in_trash(&server, &tokens, &live.p(inner)).is_none(), "{inner} is not a trash item of its own");
     }
 
     // A folder renamed earlier: the same.
-    std::fs::remove_dir_all(root.join("t9/fold-ren")).unwrap();
+    std::fs::remove_dir_all(root.join(live.p("t9/fold-ren"))).unwrap();
     sync(&a);
-    assert!(in_trash(&server, &tokens, "t9/fold-ren").is_some());
-    assert!(in_trash(&server, &tokens, "t9/fold-ren/f1").is_none());
+    assert!(in_trash(&server, &tokens, &live.p("t9/fold-ren")).is_some());
+    assert!(in_trash(&server, &tokens, &live.p("t9/fold-ren/f1")).is_none());
 }
 
 #[test]
 fn the_same_bytes_written_again_are_not_uploaded_again() {
-    let Some((server, user, password)) = env() else { return };
-    let tokens = sign_in(&server, &user, &password);
-    let dirs = tempfile::tempdir().unwrap();
-    let (a_root, b_root) = (dirs.path().join("A"), dirs.path().join("B"));
-    let a = computer(&server, &tokens, &a_root, "Alpha");
-    let b = computer(&server, &tokens, &b_root, "Beta");
-    write(&a_root.join("Same/up.txt"), "base\n");
+    let Some(live) = Live::new("same") else { return };
+    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let (a_root, b_root) = (live.local("A"), live.local("B"));
+    let a = live.computer(&a_root, "Alpha");
+    let b = live.computer(&b_root, "Beta");
+    let up = live.p("Same/up.txt");
+    write(&a_root.join(&up), "base\n");
     sync(&a);
     sync(&b);
     let ups = |h: &Handle, path: &str| h.progress.lock().unwrap().activity.iter().filter(|e| e.kind == ActivityKind::Up && e.path == path).count();
 
     // Uploaded from A, then written again with the same bytes: no upload, no version.
-    write(&a_root.join("Same/up.txt"), "base\n");
+    write(&a_root.join(&up), "base\n");
     sync(&a);
-    assert_eq!(ups(&a, "Same/up.txt"), 1);
-    assert!(versions_of(&server, &tokens, "Same/up.txt").is_empty());
+    assert_eq!(ups(&a, &up), 1);
+    assert!(versions_of(&server, &tokens, &up).is_empty());
     // Downloaded on B, the same.
-    write(&b_root.join("Same/up.txt"), "base\n");
+    write(&b_root.join(&up), "base\n");
     sync(&b);
-    assert_eq!(ups(&b, "Same/up.txt"), 0);
+    assert_eq!(ups(&b, &up), 0);
     // Other bytes still go up.
-    write(&b_root.join("Same/up.txt"), "BASE\n");
+    write(&b_root.join(&up), "BASE\n");
     sync(&b);
-    assert_eq!(ups(&b, "Same/up.txt"), 1);
+    assert_eq!(ups(&b, &up), 1);
 }
 
 #[test]
 fn an_edit_made_offline_follows_a_rename_made_elsewhere() {
-    let Some((server, user, password)) = env() else { return };
-    let tokens = sign_in(&server, &user, &password);
-    let dirs = tempfile::tempdir().unwrap();
-    let (a_root, b_root) = (dirs.path().join("A"), dirs.path().join("B"));
-    let a = computer(&server, &tokens, &a_root, "Alpha");
-    let b = computer(&server, &tokens, &b_root, "Beta");
-    write(&a_root.join("Follow/f.txt"), "first");
-    write(&a_root.join("Follow/g.txt"), "second");
+    let Some(live) = Live::new("follow") else { return };
+    let (a_root, b_root) = (live.local("A"), live.local("B"));
+    let a = live.computer(&a_root, "Alpha");
+    let b = live.computer(&b_root, "Beta");
+    let follow = live.p("Follow");
+    let at = |root: &Path, name: &str| root.join(&follow).join(name);
+    write(&at(&a_root, "f.txt"), "first");
+    write(&at(&a_root, "g.txt"), "second");
     sync(&a);
     sync(&b);
 
+    // B is offline (paused) while it changes things: otherwise its folder watcher syncs its change
+    // at once, before the other computer's, and the order this test is about depends on timing.
+    let offline = |on: bool| {
+        b.send(Command::Pause(on));
+        if on {
+            until(&b, Duration::from_secs(60), |st| *st == SyncState::Paused);
+        }
+    };
+
     // A renames f while B (not syncing) edits it: one file in the end, renamed, with the edit.
-    std::fs::rename(a_root.join("Follow/f.txt"), a_root.join("Follow/renamed-A.txt")).unwrap();
+    offline(true);
+    std::fs::rename(at(&a_root, "f.txt"), at(&a_root, "renamed-A.txt")).unwrap();
     sync(&a);
-    write(&b_root.join("Follow/f.txt"), "edited on B");
+    write(&at(&b_root, "f.txt"), "edited on B");
+    offline(false);
     sync(&b);
     sync(&b);
     sync(&a);
-    // And the other way round: B renames g while A edits it.
-    std::fs::rename(b_root.join("Follow/g.txt"), b_root.join("Follow/renamed-B.txt")).unwrap();
-    write(&a_root.join("Follow/g.txt"), "edited on A");
+    // And the other way round: B (not syncing) renames g while A edits it.
+    offline(true);
+    std::fs::rename(at(&b_root, "g.txt"), at(&b_root, "renamed-B.txt")).unwrap();
+    write(&at(&a_root, "g.txt"), "edited on A");
     sync(&a);
+    offline(false);
     sync(&b);
     sync(&b);
     sync(&a);
     for root in [&a_root, &b_root] {
-        assert_eq!(names_in(&root.join("Follow")), ["renamed-A.txt", "renamed-B.txt"], "{}", root.display());
-        assert_eq!(read(&root.join("Follow/renamed-A.txt")), "edited on B");
-        assert_eq!(read(&root.join("Follow/renamed-B.txt")), "edited on A");
+        assert_eq!(names_in(&root.join(&follow)), ["renamed-A.txt", "renamed-B.txt"], "{}", root.display());
+        assert_eq!(read(&at(root, "renamed-A.txt")), "edited on B");
+        assert_eq!(read(&at(root, "renamed-B.txt")), "edited on A");
     }
 }
 
@@ -910,30 +1106,21 @@ fn an_edit_made_offline_follows_a_rename_made_elsewhere() {
 /// (the same folder, its id kept), not uploaded again as new files.
 #[test]
 fn discarded_cloud_deletes_come_back_from_the_trash() {
-    let Some((server, user, password)) = env() else { return };
-    let tokens = sign_in(&server, &user, &password);
-    let dirs = tempfile::tempdir().unwrap();
-    let root = dirs.path().join("A");
-    std::fs::create_dir_all(root.join("t38/data")).unwrap();
-    std::fs::write(root.join("t38/keep.txt"), "keep").unwrap();
+    let Some(live) = Live::new("t38") else { return };
+    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let root = live.local("A");
+    let t38 = live.p("t38");
+    std::fs::create_dir_all(root.join(&t38).join("data")).unwrap();
+    std::fs::write(root.join(&t38).join("keep.txt"), "keep").unwrap();
     for i in 0..12 {
-        std::fs::write(root.join(format!("t38/data/f{i}.txt")), format!("file {i}")).unwrap();
+        std::fs::write(root.join(&t38).join(format!("data/f{i}.txt")), format!("file {i}")).unwrap();
     }
     std::thread::sleep(Duration::from_millis(2_200));
-    let plan = SyncPlan {
-        server: server.to_string(),
-        local_folder: root.display().to_string(),
-        excluded: vec![],
-        folders: vec!["t38".into()],
-        sync_root_files: false,
-    };
-    let a = craftcloud_native::sync::start(plan, tokens.clone(), "Alpha".into(), Box::new(|_| {}), Arc::new(|| {}));
+    let a = live.computer(&root, "Alpha");
     sync(&a);
-    let top = folder_id(&server, &tokens, "t38").unwrap();
-    let data_id = || {
-        let page = folders::parse_contents_all(&execute(&tokens.authorize(folders::contents(&server, &top, Some(200), None))).unwrap()).unwrap();
-        page.items.iter().find(|r| r.kind() == Kind::Folder && r.name() == "data").map(|r| r.id().to_owned())
-    };
+    let top = folder_id(&server, &tokens, &t38).unwrap();
+    let data_id =
+        || children(&server, &tokens, &top).unwrap().iter().find(|r| r.kind() == Kind::Folder && r.name() == "data").map(|r| r.id().to_owned());
     let id = data_id().unwrap();
 
     // Deleted in the cloud: 12 of 13 files would go here too, so the sync holds them.
@@ -944,38 +1131,31 @@ fn discarded_cloud_deletes_come_back_from_the_trash() {
     sync(&a);
 
     assert_eq!(data_id().as_deref(), Some(id.as_str()), "the same folder is back");
-    assert!(in_trash(&server, &tokens, "t38/data").is_none(), "nothing left in the trash");
+    assert!(in_trash(&server, &tokens, &format!("{t38}/data")).is_none(), "nothing left in the trash");
     let p = a.progress.lock().unwrap();
     let kept = p.activity.iter().position(|e| e.detail.contains("12 put back from the cloud's trash")).expect("said what came back");
     assert!(!p.activity[kept..].iter().any(|e| e.kind == ActivityKind::Up), "nothing uploaded as new: {:?}", &p.activity[kept..]);
-    assert_eq!(names_in(&root.join("t38/data")).len(), 12, "nothing deleted here");
+    assert_eq!(names_in(&root.join(&t38).join("data")).len(), 12, "nothing deleted here");
 }
 
 /// T-042: a folder deleted here and held as a mass delete isn't made again (empty) by the passes
 /// while it waits, and once confirmed it goes to the trash as one item.
 #[test]
 fn a_held_folder_delete_is_one_trash_item_when_confirmed() {
-    let Some((server, user, password)) = env() else { return };
-    let tokens = sign_in(&server, &user, &password);
-    let dirs = tempfile::tempdir().unwrap();
-    let root = dirs.path().join("A");
-    std::fs::create_dir_all(root.join("t42/many")).unwrap();
-    std::fs::write(root.join("t42/keep.txt"), "keep").unwrap();
+    let Some(live) = Live::new("t42") else { return };
+    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let root = live.local("A");
+    let (t42, many) = (live.p("t42"), live.p("t42/many"));
+    std::fs::create_dir_all(root.join(&many)).unwrap();
+    std::fs::write(root.join(&t42).join("keep.txt"), "keep").unwrap();
     for i in 0..20 {
-        std::fs::write(root.join(format!("t42/many/f{i}.txt")), format!("file {i}")).unwrap();
+        std::fs::write(root.join(&many).join(format!("f{i}.txt")), format!("file {i}")).unwrap();
     }
     std::thread::sleep(Duration::from_millis(2_200));
-    let plan = SyncPlan {
-        server: server.to_string(),
-        local_folder: root.display().to_string(),
-        excluded: vec![],
-        folders: vec!["t42".into()],
-        sync_root_files: false,
-    };
-    let a = craftcloud_native::sync::start(plan, tokens.clone(), "Alpha".into(), Box::new(|_| {}), Arc::new(|| {}));
+    let a = live.computer(&root, "Alpha");
     sync(&a);
 
-    std::fs::remove_dir_all(root.join("t42/many")).unwrap();
+    std::fs::remove_dir_all(root.join(&many)).unwrap();
     for _ in 0..2 {
         // Held, and held again: the pass in between must not bring the folder back here.
         let cycles = a.progress.lock().unwrap().cycles;
@@ -984,17 +1164,17 @@ fn a_held_folder_delete_is_one_trash_item_when_confirmed() {
         while a.progress.lock().unwrap().cycles == cycles {
             std::thread::sleep(Duration::from_millis(50));
         }
-        assert!(!root.join("t42/many").exists(), "not made again while held");
+        assert!(!root.join(&many).exists(), "not made again while held");
     }
     a.send(Command::ConfirmDeletes);
     sync(&a);
-    assert!(!root.join("t42/many").exists());
-    assert!(in_trash(&server, &tokens, "t42/many").is_some(), "the folder is one trash item");
-    assert!(in_trash(&server, &tokens, "t42/many/f0.txt").is_none(), "its files are not trash items of their own");
+    assert!(!root.join(&many).exists());
+    assert!(in_trash(&server, &tokens, &many).is_some(), "the folder is one trash item");
+    assert!(in_trash(&server, &tokens, &format!("{many}/f0.txt")).is_none(), "its files are not trash items of their own");
     let p = a.progress.lock().unwrap();
     let deleted: Vec<_> = p.activity.iter().filter(|e| e.kind == ActivityKind::Deleted).collect();
     assert_eq!(deleted.len(), 1, "one row for the folder: {deleted:?}");
-    assert_eq!(deleted[0].path, "t42/many");
+    assert_eq!(deleted[0].path, many);
 }
 
 #[test]
