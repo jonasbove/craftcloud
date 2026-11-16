@@ -320,7 +320,11 @@ pub(super) fn usage_words(used: u64, quota: u64, versions: u64) -> String {
 pub fn open(ctx: &Ctx, path: &str) -> Result<()> {
     let path = clean(path)?;
     let local = open::locate(&SyncPlan::from(&ctx.settings()), &path).map_err(open_error)?;
-    open::open(&local).map_err(CliError::error)?;
+    let how = open::open_how(&local).map_err(CliError::error)?;
+    if ctx.json && how == open::Launched::Chooser {
+        // Windows had no app for this type and shows its "Open with" dialog instead.
+        return print_json(&json!({"opened": local.display().to_string(), "with": "chooser"}));
+    }
     opened(ctx, &local.display().to_string())
 }
 

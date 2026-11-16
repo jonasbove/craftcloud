@@ -137,9 +137,119 @@ pub fn tell_user(message: &str) {
     }
 }
 
+/// How [`open_how`] handed a file to the system.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Launched {
+    /// To the system's opener: the file's default app, or the file manager for a folder.
+    Default,
+    /// To Windows' "Open with" dialog, because no app is set for the file's type.
+    Chooser,
+}
+
 /// Opens a file with its default app (or a folder in the file manager).
 pub fn open(path: &Path) -> Result<(), String> {
-    spawn(opener(), &[path.as_os_str()])
+    open_how(path).map(|_| ())
+}
+
+/// [`open`], saying how. On Windows a file whose type has no app goes to the "Open with" dialog:
+/// `explorer.exe` given such a file shows nothing at all, not even that dialog.
+pub fn open_how(path: &Path) -> Result<Launched, String> {
+    #[cfg(windows)]
+    if !path.is_dir() && !windows_app_for(path) {
+        let (program, args) = chooser_command(std::env::var_os("SystemRoot").as_deref(), path);
+        let args: Vec<&std::ffi::OsStr> = args.iter().map(|a| a.as_os_str()).collect();
+        return spawn(&program, &args).map(|()| Launched::Chooser);
+    }
+    spawn(opener(), &[path.as_os_str()]).map(|()| Launched::Default)
+}
+
+/// What the Windows registry says about one ProgID (a file type's class), as `windows_app_for`
+/// reads it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProgId {
+    /// Its name, as `.ext`'s default value or a `UserChoice`'s `ProgId` gives it.
+    pub name: String,
+    /// `HKCR\<name>` exists.
+    pub exists: bool,
+    /// Its default verb (`shell`'s default value) or `open` has a `command` key with a command line
+    /// or a `DelegateExecute`.
+    pub command: bool,
+}
+
+/// What the registry says opens files with one extension. `OpenWithProgids` is deliberately left
+/// out: apps listed only there are offered by "Open with" but aren't the default, and given such a
+/// file `explorer.exe` does nothing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Association {
+    /// The person's own choice (`HKCU\…\Explorer\FileExts\<ext>\UserChoice`, and the newer
+    /// `UserChoiceLatest`), in the order read.
+    pub user_choice: Vec<ProgId>,
+    /// `HKCR\<ext>`'s default value.
+    pub class: Option<ProgId>,
+}
+
+/// Whether Windows has an app to open files with this association. When unsure, no: the "Open
+/// with" dialog is shown, and it also lists any app that could. A ProgID counts when it exists and
+/// has an open command, or is a Store app's (`AppX…`, often started through its package with no
+/// classic command). Pure, so it is tested on every platform.
+pub fn has_default_app(association: &Association) -> bool {
+    let runs = |p: &ProgId| {
+        let store_app = p.name.get(..4).is_some_and(|s| s.eq_ignore_ascii_case("appx"));
+        !p.name.trim().is_empty() && p.exists && (p.command || store_app)
+    };
+    association.user_choice.iter().any(runs) || association.class.as_ref().is_some_and(runs)
+}
+
+/// The program and arguments that show Windows' "Open with" dialog for `path`:
+/// `%SystemRoot%\System32\rundll32.exe shell32.dll,OpenAs_RunDLL <path>`, the path one argument
+/// (`Command` quotes it when it has spaces). Without `SystemRoot`, plain `rundll32.exe`, which
+/// Windows finds in its system folder. Pure, so it is tested on every platform.
+pub fn chooser_command(system_root: Option<&std::ffi::OsStr>, path: &Path) -> (std::ffi::OsString, Vec<std::ffi::OsString>) {
+    let program = match system_root.filter(|r| !r.is_empty()) {
+        Some(root) => {
+            let mut program = root.to_os_string();
+            if !root.to_string_lossy().ends_with('\\') {
+                program.push(r"\");
+            }
+            program.push(r"System32\rundll32.exe");
+            program
+        }
+        None => "rundll32.exe".into(),
+    };
+    (program, vec!["shell32.dll,OpenAs_RunDLL".into(), path.as_os_str().to_os_string()])
+}
+
+/// Whether Windows has a default app for `path`'s type, read from the registry. Any doubt (no
+/// extension, a key that can't be read) is a no.
+#[cfg(windows)]
+fn windows_app_for(path: &Path) -> bool {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER};
+    let Some(ext) = path.extension().and_then(|e| e.to_str()).filter(|e| !e.is_empty()) else {
+        return false;
+    };
+    let ext = format!(".{ext}");
+    let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
+    let value = |key: &RegKey, name: &str| key.get_value::<String, _>(name).ok().map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+    let prog_id = |name: String| {
+        let Ok(key) = hkcr.open_subkey(&name) else {
+            return ProgId { name, exists: false, command: false };
+        };
+        let default_verb = key.open_subkey("shell").ok().and_then(|shell| value(&shell, ""));
+        let command = default_verb.iter().map(String::as_str).chain(["open"]).any(|verb| {
+            key.open_subkey(format!(r"shell\{verb}\command")).is_ok_and(|c| value(&c, "").is_some() || value(&c, "DelegateExecute").is_some())
+        });
+        ProgId { name, exists: true, command }
+    };
+    let file_exts = format!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\{ext}");
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let user_choice = ["UserChoiceLatest", r"UserChoiceLatest\ProgId", "UserChoice"]
+        .into_iter()
+        .filter_map(|sub| hkcu.open_subkey(format!(r"{file_exts}\{sub}")).ok().and_then(|k| value(&k, "ProgId")))
+        .map(prog_id)
+        .collect();
+    let class = hkcr.open_subkey(&ext).ok().and_then(|k| value(&k, "")).map(prog_id);
+    has_default_app(&Association { user_choice, class })
 }
 
 /// Shows a file in the file manager, selected where the platform can do that.
@@ -169,13 +279,14 @@ fn opener() -> &'static str {
 /// Starts `program` and returns at once. Its stdin, stdout and stderr are null rather than ours:
 /// an app left holding the caller's output pipe would keep `out=$(craftcloud open …)` waiting
 /// until that app quits (#6). A thread reaps it, so a long-running client keeps no finished child.
-fn spawn(program: &str, args: &[&std::ffi::OsStr]) -> Result<(), String> {
-    let mut child = command(program, args).spawn().map_err(|e| format!("couldn't start {program}: {e}"))?;
+fn spawn(program: impl AsRef<std::ffi::OsStr>, args: &[&std::ffi::OsStr]) -> Result<(), String> {
+    let program = program.as_ref();
+    let mut child = command(program, args).spawn().map_err(|e| format!("couldn't start {}: {e}", program.to_string_lossy()))?;
     std::thread::spawn(move || child.wait());
     Ok(())
 }
 
-fn command(program: &str, args: &[&std::ffi::OsStr]) -> std::process::Command {
+fn command(program: impl AsRef<std::ffi::OsStr>, args: &[&std::ffi::OsStr]) -> std::process::Command {
     use std::process::Stdio;
     let mut command = std::process::Command::new(program);
     command.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -184,8 +295,52 @@ fn command(program: &str, args: &[&std::ffi::OsStr]) -> std::process::Command {
 
 #[cfg(test)]
 mod tests {
-    use super::{OpenError, follow, locate, plain_windows_path, resolve};
+    use super::{Association, OpenError, ProgId, chooser_command, follow, has_default_app, locate, plain_windows_path, resolve};
     use craftcloud_core::sync::SyncPlan;
+    use std::ffi::OsStr;
+
+    /// On a fresh Windows `.md` and `.docx` have no app, and `explorer.exe` then shows nothing, so
+    /// the "Open with" dialog is shown instead. `.txt` (Notepad) keeps opening directly.
+    #[test]
+    fn a_file_type_without_an_app_gets_the_chooser() {
+        let prog = |name: &str, exists: bool, command: bool| ProgId { name: name.into(), exists, command };
+        let class = |p: ProgId| Association { user_choice: vec![], class: Some(p) };
+        // An app opens it.
+        assert!(has_default_app(&class(prog("txtfile", true, true))), r".txt: HKCR\txtfile\shell\open\command");
+        assert!(
+            has_default_app(&Association { user_choice: vec![prog(r"Applications\notepad++.exe", true, true)], class: None }),
+            "the person's choice"
+        );
+        assert!(has_default_app(&class(prog("AppX4ztfk9wxr86nxmzzq47px0nh0e58b8fw", true, false))), "a Store app");
+        assert!(has_default_app(&class(prog("appxabc", true, false))), "any case");
+        let stale = Association { user_choice: vec![prog("Gone.Choice", false, false)], class: Some(prog("txtfile", true, true)) };
+        assert!(has_default_app(&stale), "a stale choice, but the class opens");
+        // None does: the chooser.
+        assert!(!has_default_app(&Association::default()), "nothing registered (.md on a fresh Windows)");
+        assert!(!has_default_app(&class(prog("Word.Document.12", false, false))), ".docx naming a class Office would install");
+        assert!(!has_default_app(&class(prog("Word.Document.12", true, false))), "a class with no open command");
+        assert!(!has_default_app(&class(prog("AppXgone", false, false))), "an uninstalled Store app");
+        assert!(!has_default_app(&class(prog("  ", true, true))), "an empty name");
+        assert!(!has_default_app(&Association { user_choice: vec![prog("Gone.Choice", false, false)], class: None }), "only a stale choice");
+    }
+
+    #[test]
+    fn the_chooser_gets_the_path_as_one_argument() {
+        for path in [
+            r"C:\Users\john\CraftCloud\notes.md",
+            r"C:\Users\John Doe\CraftCloud\Q3 report.docx",
+            r"C:\Users\jöhn\CraftCloud\Möte 日本 ✓.md",
+            r"\\server\share\a b.md",
+        ] {
+            let (program, args) = chooser_command(Some(OsStr::new(r"C:\Windows")), std::path::Path::new(path));
+            assert_eq!(program, r"C:\Windows\System32\rundll32.exe");
+            assert_eq!(args, [OsStr::new("shell32.dll,OpenAs_RunDLL"), OsStr::new(path)], "{path}");
+        }
+        let path = std::path::Path::new(r"C:\a b\c.md");
+        assert_eq!(chooser_command(Some(OsStr::new(r"D:\WINDOWS\")), path).0, r"D:\WINDOWS\System32\rundll32.exe");
+        assert_eq!(chooser_command(None, path).0, "rundll32.exe");
+        assert_eq!(chooser_command(Some(OsStr::new("")), path).0, "rundll32.exe");
+    }
 
     /// #5: `craftcloud open` prints `C:\…`, not the `\\?\C:\…` that `canonicalize` gives on Windows.
     #[test]
