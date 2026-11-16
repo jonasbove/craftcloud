@@ -625,13 +625,13 @@ jobs:
     name: release (draft)
     # Doesn't wait for the untried FreeBSD and riscv64 builds (up to two hours): `late` adds them to
     # the draft when they finish. Their artifacts are named `late-*`, so `release-*` never picks them up.
-    # No draft unless every Linux package passed its install test.
-    needs: [linux, flatpak, arch, macos, windows, package-test]
+    # No draft unless every Linux package passed its install test and the tests passed on Windows.
+    needs: [linux, flatpak, arch, macos, windows, package-test, windows-test]
     if: >-
       ${{ !cancelled() && startsWith(github.ref, 'refs/tags/v')
       && needs.linux.result == 'success' && needs.flatpak.result == 'success' && needs.arch.result == 'success'
       && needs.macos.result == 'success' && needs.windows.result == 'success'
-      && needs.package-test.result == 'success' }}
+      && needs.package-test.result == 'success' && needs.windows-test.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     # RELEASE_SIGNING_KEY lives in the `release` environment, which only `v*` tags may use, so no

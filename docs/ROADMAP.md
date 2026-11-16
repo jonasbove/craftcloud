@@ -134,6 +134,7 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   offline, so its folder watcher no longer races the other computer.
 - 2026-11-16: Testing: the Release workflow runs the workspace tests on Windows x64 (`windows-test`), so the
   Windows code is tested on Windows itself and not only on Linux; on `v*` tags and by hand, not on every pull request.
+  No draft release unless they pass. Its first run found one test that built a path with `/`; the app was right.
 - 2026-11-16: Roadmap: M9, sync with any WebDAV server (Nextcloud, ownCloud, a NAS …), planned for 0.2.0 on the
   branch `feature/webdav-support`. The Windows command line (`craftcloud.com`, the PATH entry, the uninstall's
   cleanup) leaves Upcoming: it was tried on Windows 11.

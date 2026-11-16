@@ -359,7 +359,8 @@ mod tests {
         let src = src_dir.path().join("notes.md");
         std::fs::write(&src, "# v1").unwrap();
         let path = save_target("notes.md", None, None).unwrap();
-        let dest = sync.path().join("WordCraft/notes.md");
+        // Joined part by part: on Windows the path the listing gives back uses `\`.
+        let dest = sync.path().join("WordCraft").join("notes.md");
 
         assert!(!place(&src, &dest, &path, false).unwrap(), "a new file");
         assert_eq!(std::fs::read_to_string(&dest).unwrap(), "# v1");
