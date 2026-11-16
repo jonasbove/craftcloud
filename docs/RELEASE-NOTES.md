@@ -63,6 +63,13 @@
   other is held in the cloud until one is renamed. A `CON.txt` an older Windows client made stays on that computer
   but no longer syncs; rename it to sync it. This changes what the sync skips, so update every Windows computer
   together: an older one keeps retrying these names.
+- **Sync: a cloud file listed without a version is never trashed. Upgrade all devices together.** Before a file
+  you deleted on your computer goes to the cloud trash, the sync checks that the cloud file is still the version it
+  last saw. A file the cloud listed without a version (an ETag) passed that check, so it could go to the trash
+  although it could not be shown unchanged; a whole folder holding such a file could too. Now such a file stays in
+  the cloud and comes back down, and the activity list says so once; a file renamed or moved on your computer is
+  uploaded under its new name instead of being moved in the cloud. This changes how the sync decides, so update
+  every computer together: an older one can still trash such a file.
 - **Sync: a file moved onto one renamed elsewhere keeps both. Upgrade all devices together.** When you moved a
   file onto another one (replacing it) while that one was renamed on another computer or in the browser, the sync
   could take one file as two moves: the next pass then wrote over the renamed file in the cloud (its old bytes kept
