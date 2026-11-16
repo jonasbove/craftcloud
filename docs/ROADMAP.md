@@ -3,7 +3,7 @@
 **Stage: early alpha** · version 0.1.1 (fixes for 0.1.0, the first release: a published image and desktop builds)
 
 > **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (trace logs leave out HTTP
-> bodies and headers)
+> bodies and headers; a cloud file listed without an ETag is never trashed)
 
 CraftCloud is a self-hosted cloud for the Craft apps: the unmodified OxiCloud server in a Docker image, CraftCloud's
 own web frontend (Rust, egui, WebAssembly), a desktop sync client with a command line, and a small admin service.
@@ -106,6 +106,12 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   HTTP library (`ureq`, `ureq_proto`) at debug level whatever `RUST_LOG` asks for. `tokens_never_reach_the_trace_log`
   runs again, and `trace_logging_leaves_out_the_tokens` runs `craftcloud logout` with `RUST_LOG=trace` against a
   stand-in server.
+- 2026-11-16: Sync: a cloud file listed without an ETag is never trashed. The check before a trash (`still_at`)
+  took a file listed without an ETag as unchanged, and the folder check (`cloud_holds`) did too when the plan's
+  ETag was empty as well; both now take it as changed, so it stays in the cloud and comes back down, said once in
+  the activity list (a move here is then an upload under the new name). Tests in
+  `crates/native/src/sync/engine_tests.rs`: `a_file_listed_without_an_etag_is_not_trashed` (no longer ignored) and
+  `a_folder_with_a_file_listed_without_an_etag_is_not_trashed`. Upgrade all devices together.
 - 2026-11-16: Tests: `cargo xtask e2e-web` runs the web frontend in headless Chromium (chromedriver, through a
   small WebDriver client of its own over `ureq`; no new dependency) against a fresh server: first-run setup, sign-out and sign-in with the session cookie's flags,
   an upload, a share link opened in a second, signed-out browser and downloaded there, a device code approved on

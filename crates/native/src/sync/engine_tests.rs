@@ -210,14 +210,25 @@ fn a_file_whose_folder_cant_be_listed_is_not_trashed() {
 }
 
 #[test]
-#[ignore = "known bug: `still_at` reads a cloud file listed without an ETag as unchanged, so a file whose version can't be compared is trashed (`cloud_holds` keeps it); needs its own fix PR"]
 fn a_file_listed_without_an_etag_is_not_trashed() {
-    let server = FakeServer::start(|r| rest(r).unwrap_or_else(|| listing("Docs", &[("a.txt", None)], &[])));
-    let dir = tempfile::tempdir().unwrap();
-    let mut engine = docs_engine(&server, dir.path());
-    let mut state = one_file_state();
-    let done = apply(&mut engine, &Action::DeleteRemote { path: "Docs/a.txt".into(), etag: "\"e1\"".into() }, &mut state, &mut BTreeSet::new());
-    assert_eq!(trashes(&server), 0, "{done:?}");
+    // Without an ETag the cloud file can't be shown to be the version planned: unknown, so it
+    // stays, whatever the plan carries (an empty ETag too: a scan that listed it without one
+    // plans it so), and the activity list says so once.
+    for planned in ["\"e1\"", ""] {
+        let server = FakeServer::start(|r| rest(r).unwrap_or_else(|| listing("Docs", &[("a.txt", None)], &[])));
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = docs_engine(&server, dir.path());
+        let delete = Action::DeleteRemote { path: "Docs/a.txt".into(), etag: planned.into() };
+        for _ in 0..2 {
+            let mut state = one_file_state();
+            let done = apply(&mut engine, &delete, &mut state, &mut BTreeSet::new());
+            assert_eq!(done, Ok(None), "planned {planned:?}");
+            assert!(!state.files.contains_key("Docs/a.txt"), "forgotten, so the next cycle brings it back down");
+        }
+        assert_eq!(trashes(&server), 0, "planned {planned:?}: {:?}", server.seen());
+        let said = activity(&engine).into_iter().filter(|e| e.kind == ActivityKind::Skipped && e.path == "Docs/a.txt").count();
+        assert_eq!(said, 1, "said once");
+    }
 }
 
 // --- A whole folder to the trash: only when it holds exactly what was planned ------------------
@@ -280,6 +291,22 @@ fn a_folder_with_a_file_changed_in_the_cloud_is_not_trashed() {
     // The changed file is one level down: every level is listed again.
     let server = folder_server(listing("Docs", &[("a.txt", Some("e1"))], &["Sub"]), listing("Docs/Sub", &[("b.txt", Some("e2"))], &[]));
     let (done, _, folders) = delete_folder(&server);
+    assert_eq!(done.unwrap(), None);
+    assert_eq!(trashes(&server), 0, "{:?}", server.seen());
+    assert_eq!(folders.len(), 2);
+}
+
+#[test]
+fn a_folder_with_a_file_listed_without_an_etag_is_not_trashed() {
+    // The plan's ETag is empty too (a scan that listed the file without one plans it so); the
+    // file still can't be shown unchanged, so the folder stays.
+    let server = folder_server(listing("Docs", &[("a.txt", None)], &["Sub"]), listing("Docs/Sub", &[("b.txt", Some("e1"))], &[]));
+    let dir = tempfile::tempdir().unwrap();
+    let mut engine = docs_engine(&server, dir.path());
+    let mut state = one_file_state();
+    let mut folders: BTreeSet<String> = ["Docs".to_owned(), "Docs/Sub".to_owned()].into();
+    let files = vec![("Docs/a.txt".to_owned(), String::new()), ("Docs/Sub/b.txt".to_owned(), "\"e1\"".to_owned())];
+    let done = apply(&mut engine, &Action::DeleteRemoteFolder { path: "Docs".into(), files }, &mut state, &mut folders);
     assert_eq!(done.unwrap(), None);
     assert_eq!(trashes(&server), 0, "{:?}", server.seen());
     assert_eq!(folders.len(), 2);

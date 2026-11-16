@@ -1043,11 +1043,19 @@ impl Engine {
 
     /// Whether the cloud file at `path` is still at version `etag` (`None`: it's gone). Neither
     /// REST's delete nor OxiCloud's MOVE takes If-Match, so this is checked first (the window is
-    /// one request).
+    /// one request). A file listed without an ETag can't be shown to be at `etag`, so it counts
+    /// as changed (never trashed or moved on that guess), and the activity list says so once.
     fn still_at(&mut self, path: &str, etag: &str) -> Result<Option<bool>, String> {
         let (parent, _) = path.rsplit_once('/').unwrap_or(("", path));
         match self.list(parent).map(|entries| entries.into_iter().find(|e| e.path == path)) {
-            Ok(Some(e)) => Ok(Some(e.etag.as_deref().is_none_or(|now| now.trim_matches('"') == etag.trim_matches('"')))),
+            Ok(Some(e)) => {
+                let now = e.etag.as_deref().map(|now| now.trim_matches('"')).filter(|now| !now.is_empty());
+                if now.is_none() && self.reported.insert(format!("no-etag:{path}")) {
+                    let note = event(ActivityKind::Skipped, path, None, "the cloud lists no version for it, so it is left as it is there".into());
+                    self.update(|p| p.record(note));
+                }
+                Ok(Some(now.is_some_and(|now| now == etag.trim_matches('"'))))
+            }
             Ok(None) => Ok(None),
             Err(e) if e.ends_with(": 404") => Ok(None),
             Err(e) => Err(e),
@@ -1084,9 +1092,10 @@ impl Engine {
     }
 
     /// Whether the cloud folder `path` holds exactly `files` (path, ETag), nothing more or newer,
-    /// listed again now: a folder goes to the trash whole only then.
+    /// listed again now: a folder goes to the trash whole only then. A file listed without an
+    /// ETag can't be shown unchanged, so it keeps the folder.
     fn cloud_holds(&mut self, path: &str, files: &[(String, String)]) -> Result<bool, String> {
-        let mut found: BTreeMap<String, String> = BTreeMap::new();
+        let mut found: BTreeMap<String, Option<String>> = BTreeMap::new();
         let mut level = vec![path.to_owned()];
         while !level.is_empty() {
             let mut next = Vec::new();
@@ -1095,14 +1104,17 @@ impl Engine {
                     if e.is_folder {
                         next.push(e.path);
                     } else {
-                        found.insert(e.path, e.etag.unwrap_or_default());
+                        found.insert(e.path, e.etag);
                     }
                 }
             }
             level = next;
         }
         Ok(found.len() == files.len()
-            && files.iter().all(|(p, etag)| found.get(p).is_some_and(|now| now.trim_matches('"') == etag.trim_matches('"'))))
+            && files.iter().all(|(p, etag)| {
+                let now = found.get(p).and_then(Option::as_deref).map(|now| now.trim_matches('"')).filter(|now| !now.is_empty());
+                now.is_some_and(|now| now == etag.trim_matches('"'))
+            }))
     }
 
     /// Moves a cloud file to the trash, unless it changed since `etag` (then `false`: it stays).
