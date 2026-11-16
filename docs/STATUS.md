@@ -44,8 +44,9 @@ What no test reaches, from a coverage run, is in [TESTING.md › Coverage](TESTI
   button instead.
 - **Idle CPU on Windows is still to be re-checked.** An open, idle window drew 4 frames a second, which took
   about 3.6 cores on a Windows 11 VM drawing in software (#3). It now draws only when something changes and once a
-  minute otherwise; on Linux with software rendering that took idle CPU from 22 % to 1 % of a core. Not yet
-  measured on Windows again.
+  minute otherwise; on Linux with software rendering that took idle CPU from 22 % to 1 % of a core. A window
+  hidden in the tray kept drawing a frame at every tick on Windows (about 1.5 cores on the VM); it now draws
+  nothing while hidden. Neither is measured on Windows again yet.
 - **Names Windows can't have don't sync to a Windows computer.** A cloud name with `< > : " | ? *`, a trailing dot
   or space, or a reserved name (`CON`, `NUL.txt`, `COM1.log`, also with an extension) stays in the cloud there and
   is reported once; Linux and macOS sync it and warn. Cloud names that differ only in case are held on Windows

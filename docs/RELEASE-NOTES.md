@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Windows: a start at login stays in the tray** (#9). `craftcloud.exe --hidden`, the command that Start at
+  login runs, showed the window a moment after it started. The window library shows every window itself once it
+  has drawn its first frame, whatever was asked. Now a window that isn't meant to be seen hides itself again in the
+  same step, so a start at login shows nothing; the tray's Show CraftCloud brings the window up as before.
+- **Windows: a window hidden in the tray uses next to no CPU.** With the window closed into the tray, CraftCloud
+  kept drawing a frame of it every second (on Windows the window library can't tell a hidden window from a shown
+  one), which on a computer drawing in software kept a core busy. A hidden window now draws nothing; the frame
+  that shows it comes with Show.
+- **`craftcloud status` says which computer can't have a name.** A file left out because Windows can't have its
+  name (`a:b.txt`, `CON.txt`, a trailing dot) was listed as "a name the cloud can't take". It now says "a name this
+  computer (Windows) can't have", and two cloud names that differ only in upper and lower case say so. `--json`'s
+  `reason` stays `name`.
 - **Desktop: an idle window uses next to no CPU** (#3). The desktop client's window drew itself four times a second for as
   long as it was open, even with nothing to show. Without a graphics card (a virtual machine, or a computer that
   draws in software) that kept several cores busy. Now it draws when something changes (a sync, an answer from
