@@ -88,6 +88,13 @@ pub trait DesktopHost: Backend {
     fn quit(&mut self);
 }
 
+/// How often the window looks for answers while a request is in flight.
+const BUSY_TICK: std::time::Duration = std::time::Duration::from_millis(250);
+/// How often an idle window repaints: what it shows changes only with time ("Synced 2 min ago",
+/// today's and yesterday's activity). Every full pass costs a frame, which software renderers
+/// draw on the CPU (#3).
+const IDLE_TICK: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Shown after SIGN OUT when the server couldn't be told.
 const LOGOUT_NOTE: &str = "Signed out on this computer. The server couldn't be told, so the sign-in may still be active there until it runs out.";
 
@@ -474,8 +481,12 @@ impl<H: DesktopHost> DesktopApp<H> {
         {
             self.net.send(&mut self.host, Key::Me, req);
         }
-        if self.net.is_busy() || matches!(self.screen, Screen::Main(_)) {
-            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        // An answer, a sync change and input each wake the window on their own (#3): a request
+        // in flight is checked often, and an idle window repaints only for "Synced 2 min ago".
+        if self.net.is_busy() {
+            ctx.request_repaint_after(BUSY_TICK);
+        } else if matches!(self.screen, Screen::Main(_)) {
+            ctx.request_repaint_after(IDLE_TICK);
         }
     }
 

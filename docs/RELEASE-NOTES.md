@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Desktop: an idle window uses next to no CPU** (#3). The desktop client's window drew itself four times a second for as
+  long as it was open, even with nothing to show. Without a graphics card (a virtual machine, or a computer that
+  draws in software) that kept several cores busy. Now it draws when something changes (a sync, an answer from
+  the server, the mouse or keyboard) and otherwise once a minute, to keep "Synced 2 min ago" true.
 - **A kept version's time is never after it was replaced.** `craftcloud versions` (and `--json`'s `modified`)
   and the web frontend's Versions sheet show when a version's content was last changed. That time comes from the
   server and the replacement time from the computer that replaced it, so a server that rounds up or whose clock
