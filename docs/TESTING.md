@@ -11,7 +11,7 @@ The layers, from the fastest to the slowest:
 | `cargo xtask e2e-sync` | two separate clients, the built `craftcloud` program, syncing through a server pass by pass: the smoke test before a release or after a sync change | any server, and an account to test with |
 
 How to start a throwaway server and run the live tests is in [CONTRIBUTING.md](../CONTRIBUTING.md). This page is
-about the last one.
+about the last one, and about [measuring coverage](#coverage).
 
 ## The two-client sync smoke test (`cargo xtask e2e-sync`)
 
@@ -103,3 +103,86 @@ Read the passes around it: the case's detail names what was missing or wrong, an
 the change says in `activity` what it sent (`up`, `moved`, `deleted`, `conflict`), and in `not_synced` what it left
 out. Run again with `--keep` to look at both sync folders and the cloud folder as they ended. A case that fails
 only now and then is worth an issue too: the cases are made to pass every time.
+
+## Coverage
+
+Coverage is measured by hand now and then, not in CI. It shows which code no test reaches; read it with the live
+tests in mind, since most of the sync engine's red lines are what `crates/native/tests/live.rs` covers.
+
+### How to run it
+
+`cargo-llvm-cov` is a developer tool (MIT OR Apache-2.0), not a dependency of CraftCloud:
+
+```sh
+rustup component add llvm-tools-preview --toolchain 1.100.0   # the pinned toolchain (rust-toolchain.toml)
+cargo install cargo-llvm-cov --locked
+
+export CARGO_TARGET_DIR=$HOME/.cache/cc-target-coverage CARGO_BUILD_JOBS=4
+nice -n 10 cargo llvm-cov --workspace --locked --no-report < /dev/null   # the same tests as `cargo xtask ci`
+cargo llvm-cov report --summary-only                                      # per file
+cargo llvm-cov report --html --output-dir "$CARGO_TARGET_DIR/cov-html"    # line by line: cov-html/html/index.html
+cargo llvm-cov report --lcov --output-path "$CARGO_TARGET_DIR/lcov.info"  # for editors and scripts
+```
+
+To count the live tests too, set the `CRAFTCLOUD_TEST_*` variables of a throwaway server before the first
+`cargo llvm-cov` (and `--test-threads 1`, as for the live tests). Without them they pass without running.
+
+### The last run
+
+2026-11-16, `main` at `01f71f8`, cargo-llvm-cov 0.9.1, Rust 1.100.0, on Linux. 462 tests passed, none failed. **Not
+counted:** the live tests (`crates/native/tests/live.rs`, 20 tests, and `apps/craftcloud/tests/cli_live.rs`), which
+passed without running for want of a server, the `shots` screenshot tests (`--features shots`, ignored) and one
+ignored font test. `cargo xtask e2e-sync` runs the built program, outside coverage.
+
+| Crate | Lines | Functions |
+|---|---|---|
+| `crates/core` | 96.1% (2826 of 2942) | 95.9% |
+| `crates/ui-egui` | 88.9% (9413 of 10587) | 89.6% |
+| `crates/native` | 55.1% (2074 of 3762) | 46.8% |
+| `apps/craftcloud-cli` | 65.2% (73 of 112) | 60.9% |
+| `apps/craftcloud-admin` | 56.2% (145 of 258) | 56.2% |
+| `apps/craftcloud` | 32.9% (1064 of 3230) | 34.3% |
+| `xtask` | 34.1% (606 of 1779) | 23.5% |
+| **Workspace** | **71.5%** (16201 of 22673); regions 72.4% | **67.9%** |
+
+What the numbers mean:
+
+- **`crates/core` is well covered**: `reconcile.rs` 94%, `names.rs` 99%, `sync.rs` 93%, the API modules 90–100%.
+  The few lines left in `reconcile` are rare branches (a vanished folder with no synced files, a folder whose
+  subfolders are all going); property tests for it are on their way.
+- **`crates/native/src/sync.rs` is 45%**, because the engine itself (`Engine::try_cycle`, `apply`, `fetch`,
+  `move_folders`, `hold_no_room`, `restore_trashed`) talks to a server, and no unit test builds an `Engine`.
+  Its pure helpers (`scan_local`, `screen_names`, `split_deletes`, `bring_back`, the part files) are covered. The
+  live tests cover the engine's main paths (two computers, renames, folder moves, deletes to the trash, quota,
+  resumed downloads, held and discarded mass deletes); the table below lists what neither reaches.
+- **`session.rs` is 13%**: the token refresh and the versions kept before an overwrite.
+- **`apps/craftcloud`** is mostly the window, the tray and the commands' calls to the server: `main.rs`, `tray.rs`
+  and `cli/files.rs` are glue that the CLI end-to-end test and people check, not unit tests. `xtask`'s `e2e`
+  harness is itself a test.
+- **The UI** is covered by the kittest tests at 80–100% per file; the largest unrendered parts are the admin's
+  person details (`web/admin.rs`, `details_ui`), the file browser's grid view (`web/files/table.rs`, `grid_ui`,
+  `tile_ui`) and the handling of some server answers (`web/files.rs`, `on_answer`; `web/admin.rs`,
+  `on_admin_answer`).
+
+### The gaps worth a test, by risk
+
+"Live" means a live test covers the main path; the gap is the branch named. "Engine in a test" means a unit test
+inside `sync.rs` that builds an `Engine` (no network needed); there is no such constructor yet. "Fake server"
+means a local `TcpListener` thread answering scripted responses, as `http.rs`'s `stalled_server` test does.
+
+| # | Where | What no test checks | Today | Test |
+|---|---|---|---|---|
+| 1 | `native::sync`, `Engine::replan` | Switching a folder off deletes the local files that are exactly as last synced; a file **changed since** must be kept and reported (`kept += 1`). Only the unchanged case is live-tested. A wrong size or time compare here deletes someone's work. | live, unchanged files only | Engine in a test |
+| 2 | `native::sync`, `apply` → `trash_file`, `still_at`, `cloud_holds`; `RemoveRemoteFolder` | The "changed in the cloud meanwhile" guards: a file whose ETag moved since the plan is not trashed; a folder that holds more or newer files than planned is not trashed; a folder whose listing fails is kept (T-064). Live tests only take the happy path. | live, happy path only | fake server, or the comparisons pulled out into pure functions |
+| 3 | `native::session`, `retrying`, `refresh` | A 401 refreshes and retries once; tokens another process saved are taken over, and when those are stale too a real refresh follows; a refused refresh (401, 403, 404) signs out instead of failing forever. No live test runs past the 1-hour token. | untested | fake server |
+| 4 | `native::sync`, `Engine::resolve` | Settling a conflict with "keep the cloud's" deletes the conflict copy; "keep both" records it as the person's file. Only "keep mine" is live-tested. | live, `Keep::Mine` only | Engine in a test |
+| 5 | `native::sync`, `Engine::cycle` | How a failed cycle becomes a state: signed out, offline (a transport error) or failed. The CLI's exit codes 3, 8 and 1 hang on it (`control::state_name` never produces `offline`, `signed_out` or `failed` in a test). | live for offline | Engine in a test with an unreachable server |
+| 6 | `native::session`, `snapshot`; `apply`'s `UploadChange` | The old bytes are kept before an overwrite (not twice for one ETag, 5 kept), and a 412 on the overwrite (the cloud changed between the listing and the write) becomes a conflict copy. The live conflict test changes both sides before a pass, so the plan finds the conflict, not the 412. | live, versions kept | fake server |
+| 7 | `craftcloud-admin`, `main.rs` (`handle`, `authorize`) | The route table: which routes ask for admin rights, `X-Forwarded-Uri` to the `/apps/*` gate, a settings `PUT` saved, unknown paths 404. `logic.rs` is tested, the wiring is 0%. Also `admin_check` failing closed (502) when OxiCloud's answer can't be read, and `bundled_apps` (an unreadable `apps.json` serves no apps). | untested (the smoke test checks some routes) | unit with `tiny_http` on port 0 and a fake OxiCloud; `admin_check` and `bundled_apps` plain unit |
+| 8 | `native::secrets`, `TokenStore` | Saving, loading and deleting the tokens; with `CRAFTCLOUD_KEYCHAIN=off` the private file (what `e2e-sync` and headless servers use), and a working keychain removing an older file. 27%. | untested | unit with `CRAFTCLOUD_KEYCHAIN=off` (the variable is process-wide: one test, or a constructor switch) |
+| 9 | `craftcloud` CLI, `output.rs`, `Fail::name`; `control::state_name` | The JSON error `kind` strings (`not_found`, `held` …) that scripts read never run in a test, nor exit code 6 (`no_client`). `account::failed` is tested with hand-written state strings, not with `state_name`'s, so a renamed state could make `sync` exit 0. | untested | unit, easy: compare with the table in [CLI.md](CLI.md) |
+| 10 | `crates/ui-egui`, `web/admin.rs` `details_ui`, `on_admin_answer`; `web/files/table.rs` grid view | A person's details sheet in Admin › Users (role, quota, sessions) and how admin answers (errors included) land; the file browser's grid of tiles. | untested | kittest |
+
+Below these, in rough order: `hold_no_room`'s recount for admins (live covers the quota itself),
+`native::login` (start at login, per platform), `cli::headless::daemon`, and the font lookup in `native::lib`
+(depends on the machine).

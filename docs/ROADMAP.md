@@ -114,6 +114,9 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   carried out cycle by cycle settle with both sides the same and no change lost. They found two rare plans, not
   fixed yet (each with an ignored test in `reconcile/tests.rs`): one file taken as two moves, and a folder replaced
   by a file removed before files are moved out of it.
+- 2026-11-16: Tests: a coverage run (`cargo llvm-cov`, by hand, not in CI) before 0.2.0: 71.5% of lines without the
+  live tests; `crates/core` 96%, `crates/native` 55%. [TESTING.md › Coverage](TESTING.md#coverage) has the commands
+  and the ten gaps worth a test, by risk (first: switching a folder off with a changed file in it).
 - 2026-11-16: Roadmap: M9, sync with any WebDAV server (Nextcloud, ownCloud, a NAS …), planned for 0.2.0 on the
   branch `feature/webdav-support`. The Windows command line (`craftcloud.com`, the PATH entry, the uninstall's
   cleanup) leaves Upcoming: it was tried on Windows 11.
