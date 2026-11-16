@@ -278,7 +278,7 @@ exits 0 when the run ended up to date (with or without `waiting`), 3 when signed
 | `recent --clear` | `{"cleared": true}` |
 | `share create`, `share ls` | a link, or an array of `{"id", "url", "type", "item_id", "path", "name", "expires_at", "has_password", "created_at", "access_count"}` (`path`: where the item is now, `null` when it is gone; `name`: its name, or the one it was shared with) |
 | `share rm` | `{"removed": [ids]}` |
-| `versions` | `[{"n", "stamp", "time", "modified", "replaced_at", "size"}]`: `modified` is when the content was last changed (`null` when not recorded), `replaced_at` when it was replaced, both ISO 8601 in this computer's time zone with the offset (`2026-11-13T14:02:05+01:00`); `time` is the old replacement time text (UTC), kept for scripts |
+| `versions` | `[{"n", "stamp", "time", "modified", "replaced_at", "size"}]`: `modified` is when the content was last changed (`null` when not recorded; never after `replaced_at`), `replaced_at` when it was replaced, both ISO 8601 in this computer's time zone with the offset (`2026-11-13T14:02:05+01:00`); `time` is the old replacement time text (UTC), kept for scripts |
 | `versions … restore` | the restored version's fields, with `path` and `restored` (its `stamp`) |
 | `open` | `{"opened": local path}`, with `"with": "chooser"` when Windows had no app for the file's type and showed its "Open with" dialog instead |
 | `server info` | `{"server", "craftcloud", "version", "public_url", "web_apps", "initialized", "signed_in_as", "role"}` |

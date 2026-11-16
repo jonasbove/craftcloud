@@ -48,8 +48,18 @@ impl Version {
 
     /// When its content was last changed (RFC 3339, UTC), when its name says ([`name_for`]):
     /// versions kept before CraftCloud wrote that (or by the web frontend) don't.
+    ///
+    /// Never after [`Self::replaced_at`]: content can't have changed after it was replaced. The
+    /// two come from different clocks (the server's `Last-Modified`, in whole seconds, and the
+    /// replacing computer's), so a server clock that is ahead, or one that rounds up, would
+    /// otherwise show a version as changed after it was replaced; then the replacement time is
+    /// the best bound known. Both are the same fixed-width UTC text, so they compare as text.
     pub fn modified_at(&self) -> Option<String> {
-        rfc3339_of(self.stamp.split_once('_')?.1)
+        let modified = rfc3339_of(self.stamp.split_once('_')?.1)?;
+        Some(match self.replaced_at() {
+            Some(replaced) if replaced < modified => replaced,
+            _ => modified,
+        })
     }
 }
 
@@ -253,6 +263,20 @@ mod tests {
         let mut names = ["20261114T090000.000Z".to_owned(), "20261113T151013.123Z_20261114T080000Z".to_owned()];
         names.sort();
         assert_eq!(names[0], "20261113T151013.123Z_20261114T080000Z", "still sorted by when they were replaced");
+    }
+
+    /// The content's time is the server's (whole seconds), the replacement time the replacing
+    /// computer's: a server clock a second (or an hour) ahead must not show a version's content
+    /// as changed after it was replaced.
+    #[test]
+    fn a_versions_content_is_never_newer_than_its_replacement() {
+        for name in ["20261113T151013.123Z_20261113T151014Z", "20261113T151013.123Z_20261113T161013Z"] {
+            let v = Version { stamp: name.into(), size: 1, etag: None };
+            assert_eq!(v.modified_at().as_deref(), Some("2026-11-13T15:10:13Z"), "{name}");
+            assert_eq!(v.replaced_at().as_deref(), Some("2026-11-13T15:10:13Z"));
+        }
+        let same = Version { stamp: "20261113T151013.123Z_20261113T151013Z".into(), size: 1, etag: None };
+        assert_eq!(same.modified_at().as_deref(), Some("2026-11-13T15:10:13Z"));
     }
 
     #[test]

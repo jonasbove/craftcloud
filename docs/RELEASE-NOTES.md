@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A kept version's time is never after it was replaced.** `craftcloud versions` (and `--json`'s `modified`)
+  and the web frontend's Versions sheet show when a version's content was last changed. That time comes from the
+  server and the replacement time from the computer that replaced it, so a server that rounds up or whose clock
+  runs ahead could show a version as changed a second (or more) after it was replaced. Then the replacement time is
+  shown instead. Versions already kept are shown this way too; nothing is renamed.
 - **Trace logs no longer include HTTP request bodies and headers.** With `RUST_LOG=trace`, the desktop client,
   the command line and `craftcloud-admin` logged the raw bytes of every request and answer. The HTTP library's
   lines now stop at debug level (method, address, status), whatever `RUST_LOG` asks for.
