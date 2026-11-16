@@ -13,6 +13,11 @@
   and one that timed out.
 - **For people building CraftCloud:** the release checklist ([RELEASING.md](RELEASING.md)) now starts with
   `cargo xtask bump-apps --check`, and the Release workflow reports the Craft web app pins in its run summary.
+- **An offline desktop window no longer asks the server again and again.** The main window asks the server who is
+  signed in (for Settings). When that failed (the computer offline, the server down or answering with an error), it
+  asked again on the very next frame and redrew for every answer, without pause, for as long as the window was open.
+  Now it waits 5 seconds after the first failure, twice as long after each one that follows, up to 2 minutes, and
+  starts afresh once an answer comes or the sign-in changes.
 - **A kept version's time is never after it was replaced.** `craftcloud versions` (and `--json`'s `modified`)
   and the web frontend's Versions sheet show when a version's content was last changed. That time comes from the
   server and the replacement time from the computer that replaced it, so a server that rounds up or whose clock

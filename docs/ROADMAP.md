@@ -2,9 +2,10 @@
 
 **Stage: early alpha** · version 0.1.1 (fixes for 0.1.0, the first release: a published image and desktop builds)
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (the release checklist and the
-> Release workflow check the Craft web app pins; an idle window uses next to no CPU; trace logs leave out HTTP
-> bodies and headers; a cloud file listed without an ETag is never trashed)
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (an offline desktop window waits
+> before asking who is signed in again; the release checklist and the Release workflow check the Craft web app pins;
+> an idle window uses next to no CPU; trace logs leave out HTTP bodies and headers; a cloud file listed without an
+> ETag is never trashed)
 
 CraftCloud is a self-hosted cloud for the Craft apps: the unmodified OxiCloud server in a Docker image, CraftCloud's
 own web frontend (Rust, egui, WebAssembly), a desktop sync client with a command line, and a small admin service.
@@ -136,6 +137,12 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   starts with `cargo xtask bump-apps --check` (a stale pin is moved in a pull request of its own, built and
   smoke-tested as the `-apps` image), and the Release workflow runs the same check in its Linux x86_64 job and writes
   the result to the run's summary ("Craft web app pins"), without ever failing the release on it.
+- 2026-11-16: Desktop: an offline main window no longer asks `/api/auth/me` on every frame. A failed answer (no
+  connection, a 5xx, a body that names no user) left `me` unknown, the answer woke the window, and the next `tick`
+  sent the request again at once, so an offline window requested and redrew without pause. Now a failure sets a
+  wait (`me_retry`, modelled on the device poll's `next_poll`): 5 s, doubled on every failure up to 2 min, reset on
+  an answer that names the user and on a sign-in change; during the wait the window asks for one repaint at the
+  retry time. `who_is_signed_in_is_asked_again_after_a_wait_that_grows` fails without the fix.
 - 2026-11-16: Versions: a kept version's content time is never shown after its replacement time
   (`versions::Version::modified_at`, which the command line and the web frontend both use). OxiCloud rounds
   `getlastmodified` to the nearest second (UPSTREAM.md C17) and the replacement time is the client's clock, so a
