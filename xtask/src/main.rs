@@ -4,6 +4,7 @@
 
 mod bump_apps;
 mod e2e;
+mod e2e_web;
 mod fetch_apps;
 mod manifest;
 
@@ -25,6 +26,8 @@ commands:
          --check only reports, and fails if a pin is out of date
   e2e-sync  two scratch clients sync a fresh folder on CRAFTCLOUD_TEST_SERVER and check each other
             (create, edit, rename, move, delete to the trash, conflicts, …): docs/TESTING.md
+  e2e-web   the web frontend in headless Chromium against a fresh server (setup, sign-in, upload, share
+            link, device approval, admin CSRF); needs chromedriver: docs/TESTING.md
 ";
 
 fn main() -> ExitCode {
@@ -36,6 +39,7 @@ fn main() -> ExitCode {
         Some("fetch-apps") => fetch_apps::cmd(args.get(1..).unwrap_or_default()),
         Some("bump-apps") => bump_apps::cmd(args.get(1..).unwrap_or_default()),
         Some("e2e-sync") => e2e::cmd(args.get(1..).unwrap_or_default(), &root()),
+        Some("e2e-web") => e2e_web::cmd(args.get(1..).unwrap_or_default(), &root()),
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");
             Ok(())

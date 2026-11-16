@@ -10,9 +10,10 @@ The layers, from the fastest to the slowest:
 | `crates/native/tests/live.rs` | the sync engine against a real server: two computers in one process, renames, folder moves, deletes, quota, resumed downloads, a silent connection; each test syncs only folders of its own and removes them afterwards | a throwaway server |
 | `apps/craftcloud/tests/cli_live.rs` | every command of the command line against a real server | a throwaway server |
 | `cargo xtask e2e-sync` | two separate clients, the built `craftcloud` program, syncing through a server pass by pass: the smoke test before a release or after a sync change | any server, and an account to test with |
+| `cargo xtask e2e-web` | the web frontend the server serves, in headless Chromium: setup, sign-out and sign-in, an upload, a share link opened signed out, a device approval, the admin CSRF check | a fresh throwaway server, chromedriver and Chromium |
 
 How to start a throwaway server and run the live tests is in [CONTRIBUTING.md](../CONTRIBUTING.md). This page is
-about the last one, and about [measuring coverage](#coverage).
+about the last two, and about [measuring coverage](#coverage).
 
 ## The two-client sync smoke test (`cargo xtask e2e-sync`)
 
@@ -135,6 +136,100 @@ Read the passes around it: the case's detail names what was missing or wrong, an
 the change says in `activity` what it sent (`up`, `moved`, `deleted`, `conflict`), and in `not_synced` what it left
 out. Run again with `--keep` to look at both sync folders and the cloud folder as they ended. A case that fails
 only now and then is worth an issue too: the cases are made to pass every time.
+
+## The web frontend in a browser (`cargo xtask e2e-web`)
+
+The web pages' own tests render them off-screen (egui_kittest) against a scripted backend, and `scripts/smoke-test`
+checks the server's routes with curl. Neither runs the WebAssembly app in a browser against a real server, so
+neither sees the session cookies, the CSRF header on writes, Caddy's routes or the `/device` page as a person does.
+`e2e-web` does: headless Chromium, driven through chromedriver, opens the app the server serves and goes through
+the cases below on a fresh server.
+
+```sh
+docker build -t craftcloud:dev .
+KEEP=1 PROJECT=craftcloud-e2eweb scripts/smoke-test craftcloud:dev 8100   # a fresh server, no owner yet
+cargo xtask e2e-web --server http://127.0.0.1:8100
+docker compose -p craftcloud-e2eweb down -v
+```
+
+| Option | Meaning |
+|---|---|
+| `--server URL` | The server (default: `CRAFTCLOUD_TEST_SERVER`). It must have no owner yet: the first case is first-run setup |
+| `--shots` | Save a screenshot after every step, in `<run>/shots/` (a failed case always saves one) |
+| `--dir PATH` | Where the run directory goes (default: `<target>/e2e-web`) |
+
+The owner it makes is `CRAFTCLOUD_TEST_USER` (default `john`) with `CRAFTCLOUD_TEST_PASSWORD`, or a new random
+password that is never printed. It never runs in CI.
+
+### What it needs
+
+- **chromedriver and Chromium (or Chrome) of the same major version**, on `PATH` (`chromium`,
+  `google-chrome-stable` or `google-chrome`), or named by `CRAFTCLOUD_E2E_CHROMEDRIVER` and `CRAFTCLOUD_E2E_CHROME`.
+  Distributions package them together (`chromium` with its `chromedriver` on Arch, `chromium-driver` on Debian);
+  for Google Chrome, chromedriver comes from the [Chrome for Testing](https://googlechromelabs.github.io/chrome-for-testing/)
+  downloads. Without them the run stops at once and says which one is missing.
+- No GPU: the browser draws with its software renderer (SwiftShader), as on a server.
+- Firefox and geckodriver have not been tried; the network-log checks below use Chromium's log.
+- No WebDriver crate: `xtask/src/e2e_web/webdriver.rs` speaks the few W3C WebDriver commands the run needs over
+  `ureq`, with a 60 s deadline on each, so a hung driver stops the run with an error. (The crates available bring
+  in dependencies outside the licence allowlist.)
+
+### How it drives a canvas
+
+The app draws everything on one `<canvas>`, so the page has no buttons or fields for a WebDriver selector to find.
+The options, and why the run uses the keyboard:
+
+- **The accessibility tree** would be the most robust handle (widgets by role and name), but eframe doesn't build it
+  on the web yet: in the pinned eframe, `crates/eframe/src/web/app_runner.rs` drops the AccessKit update ("not
+  currently implemented"), and its `inspection` feature, which serves the tree to a test tool, does nothing on
+  wasm.
+- **Clicking at positions** ties every step to pixel layout: the sheets change layout at 600 and 640 px, and any
+  change of size or spacing moves every button.
+- **The keyboard** (chosen): egui moves the focus with Tab and Shift+Tab in the order it draws the widgets, Enter
+  presses the focused one, and typing goes to the focused field through eframe's text input. That order changes
+  only when a page gains or loses a widget, and it is how a person without a mouse uses the app. With nothing
+  focused, Shift+Tab goes to the last widget, and a sheet draws its main button last, so most steps are
+  "Escape, Shift+Tab, Enter". The one click the run makes is on an empty spot of the header, to give the page the
+  keyboard (or to let go of the focus where Escape would close a sheet).
+
+Every step is then checked where it shows, never in pixels: the server's API (with a password sign-in of the run's
+own, independent of CraftCloud's client code), the browser's cookie jar (HttpOnly cookies included), and
+Chromium's network log (which requests the page sent, with which headers; values are compared, never printed).
+The window is 1280×800 and the Tab counts in `xtask/src/e2e_web/cases.rs` hold for that width; each says which
+widgets it passes.
+
+### The cases
+
+| Case | Steps | Checks |
+|---|---|---|
+| first-run setup | the five setup pages: START SETUP, the owner's four fields and CREATE ACCOUNT, CONTINUE, CONTINUE (web apps; the slim image), GO TO HOME | the server has its owner; the browser holds a session cookie and `/api/auth/me` with its cookies names the owner |
+| sign out | SIGN OUT in the header | the page sent `POST /api/auth/logout`; the session cookie is gone; `/api/auth/me` answers 401 |
+| sign in, session cookie | the sign-in page: username, password, Enter | signed in as the owner; `oxicloud_access` is HttpOnly, Secure exactly when the address is https, and `oxicloud_csrf` is readable by the page |
+| upload | UPLOAD FILES on the empty My files page, the file handed to the page's file input (`#craftcloud-upload-input`) | the file reads back the same over WebDAV; its `PUT` carried `X-CSRF-Token` equal to the `oxicloud_csrf` cookie |
+| share link, opened signed out | the file's "…" menu, SHARE LINK…, CREATE LINK; then `/s/<token>` in a second browser with its own profile, and its DOWNLOAD | a new link on the server for the file; the second browser has no session, the page's `GET /api/s/<token>` answered 200, and the download holds the same bytes |
+| device approval | the device flow started over the API (as a desktop client would); `/device?code=…` in the signed-in browser, APPROVE | the approval's `POST` carried the CSRF header; polling `/api/auth/device/token` gives a token that signs in as the owner |
+| admin change | Admin › Users, NEW USER, its fields, CREATE | the user exists; the `POST /api/admin/users` carried `X-CSRF-Token` equal to the cookie |
+| forged admin writes | the browser's cookies replayed outside it, as a forged cross-site request would arrive | `PUT /craftcloud/api/settings` without the header and with a wrong one: 403; with the right one: 200 (the control); `POST /api/admin/users` without it: 403, and no user made |
+
+Sign-ins are limited per address (OxiCloud answers "too many sign-in attempts" after a handful in a minute), so
+the run signs in three times in all: setup's, the sign-in case's and its own.
+
+### What it leaves, and what it doesn't cover
+
+The run directory, `<target>/e2e-web/<seconds>/`, keeps `report.md` (the PASS/FAIL table, also printed),
+`chromedriver.log`, the screenshots, and each browser's profile and downloads. The exit code is 0 when every case
+passed. The server keeps the owner, the uploaded file, the share link and the new user: use a throwaway server.
+
+Not covered: how the pages look (the egui_kittest screenshots are for that), Firefox and Safari, phone widths,
+single sign-on (tested by hand, [OIDC.md](OIDC.md)), the `-apps` image's web-apps switch (the slim image can't
+change it, so its settings write is checked only from outside the browser), and pasting or drag and drop.
+egui moves the focus once per frame, so the run waits 300 ms after every key (two Tabs in one frame count as
+one; on a busy machine software rendering makes frames slow). Three steps are timing-sensitive: a Tab that arrives in the same frame as the last typed letters can be lost (the
+run waits after typing); a Shift+Tab right after a page changes can start one widget off, since with nothing
+focused it goes to the last widget of the frame before (setup's owner page); and the click that lets go of NEW
+USER's focus under its sheet doesn't always take. The setup and admin cases then try once more from a fresh page
+and say so in their detail. A case
+that fails after a UI change usually means a Tab count moved: the failure's screenshot shows where the focus went.
 
 ## Coverage
 
