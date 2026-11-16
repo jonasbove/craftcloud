@@ -2,11 +2,12 @@
 
 **Stage: early alpha** · version 0.1.1 (fixes for 0.1.0, the first release: a published image and desktop builds)
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (on Linux the tray counts as up
-> only while a tray host is on the bus, so closing the window on stock GNOME quits instead of leaving an invisible
-> client; a start at login stays in the tray on Windows; an offline desktop window waits before asking who is signed
-> in again; the release checklist and the Release workflow check the Craft web app pins; an idle window uses next to
-> no CPU; trace logs leave out HTTP bodies and headers; a cloud file listed without an ETag is never trashed)
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (the desktop client checked on KDE
+> Plasma, GNOME and Xfce, in [LINUX-DESKTOPS.md](LINUX-DESKTOPS.md); on Linux the tray counts as up only while a tray
+> host is on the bus, so closing the window on stock GNOME quits instead of leaving an invisible client; a start at
+> login stays in the tray on Windows; an offline desktop window waits before asking who is signed in again; the
+> release checklist and the Release workflow check the Craft web app pins; an idle window uses next to no CPU; trace
+> logs leave out HTTP bodies and headers; a cloud file listed without an ETag is never trashed)
 
 CraftCloud is a self-hosted cloud for the Craft apps: the unmodified OxiCloud server in a Docker image, CraftCloud's
 own web frontend (Rust, egui, WebAssembly), a desktop sync client with a command line, and a small admin service.
@@ -123,6 +124,12 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   with none, closing the window quits and `--hidden` opens the window; a host that comes up later makes the
   icon count. A unit test runs a private `dbus-daemon` and claims the name. Found in a headless GNOME Shell
   container while checking the desktops (`docs/LINUX-DESKTOPS.md`, its own pull request).
+- 2026-11-16: Docs: the desktop client on KDE Plasma 6.8, GNOME 51 and Xfce 4.20, in headless containers
+  ([LINUX-DESKTOPS.md](LINUX-DESKTOPS.md)): the tray's registration, notifications from each desktop's own
+  service, the keychain (GNOME Keyring, KWallet's Secret Service, none), the `craftcloud://` handler and
+  `xdg-open`, the autostart entry, and the window drawn in software. Found: on X11 a start at login opens the
+  window, and with no tray host (stock GNOME) the client takes the tray as up, so closing the window leaves it
+  invisible; both have fixes of their own. A real login, the lock screen and the KDE panel stay untested.
 - 2026-11-16: CI: the live sync tests run on every pull request and push to `main`. A `live` job in `ci.yml`,
   beside the gate, builds the server image from the tree, starts it with `scripts/smoke-test` and runs
   `cli_live.rs` and `live.rs` against it (the server's logs kept as an artifact when they fail), so a change to the

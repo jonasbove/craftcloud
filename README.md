@@ -282,8 +282,13 @@ cd craftcloud-<ver>-linux-x86_64
 CraftCloud then shows up in your app launcher. It lives in the tray (StatusNotifierItem): KDE, Xfce, Cinnamon and
 most desktops show it; on GNOME install the AppIndicator extension. Without a tray (stock GNOME) the window is
 the client: closing it quits, and a start at login opens it. **Settings › Start at login** writes an XDG
+most desktops show it; on GNOME install the AppIndicator extension (`gnome-shell-extension-appindicator`, or
+"AppIndicator and KStatusNotifierItem Support"), then log out and in. **Settings › Start at login** writes an XDG
 autostart entry, which GNOME, KDE and Xfce run. It tells you about conflicts, a sign-in that ran out and a sync
-that can't go on with a desktop notification; clicking one opens the window.
+that can't go on with a desktop notification; clicking one opens the window. The sign-in goes to the keychain (GNOME
+Keyring, or KDE's wallet with its Secret Service on). Without one, or with a KDE wallet that hasn't been set up
+yet, it is kept in a file only you can read, `~/.config/craftcloud/tokens.json`, and the log says so. How each desktop
+was checked: [docs/LINUX-DESKTOPS.md](docs/LINUX-DESKTOPS.md).
 
 **Hyprland and Sway** have no tray of their own: your bar's tray module is the tray host (Waybar's `tray`, Wayle's
 `systray`, …), and notifications need a notification service (mako, dunst, SwayNC, or one built into the bar).
