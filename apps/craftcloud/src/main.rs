@@ -523,8 +523,13 @@ impl eframe::App for Window<'_> {
         }
         let shown = self.shown;
         self.geometry.look(ctx.input(|i| geometry::worth_keeping(shown, i.viewport())));
-        // The tray and the sync status need passes even while the window is hidden.
-        ctx.request_repaint_after(Duration::from_secs(1));
+        // The tray, the control channel and the sync wake this pass themselves; the tick is a
+        // spare for a window that isn't drawn, where a pass runs only this. On a shown window it
+        // would be a full frame a second, drawn on the CPU by a software renderer (#3).
+        let drawn = ctx.input(|i| i.viewport().visible()).unwrap_or(true);
+        if let Some(tick) = logic_tick(self.shown, drawn) {
+            ctx.request_repaint_after(tick);
+        }
     }
 
     /// eframe has just written the window's place and size: never a minimised or hidden one's.
@@ -551,6 +556,12 @@ impl eframe::App for Window<'_> {
             }
         }
     }
+}
+
+/// The spare tick `logic` asks for: every second while the window is hidden or minimised, where
+/// eframe calls only `logic`; none while it is drawn, where the window's own ticks and the wakes do.
+fn logic_tick(shown: bool, drawn: bool) -> Option<Duration> {
+    (!shown || !drawn).then_some(Duration::from_secs(1))
 }
 
 /// What closing the window does when there is a tray.
@@ -788,7 +799,7 @@ fn wait_until(limit: Duration, ready: impl Fn() -> bool) -> bool {
 mod tests {
     use std::sync::Arc;
     use std::sync::mpsc::{Sender, channel};
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use craftcloud_native::control::ToWindow;
     use craftcloud_native::http::{ThreadBackend, Waker};
@@ -796,7 +807,7 @@ mod tests {
     use craftcloud_ui_egui::desktop::DesktopApp;
     use egui::{ViewportId, ViewportInfo};
 
-    use super::{Client, NativeHost, OnClose, SHOW, Window, notify, on_close, window_can_hide_here};
+    use super::{Client, NativeHost, OnClose, SHOW, Window, logic_tick, notify, on_close, window_can_hide_here};
 
     /// A client without a tray, keychain or notifications, its settings in `dir`.
     fn client(dir: &std::path::Path) -> (Client, Sender<ToWindow>) {
@@ -914,6 +925,14 @@ mod tests {
 
     fn env(vars: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<std::ffi::OsString> {
         move |name| vars.iter().find(|(k, _)| *k == name).map(|(_, v)| (*v).into())
+    }
+
+    #[test]
+    fn only_a_window_that_is_not_drawn_ticks_every_second() {
+        // Drawn, a tick is a full frame (#3); hidden or minimised, it keeps the tray's Show working.
+        assert_eq!(logic_tick(true, true), None);
+        assert_eq!(logic_tick(false, true), Some(Duration::from_secs(1)));
+        assert_eq!(logic_tick(true, false), Some(Duration::from_secs(1)));
     }
 
     #[test]

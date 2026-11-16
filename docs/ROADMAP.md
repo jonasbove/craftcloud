@@ -3,7 +3,7 @@
 **Stage: early alpha** · version 0.1.1 (fixes for 0.1.0, the first release: a published image and desktop builds)
 
 > **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (trace logs leave out HTTP
-> bodies and headers; a cloud file listed without an ETag is never trashed)
+> bodies and headers; a cloud file listed without an ETag is never trashed; an idle window uses next to no CPU)
 
 CraftCloud is a self-hosted cloud for the Craft apps: the unmodified OxiCloud server in a Docker image, CraftCloud's
 own web frontend (Rust, egui, WebAssembly), a desktop sync client with a command line, and a small admin service.
@@ -108,6 +108,15 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   Its first runs: `live.rs` 20 of 20 in 3 minutes, the job about 9 minutes. `cli_live` failed both times at its
   versions check: a file replaced within a second of being written lists a version `modified` a second after its
   `replaced_at` (OxiCloud's Last-Modified is a whole second, the client's clock isn't), for its own fix.
+- 2026-11-16: Desktop: an idle window uses next to no CPU (#3). On the main screen `DesktopApp::tick` asked for a
+  repaint every 250 ms, and `logic` for one every second, so an open window drew 4 full frames a second for ever;
+  a software renderer draws them on the CPU. Now the 250 ms tick runs only while a request is in flight, an idle
+  main screen asks for one a minute (`IDLE_TICK`, for "Synced 2 min ago"), and `logic`'s 1 s tick runs only while
+  the window is hidden or minimised (where eframe calls only `logic`, so the tray's Show keeps working); the sync
+  engine, the network, the tray and the control channel wake the window themselves. Measured on Linux with Mesa's
+  llvmpipe (software GL, X11, signed in, idle on Activity, 60 s): 4.1 passes a second and 22 % of a core before, 0.2
+  (three per 15 s sync check) and 1 % after. `an_idle_window_repaints_rarely_and_a_busy_one_often` fails without
+  the fix; the Windows re-check is still to do.
 - 2026-11-16: Versions: a kept version's content time is never shown after its replacement time
   (`versions::Version::modified_at`, which the command line and the web frontend both use). OxiCloud rounds
   `getlastmodified` to the nearest second (UPSTREAM.md C17) and the replacement time is the client's clock, so a

@@ -327,6 +327,27 @@ fn a_saved_session_goes_straight_to_syncing() {
     assert!(h.state().note.is_none());
 }
 
+/// The next repaint the window asked for.
+fn repaint_delay(h: &H) -> std::time::Duration {
+    h.output().viewport_output[&egui::ViewportId::ROOT].repaint_delay
+}
+
+#[test]
+fn an_idle_window_repaints_rarely_and_a_busy_one_often() {
+    // #3: an idle window drew 4 frames a second for ever, on the CPU with a software renderer.
+    let mut h = with_state(SyncState::UpToDate);
+    assert!(h.state().net.is_busy(), "who is signed in is asked first");
+    assert!(repaint_delay(&h) <= std::time::Duration::from_millis(250), "a request in flight is looked for often");
+
+    h.state_mut().host.net.answer("/api/auth/me", ok(&fixture("me.json")));
+    h.run();
+    assert!(!h.state().net.is_busy());
+    h.get_by_label("Up to date");
+    let idle = repaint_delay(&h);
+    assert!(idle >= std::time::Duration::from_secs(60), "idle, the window repaints once a minute at most, not every {idle:?}");
+    assert!(idle < std::time::Duration::MAX, "\"Synced 2 min ago\" still moves on");
+}
+
 /// Signs out from Settings (the sign-in is over here at once, the logout still under way).
 fn signed_out_from_settings() -> H {
     let mut h = with_state(SyncState::UpToDate);
