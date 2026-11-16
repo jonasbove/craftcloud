@@ -3,7 +3,7 @@
 **Stage: early alpha** · version 0.1.1 (fixes for 0.1.0, the first release: a published image and desktop builds)
 
 > **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (one file is in one move at
-> most)
+> most; a replaced folder syncs in one pass)
 
 CraftCloud is a self-hosted cloud for the Craft apps: the unmodified OxiCloud server in a Docker image, CraftCloud's
 own web frontend (Rust, egui, WebAssembly), a desktop sync client with a command line, and a small admin service.
@@ -108,6 +108,14 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   renamed file. `pair_moves` in `crates/core/src/reconcile.rs`; plan tests in `reconcile/tests.rs`, end-state
   tests and the properties (no more exclusion, 50 000 cases) in `reconcile/properties.rs`. Upgrade all devices
   together.
+- 2026-11-16: Sync: a folder replaced by a file (or a file by a folder) syncs in one pass. The plan kept its
+  usual order (folders to make, files, removals) and only the new file at the folder's place waits until the
+  folder is gone, so a file moved out of the folder goes before the folder is removed and after the folder it
+  moves into is made; a file replaced by a folder is deleted first. A file moved to where its own folder was (or
+  into a folder in its own place) is a delete plus a new file, since no single move can do it (it used to fail on
+  every pass), and a folder a set-aside path was leaving is no longer "removed" while still full. A new property
+  test carries each generated plan out once and checks that every action's preconditions hold in plan order
+  (`a_plan_works_in_one_pass`); the ignored test `a_replaced_folder_is_emptied_before_it_goes` runs again.
 - 2026-11-16: Desktop: the tray checked item by item against the v2 tray frame (#25). Order, labels, separators,
   the status line, Recent files, the folder-missing items and the four icon looks matched; the pause item didn't:
   signed out and waiting for you (mass delete) share the paused icon, so the menu said "Resume syncing" and the pick

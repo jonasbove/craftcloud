@@ -470,13 +470,12 @@ fn a_file_moved_onto_in_the_cloud_is_not_followed_to_a_rename_here() {
     assert_eq!(plan(&s, &l, &r), [Action::Download("B/a.txt".into()), Action::DeleteLocal("a.txt".into()), Action::UploadNew("b.md".into())]);
 }
 
-/// Found by the property tests (`properties.rs`), not fixed yet: when a synced folder is replaced
-/// by a file here, everything touching it is put first, in the order removals, folders to make,
-/// the rest. A file moved out of that folder then comes after the folder's removal (which finds it
-/// not empty and does nothing) and before the folder it moves into is made (so the move fails).
-/// Nothing is lost, but it takes extra passes, with errors in the activity list on the way.
+/// Found by the property tests (`properties.rs`): when a synced folder was replaced by a file here,
+/// everything touching it used to be put first, in the order removals, folders to make, the rest.
+/// A file moved out of that folder then came after the folder's removal (which found it not empty
+/// and did nothing) and before the folder it moves into was made (so the move failed). Now the
+/// plan keeps its order and only the file that takes the folder's place waits for the removal.
 #[test]
-#[ignore = "known bug: a replaced folder is removed before files are moved out of it (fix in its own pull request)"]
 fn a_replaced_folder_is_emptied_before_it_goes() {
     // Here: `A/S/S` moved to the new folder `B`, then a file saved as `A/S` where the folder was.
     let s = state(&[("A/S/S", known("e0", 3, 100))], &["A", "A/S"]);
@@ -487,4 +486,67 @@ fn a_replaced_folder_is_emptied_before_it_goes() {
     let moved = at(&Action::MoveRemote { from: "A/S/S".into(), to: "B/a.txt".into(), etag: "e0".into() });
     assert!(at(&Action::MakeRemoteFolder("B".into())) < moved, "{p:?}");
     assert!(moved < at(&Action::RemoveRemoteFolder("A/S".into())), "{p:?}");
+    assert!(at(&Action::RemoveRemoteFolder("A/S".into())) < at(&Action::UploadNew("A/S".into())), "{p:?}");
+}
+
+#[test]
+fn a_file_moved_to_where_its_folder_was_is_a_delete_and_a_new_file() {
+    // `A/S/S` renamed to `A/S` once its folder was gone: one move can't do it on the other side
+    // (the folder is in the way until the file is out of it), so the folder goes, then the file
+    // comes in its place, in one pass.
+    let s = state(&[("A/S/S", known("e0", 3, 100))], &["A", "A/S"]);
+    // Here: the cloud folder goes to the trash whole, then the file goes up.
+    let l = local(&[("A/S", 3, 100)], &["A"]);
+    let r = remote(&[("A/S/S", "e0", 3)], &["A", "A/S"]);
+    assert_eq!(
+        plan(&s, &l, &r),
+        [Action::DeleteRemoteFolder { path: "A/S".into(), files: vec![("A/S/S".into(), "e0".into())] }, Action::UploadNew("A/S".into())]
+    );
+    // In the cloud: the local file and folder go, then the file comes down.
+    let l = local(&[("A/S/S", 3, 100)], &["A", "A/S"]);
+    let r = remote(&[("A/S", "e0", 3)], &["A"]);
+    assert_eq!(plan(&s, &l, &r), [Action::DeleteLocal("A/S/S".into()), Action::RemoveLocalFolder("A/S".into()), Action::Download("A/S".into())]);
+}
+
+#[test]
+fn a_file_moved_into_a_folder_in_its_own_place_is_a_delete_and_a_new_file() {
+    // Here: `t` moved into a new folder `t`, as `t/x`.
+    let s = state(&[("t", known("e0", 3, 100))], &[]);
+    let l = local(&[("t/x", 3, 100)], &["t"]);
+    let r = remote(&[("t", "e0", 3)], &[]);
+    assert_eq!(
+        plan(&s, &l, &r),
+        [Action::DeleteRemote { path: "t".into(), etag: "e0".into() }, Action::MakeRemoteFolder("t".into()), Action::UploadNew("t/x".into())]
+    );
+    // In the cloud.
+    let l = local(&[("t", 3, 100)], &[]);
+    let r = remote(&[("t/x", "e0", 3)], &["t"]);
+    assert_eq!(plan(&s, &l, &r), [Action::DeleteLocal("t".into()), Action::MakeLocalFolder("t".into()), Action::Download("t/x".into())]);
+}
+
+#[test]
+fn a_file_moves_from_one_replaced_folder_to_where_another_was() {
+    // Here: `B/y` renamed to `A` (where folder `A` was), and a new file saved as `B`.
+    let s = state(&[("A/x", known("e1", 1, 10)), ("B/y", known("e2", 2, 20))], &["A", "B"]);
+    let l = local(&[("A", 2, 20), ("B", 5, 50)], &[]);
+    let r = remote(&[("A/x", "e1", 1), ("B/y", "e2", 2)], &["A", "B"]);
+    assert_eq!(
+        plan(&s, &l, &r),
+        [
+            Action::DeleteRemoteFolder { path: "A".into(), files: vec![("A/x".into(), "e1".into())] },
+            Action::MoveRemote { from: "B/y".into(), to: "A".into(), etag: "e2".into() },
+            Action::RemoveRemoteFolder("B".into()),
+            Action::UploadNew("B".into()),
+        ]
+    );
+}
+
+#[test]
+fn a_folder_a_set_aside_file_was_leaving_is_not_removed() {
+    // In the cloud `B/a.txt` was renamed to `A/S`, while here a folder `A/S` was made: the folder
+    // is set aside, the move waits for the next cycle, and so does the removal of `B` it empties.
+    let s = state(&[("B/a.txt", known("e0", 3, 100))], &["B"]);
+    let l = local(&[("A/S/a.txt", 1, 300), ("B/a.txt", 3, 100)], &["A", "A/S", "B"]);
+    let r = remote(&[("A/S", "e0", 3)], &["A"]);
+    assert_eq!(plan(&s, &l, &r), [Action::LocalClash("A/S".into())]);
 }
