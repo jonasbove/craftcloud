@@ -107,7 +107,7 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   engine is checked against a real OxiCloud before it is merged, not only before a release.
   Its first runs: `live.rs` 20 of 20 in 3 minutes, the job about 9 minutes. `cli_live` failed both times at its
   versions check: a file replaced within a second of being written lists a version `modified` a second after its
-  `replaced_at` (OxiCloud's Last-Modified is a whole second, the client's clock isn't); fixed in its own change.
+  `replaced_at` (OxiCloud's Last-Modified is a whole second, the client's clock isn't), for its own fix.
 - 2026-11-16: Versions: a kept version's content time is never shown after its replacement time
   (`versions::Version::modified_at`, which the command line and the web frontend both use). OxiCloud rounds
   `getlastmodified` to the nearest second (UPSTREAM.md C17) and the replacement time is the client's clock, so a
