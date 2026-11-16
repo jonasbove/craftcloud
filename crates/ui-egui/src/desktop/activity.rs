@@ -352,7 +352,10 @@ impl<H: DesktopHost> DesktopApp<H> {
             Ask::Retry => self.host.sync_now(),
             Ask::Keep => self.host.discard_deletes(),
             Ask::Recreate => self.host.recreate_folder(),
-            Ask::SignIn => self.sign_out(),
+            // The server ended the sign-in already: nothing to end there.
+            Ask::SignIn if matches!(p.state, SyncState::SignedOut) => self.sign_out(),
+            // "Sign out" to choose another folder: the sign-in ends on the server too.
+            Ask::SignIn => self.sign_out_everywhere(),
             Ask::DeleteThem => self.host.confirm_deletes(),
             Ask::Review => {
                 if let Some(c) = p.conflicts.first() {

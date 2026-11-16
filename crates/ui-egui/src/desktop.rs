@@ -88,6 +88,9 @@ pub trait DesktopHost: Backend {
     fn quit(&mut self);
 }
 
+/// Shown after SIGN OUT when the server couldn't be told.
+const LOGOUT_NOTE: &str = "Signed out on this computer. The server couldn't be told, so the sign-in may still be active there until it runs out.";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Key {
     Config,
@@ -97,6 +100,12 @@ enum Key {
     Me,
     /// New tokens for a saved sign-in whose access token ran out before the folders were chosen.
     Refresh,
+    /// Settings' SIGN OUT ends the sign-in on the server too.
+    Logout,
+    /// The logout found the access token run out: new tokens, to send it once more with.
+    LogoutRefresh,
+    /// The logout again, with the new tokens.
+    LogoutAgain,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -178,6 +187,10 @@ pub struct DesktopApp<H: DesktopHost> {
     /// The appearance last given to the context.
     applied: Option<Appearance>,
     error: Option<String>,
+    /// Something to know that isn't an error (after signing out: the server couldn't be told).
+    note: Option<String>,
+    /// The refresh token a logout under way may need to renew its access token once.
+    logout_refresh: Option<String>,
     /// The Folders tab's edit, once the cloud folders are listed.
     editing: Option<Choice>,
     /// The Folders tab's order.
@@ -296,6 +309,8 @@ impl<H: DesktopHost> DesktopApp<H> {
             themed: None,
             applied: None,
             error: None,
+            note: None,
+            logout_refresh: None,
             editing: None,
             sort: folders::Sort::Name,
             me: None,
@@ -477,6 +492,10 @@ impl<H: DesktopHost> DesktopApp<H> {
     }
 
     fn on_answer(&mut self, key: Key, result: NetResult) {
+        if matches!(key, Key::Logout | Key::LogoutRefresh | Key::LogoutAgain) {
+            self.on_logout(&key, result);
+            return;
+        }
         let resp = match result {
             Ok(r) => r,
             Err(e) => {
@@ -565,6 +584,40 @@ impl<H: DesktopHost> DesktopApp<H> {
             },
             // Kept even when it fails (`None` asks again): nothing else needs it.
             Key::Me => self.me = auth::parse_me(&resp).ok().flatten().or_else(|| self.me.take()),
+            Key::Logout | Key::LogoutRefresh | Key::LogoutAgain => {}
+        }
+    }
+
+    /// The server's answers to ending the sign-in there. It is over here already; when the server
+    /// can't be told, a note says the sign-in may still be active there.
+    fn on_logout(&mut self, key: &Key, result: NetResult) {
+        let ended = match (key, result) {
+            (_, Err(_)) => false,
+            (Key::Logout, Ok(resp)) if auth::is_expired(&resp) => {
+                // The access token ran out: new tokens, and the logout again with them (it names
+                // the session by its refresh token, which changes on refresh).
+                if let (Some(server), Some(refresh)) = (self.server.clone(), self.logout_refresh.take()) {
+                    self.net.send(&mut self.host, Key::LogoutRefresh, auth::refresh(&server, &refresh));
+                    return;
+                }
+                false
+            }
+            (Key::LogoutRefresh, Ok(resp)) => match auth::parse_refresh(&resp) {
+                Ok(tokens) if resp.is_success() => {
+                    if let Some(server) = self.server.clone() {
+                        self.net.send(&mut self.host, Key::LogoutAgain, auth::logout_device(&server, &tokens));
+                        return;
+                    }
+                    false
+                }
+                // The refresh was refused: the server had already ended the sign-in.
+                _ => matches!(resp.status, 401 | 403 | 404),
+            },
+            (_, Ok(resp)) => resp.is_success(),
+        };
+        self.logout_refresh = None;
+        if !ended {
+            self.note = Some(LOGOUT_NOTE.into());
         }
     }
 
@@ -612,6 +665,7 @@ impl<H: DesktopHost> DesktopApp<H> {
 
     fn ask_config(&mut self, url: ServerUrl) {
         self.error = None;
+        self.note = None;
         self.settings.server = url.to_string();
         let req = HttpRequest::new(Method::Get, url.join("craftcloud/config.json"));
         self.server = Some(url);
@@ -630,6 +684,20 @@ impl<H: DesktopHost> DesktopApp<H> {
         self.error = None;
         self.host.start_sync(SyncPlan::from(&self.settings), tokens);
         self.screen = Screen::Main(Tab::Activity);
+    }
+
+    /// Settings' SIGN OUT: signs out here and ends the sign-in on the server too. (A sign-in the
+    /// server has already ended, the Activity tab's "Sign in", has nothing left to end there.)
+    fn sign_out_everywhere(&mut self) {
+        // The newest tokens: the sync refreshes them, and the logout names the session by them.
+        let tokens = self.host.fresh_tokens().or_else(|| self.tokens.clone());
+        let server = self.server.clone();
+        self.sign_out();
+        if let (Some(tokens), Some(server)) = (tokens, server) {
+            self.note = None;
+            self.logout_refresh = Some(tokens.refresh_token.clone());
+            self.net.send(&mut self.host, Key::Logout, auth::logout_device(&server, &tokens));
+        }
     }
 
     fn sign_out(&mut self) {

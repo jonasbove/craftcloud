@@ -135,6 +135,10 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 - 2026-11-16: Testing: the Release workflow runs the workspace tests on Windows x64 (`windows-test`), so the
   Windows code is tested on Windows itself and not only on Linux; on `v*` tags and by hand, not on every pull request.
   No draft release unless they pass. Its first run found one test that built a path with `/`; the app was right.
+- 2026-11-16: Sign-out: `craftcloud logout` and the desktop client's Sign out end the session on the server too
+  (the logout now carries the device's refresh token; before, the server answered 401 and the session stayed).
+  When the server can't be told, the sign-in is still forgotten locally and the CLI (`server_session_ended`, exit
+  8 or 1) and the desktop client (a note) say so. Found by the mixed-version e2e test.
 - 2026-11-16: Roadmap: M9, sync with any WebDAV server (Nextcloud, ownCloud, a NAS …), planned for 0.2.0 on the
   branch `feature/webdav-support`. The Windows command line (`craftcloud.com`, the PATH entry, the uninstall's
   cleanup) leaves Upcoming: it was tried on Windows 11.

@@ -240,6 +240,16 @@ fn the_command_line_end_to_end() {
     env.fails(4, &["ls", &base]);
     // T-049: deleted for good, its kept versions went too.
     env.fails(4, &["ls", &format!(".craftcloud/versions/{base}"), "--all"]);
-    env.ok(&["logout"]);
+    logout_ends_the_session(&env);
+}
+
+/// Signing out ends the sign-in on the server too: its refresh token no longer works.
+fn logout_ends_the_session(env: &Env) {
+    let stored: Value = serde_json::from_slice(&std::fs::read(env.config.path().join("tokens.json")).unwrap()).unwrap();
+    let refresh_token = stored["refresh_token"].as_str().unwrap().to_owned();
+    assert_eq!(env.ok(&["logout"])["server_session_ended"], true);
     env.fails(3, &["ls"]);
+    let server = ServerUrl::parse(&env.server).unwrap();
+    let after = execute(&auth::refresh(&server, &refresh_token)).unwrap();
+    assert!(!after.is_success(), "the refresh token still works after logout ({})", after.status);
 }

@@ -92,34 +92,51 @@ impl Session {
     /// Sends a request with the access token; on 401 refreshes (or takes over another process's
     /// refresh) and tries again.
     pub fn call(&mut self, req: &HttpRequest) -> Result<HttpResponse, String> {
-        self.retrying(req, http::execute, |r| r.status)
+        self.retrying(|t| t.authorize(req.clone()), http::execute, |r| r.status)
     }
 
     /// Like [`Self::call`], but hands back the open response for streaming a download.
     pub fn open(&mut self, req: &HttpRequest) -> Result<ureq::http::Response<ureq::Body>, String> {
-        self.retrying(req, http::send, |r| r.status().as_u16())
+        self.retrying(|t| t.authorize(req.clone()), http::send, |r| r.status().as_u16())
     }
 
     /// Like [`Self::call`], with the body streamed from a file.
     pub fn upload(&mut self, req: &HttpRequest, file: &Path) -> Result<HttpResponse, String> {
         let cancel = Arc::clone(&self.cancel);
-        self.retrying(req, |r| http::send_file(r, file, &cancel), |r| r.status)
+        self.retrying(|t| t.authorize(req.clone()), |r| http::send_file(r, file, &cancel), |r| r.status)
     }
 
-    fn retrying<R>(&mut self, req: &HttpRequest, send: impl Fn(&HttpRequest) -> Result<R, String>, status: impl Fn(&R) -> u16) -> Result<R, String> {
-        let first = send(&self.tokens.authorize(req.clone()));
+    /// Ends this sign-in on the server (`POST /api/auth/logout` with the refresh token). Its answer:
+    /// 2xx when the server ended it. The request is built afresh after a refresh, so it names the
+    /// refresh token the server knows now: the spent one names no session, and OxiCloud answers
+    /// 200 for that while the real one stays. `Err` with [`SIGNED_OUT`] (and `signed_out` set)
+    /// when the refresh was refused: the server had already ended the sign-in.
+    pub fn logout(&mut self) -> Result<HttpResponse, String> {
+        let server = self.server.clone();
+        self.retrying(|t| auth::logout_device(&server, t), http::execute, |r| r.status)
+    }
+
+    /// Sends `build(tokens)`; on 401 gets a working access token and sends it again, built with the
+    /// new tokens.
+    fn retrying<R>(
+        &mut self,
+        build: impl Fn(&Tokens) -> HttpRequest,
+        send: impl Fn(&HttpRequest) -> Result<R, String>,
+        status: impl Fn(&R) -> u16,
+    ) -> Result<R, String> {
+        let first = send(&build(&self.tokens));
         let resp = self.note(first)?;
         if status(&resp) != 401 {
             return Ok(resp);
         }
         let adopted = self.refresh(false)?;
-        let resp = send(&self.tokens.authorize(req.clone()))?;
+        let resp = send(&build(&self.tokens))?;
         if status(&resp) != 401 || !adopted {
             return Ok(resp);
         }
         // The tokens taken over were stale as well: refresh for real.
         self.refresh(true)?;
-        send(&self.tokens.authorize(req.clone()))
+        send(&build(&self.tokens))
     }
 
     /// Gets a working access token. Returns `true` when it took over tokens another process saved
@@ -307,6 +324,75 @@ mod tests {
         assert!(refresh_refused(404), "OxiCloud's answer for a removed device");
         assert!(refresh_refused(401) && refresh_refused(403));
         assert!(!refresh_refused(500) && !refresh_refused(502) && !refresh_refused(429), "trouble on the server is tried again");
+    }
+
+    /// A server that answers each request it gets (one per connection) with what `answer` says
+    /// for its first line and body; the thread hands back the requests it saw.
+    #[allow(clippy::type_complexity)]
+    fn fake_server(n: usize, answer: fn(&str, &str) -> (u16, &'static str)) -> (String, std::thread::JoinHandle<Vec<(String, String)>>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let seen = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for _ in 0..n {
+                let (conn, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(conn);
+                let mut first = String::new();
+                reader.read_line(&mut first).unwrap();
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line.trim().is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':')
+                        && name.eq_ignore_ascii_case("content-length")
+                    {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                let body = String::from_utf8(body).unwrap();
+                let (status, reply) = answer(&first, &body);
+                let mut conn = reader.into_inner();
+                write!(
+                    conn,
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                    reply.len()
+                )
+                .unwrap();
+                seen.push((first.trim().to_owned(), body));
+            }
+            seen
+        });
+        (url, seen)
+    }
+
+    #[test]
+    fn a_logout_after_a_refresh_names_the_new_refresh_token() {
+        // The access token ran out: the logout is refused (401), the session refreshes, and the
+        // logout goes again with the NEW refresh token. With the spent one OxiCloud answers 200
+        // without ending anything (it names no session).
+        let (url, seen) = fake_server(3, |first, body| {
+            if first.contains("/api/auth/refresh") {
+                (200, r#"{"access_token":"a2","refresh_token":"r2"}"#)
+            } else if body.contains("\"r2\"") {
+                (200, "{}")
+            } else {
+                (401, "{}")
+            }
+        });
+        let server = craftcloud_core::ServerUrl::parse(&url).unwrap();
+        let tokens = super::Tokens { access_token: "a1".into(), refresh_token: "r1".into() };
+        let mut session = super::Session::new(server, tokens, Box::new(|_| {}));
+        assert_eq!(session.logout().unwrap().status, 200);
+        let seen = seen.join().unwrap();
+        assert!(seen[0].0.starts_with("POST /api/auth/logout") && seen[0].1.contains("\"r1\""), "{:?}", seen[0]);
+        assert!(seen[1].0.starts_with("POST /api/auth/refresh"));
+        assert!(seen[2].0.starts_with("POST /api/auth/logout") && seen[2].1.contains("\"r2\""), "{:?}", seen[2]);
     }
 
     #[test]

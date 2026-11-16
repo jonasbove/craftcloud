@@ -85,9 +85,17 @@ pub fn parse_setup(resp: &HttpResponse) -> Result<User, ApiError> {
     json(resp)
 }
 
-/// `POST /api/auth/logout`.
+/// `POST /api/auth/logout` for a browser: OxiCloud ends the session named by its refresh cookie
+/// (`oxicloud_refresh`, sent to `/api/auth/*` only).
 pub fn logout(server: &ServerUrl) -> HttpRequest {
     HttpRequest::new(Method::Post, server.join("api/auth/logout"))
+}
+
+/// `POST /api/auth/logout` for a device (the desktop client, the command line): it has no cookie,
+/// so the refresh token goes in the body, which names the session to end. Without it OxiCloud
+/// answers 401 and the session stays.
+pub fn logout_device(server: &ServerUrl, tokens: &Tokens) -> HttpRequest {
+    tokens.authorize(HttpRequest::new(Method::Post, server.join("api/auth/logout")).json(&json!({"refresh_token": tokens.refresh_token})))
 }
 
 /// The tokens a sign-in (password, refresh or device flow) gives.
@@ -280,6 +288,20 @@ mod tests {
 
     fn server() -> ServerUrl {
         ServerUrl::parse("http://127.0.0.1:8093").unwrap()
+    }
+
+    #[test]
+    fn a_device_logout_names_its_session() {
+        // OxiCloud ends the session whose refresh token comes in the body (or the browser's
+        // cookie); a device has no cookie, and without the body the server answered 401 and the
+        // session stayed.
+        let tokens = super::Tokens { access_token: "a1".into(), refresh_token: "r1".into() };
+        let req = super::logout_device(&server(), &tokens);
+        assert_eq!(req.method, Method::Post);
+        assert!(req.url.ends_with("/api/auth/logout"));
+        assert_eq!(req.header_value("Authorization"), Some("Bearer a1"));
+        let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+        assert_eq!(body["refresh_token"], "r1");
     }
 
     #[test]

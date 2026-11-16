@@ -89,7 +89,7 @@ impl<H: DesktopHost> DesktopApp<H> {
             self.overlay = None;
         }
         if picks.sign_out {
-            self.sign_out();
+            self.sign_out_everywhere();
         }
     }
 

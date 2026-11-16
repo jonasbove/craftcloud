@@ -68,6 +68,9 @@ impl<H: DesktopHost> DesktopApp<H> {
                     if let Some(e) = &self.error {
                         error_text(ui, e);
                     }
+                    if let Some(n) = &self.note {
+                        ui.add(egui::Label::new(egui::RichText::new(n).size(13.0).color(t.muted)).wrap());
+                    }
                 }
                 Part::ActionsLeft => {
                     if chrome::button(ui, "Quit", Kind::Secondary, None, true).clicked() {

@@ -5,10 +5,12 @@ use std::time::{Duration, Instant};
 
 use craftcloud_core::ServerUrl;
 use craftcloud_core::api::auth::{self, DevicePoll};
+use craftcloud_core::http::HttpResponse;
 use craftcloud_core::sync::SyncPlan;
 use craftcloud_native::control::{self, LinkHandoff, Request, SendError, Status};
 use craftcloud_native::http::execute;
 use craftcloud_native::open::{self, OpenError};
+use craftcloud_native::session::Session;
 use craftcloud_native::settings::Prefs;
 use serde_json::json;
 
@@ -78,15 +80,19 @@ pub fn login(ctx: &mut Ctx, server: Option<&str>, no_browser: bool) -> Result<()
     }
 }
 
-/// `logout`: ends the sign-in on the server and forgets it here.
+/// `logout`: ends the sign-in on the server and forgets it here. It is forgotten here even when
+/// the server can't be told; then the output says so (`server_session_ended: false`) and the exit
+/// code is 8 (the server can't be reached) or 1 (it refused).
 pub fn logout(ctx: &mut Ctx) -> Result<()> {
     let server = ctx.server()?;
     let store = ctx.tokens(&server);
     let had = store.load();
-    if let Some(tokens) = &had {
-        // Best effort: the sign-in also ends on the server, so the desktop client stops too.
-        let _ = execute(&tokens.authorize(auth::logout(&server)));
-    }
+    let ended = had.as_ref().map(|tokens| {
+        // Shared with the desktop client: a refresh on the way is done under its lock.
+        let mut session = Session::shared(server.clone(), tokens.clone(), ctx.tokens(&server), ctx.store.dir());
+        let answer = session.logout();
+        server_logout(answer, session.signed_out)
+    });
     store.delete();
     let mut settings = ctx.settings();
     if settings.server == server.to_string() {
@@ -94,11 +100,43 @@ pub fn logout(ctx: &mut Ctx) -> Result<()> {
         ctx.store.set(Prefs(settings));
         ctx.store.flush().map_err(|e| CliError::error(format!("couldn't save the settings: {e}")))?;
     }
+    let server_session_ended = matches!(ended, Some(Ok(())));
     if ctx.json {
-        print_json(&json!({"signed_out": true, "server": server.to_string(), "was_signed_in": had.is_some()}))
+        print_json(&json!({
+            "signed_out": true,
+            "server": server.to_string(),
+            "was_signed_in": had.is_some(),
+            "server_session_ended": server_session_ended,
+        }))?;
     } else {
-        println!("{}", if had.is_some() { format!("Signed out of {server}.") } else { format!("Wasn't signed in to {server}.") });
-        Ok(())
+        println!(
+            "{}",
+            match &ended {
+                None => format!("Wasn't signed in to {server}."),
+                Some(Ok(())) => format!("Signed out of {server}."),
+                Some(Err(_)) => format!("Signed out of {server} on this computer."),
+            }
+        );
+    }
+    match ended {
+        Some(Err(e)) => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// What the server's answer to ending the sign-in means: `Ok` when it is over there (ended now, or
+/// the server had already ended it: `signed_out`, its refresh was refused), else the error to
+/// exit with, which says the sign-in may still be active on the server.
+pub(super) fn server_logout(answer: std::result::Result<HttpResponse, String>, signed_out: bool) -> Result<()> {
+    const STILL: &str = "so the sign-in may still be active there until it runs out";
+    match answer {
+        Ok(resp) if resp.is_success() => Ok(()),
+        Ok(resp) => Err(CliError::error(format!("the server didn't end the sign-in ({}), {STILL}.", resp.status))),
+        Err(_) if signed_out => Ok(()),
+        Err(e) => {
+            let kind = CliError::transport(e.clone()).kind;
+            Err(CliError::new(kind, format!("couldn't tell the server ({e}), {STILL}.")))
+        }
     }
 }
 
@@ -359,8 +397,26 @@ fn open_error(e: OpenError) -> CliError {
 
 #[cfg(test)]
 mod tests {
-    use super::failed;
+    use super::{failed, server_logout};
+    use craftcloud_core::http::HttpResponse;
     use craftcloud_native::control::Status;
+
+    #[test]
+    fn a_logout_the_server_refused_says_so() {
+        assert!(server_logout(Ok(HttpResponse::new(200, b"{}".to_vec())), false).is_ok());
+        // OxiCloud 0.10.0 answered 401 to a logout without the refresh token, and `logout` said
+        // "signed out" all the same while the session stayed.
+        for status in [401, 500] {
+            let e = server_logout(Ok(HttpResponse::new(status, Vec::new())), false).unwrap_err();
+            assert_eq!(e.kind.code(), 1, "{status}: not 3, which would say \"run craftcloud login\"");
+            assert!(e.message.contains("may still be active"), "{}", e.message);
+        }
+        let e = server_logout(Err("Can't connect to the server (refused).".into()), false).unwrap_err();
+        assert_eq!(e.kind.code(), 8);
+        assert!(e.message.contains("may still be active"), "{}", e.message);
+        // The refresh was refused: the server had already ended the sign-in.
+        assert!(server_logout(Err(craftcloud_native::session::SIGNED_OUT.into()), true).is_ok());
+    }
 
     #[test]
     fn a_failed_sync_is_an_error() {
