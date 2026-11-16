@@ -204,6 +204,10 @@ pub struct DesktopApp<H: DesktopHost> {
     sort: folders::Sort,
     /// Who is signed in (asked once the main window shows).
     me: Option<Me>,
+    /// When to ask who is signed in again after a failed answer ([`Backend::now`] seconds), and how
+    /// long the next failure waits: without it an offline window asked again on every frame.
+    me_retry: f64,
+    me_wait: f64,
     /// "This device" in Settings, as typed.
     device: String,
     /// The address typed without a scheme was tried with https://; this is the http:// one to
@@ -212,6 +216,11 @@ pub struct DesktopApp<H: DesktopHost> {
     /// The saved sign-in's tokens were refreshed once already (a second "expired" means it's over).
     refreshed: bool,
 }
+
+/// Seconds to wait before asking who is signed in again after the first failed answer; each
+/// failure after it doubles the wait, up to [`ME_RETRY_MAX`].
+const ME_RETRY_FIRST: f64 = 5.0;
+const ME_RETRY_MAX: f64 = 120.0;
 
 impl<H: DesktopHost> DesktopApp<H> {
     /// With saved settings and tokens the client goes straight to the main window and syncs.
@@ -239,6 +248,7 @@ impl<H: DesktopHost> DesktopApp<H> {
         let Ok(server) = ServerUrl::parse(&settings.server) else { return false };
         // The sign-in started here is dropped: its answers are no longer awaited.
         self.net = Net::default();
+        self.me_asked_afresh();
         self.server = Some(server);
         self.settings = settings;
         self.error = None;
@@ -321,6 +331,8 @@ impl<H: DesktopHost> DesktopApp<H> {
             editing: None,
             sort: folders::Sort::Name,
             me: None,
+            me_retry: 0.0,
+            me_wait: ME_RETRY_FIRST,
             device,
             http_fallback: None,
             refreshed: false,
@@ -474,12 +486,13 @@ impl<H: DesktopHost> DesktopApp<H> {
         {
             self.list_root();
         }
-        if matches!(self.screen, Screen::Main(_))
-            && self.me.is_none()
-            && !self.net.is_waiting(&Key::Me)
-            && let Some(req) = self.authorized(auth::me)
-        {
-            self.net.send(&mut self.host, Key::Me, req);
+        if matches!(self.screen, Screen::Main(_)) && self.me.is_none() && !self.net.is_waiting(&Key::Me) {
+            if now < self.me_retry {
+                // Waiting after a failure: one frame at the retry time is enough.
+                ctx.request_repaint_after(std::time::Duration::from_millis(((self.me_retry - now).max(0.0) * 1000.0) as u64));
+            } else if let Some(req) = self.authorized(auth::me) {
+                self.net.send(&mut self.host, Key::Me, req);
+            }
         }
         // An answer, a sync change and input each wake the window on their own (#3): a request
         // in flight is checked often, and an idle window repaints only for "Synced 2 min ago".
@@ -510,13 +523,14 @@ impl<H: DesktopHost> DesktopApp<H> {
         let resp = match result {
             Ok(r) => r,
             Err(e) => {
-                // A failed poll is retried on the next interval; who is signed in, on the next frame.
+                // A failed poll is retried on the next interval; who is signed in, after a wait.
                 if key == Key::Config
                     && let Some(http) = self.http_fallback.take()
                 {
                     self.ask_config(http);
                 } else if key == Key::Me {
                     self.me = None;
+                    self.me_failed();
                 } else if self.wants_keychain() && matches!(key, Key::ListRoot | Key::Refresh) {
                     self.saved_sign_in_failed(e);
                 } else if key != Key::Poll {
@@ -593,8 +607,15 @@ impl<H: DesktopHost> DesktopApp<H> {
                 Err(e) if self.wants_keychain() => self.saved_sign_in_failed(e.to_string()),
                 Err(e) => self.error = Some(e.to_string()),
             },
-            // Kept even when it fails (`None` asks again): nothing else needs it.
-            Key::Me => self.me = auth::parse_me(&resp).ok().flatten().or_else(|| self.me.take()),
+            // Kept even when it fails (`None` asks again, after a wait): nothing else needs it.
+            Key::Me => {
+                self.me = auth::parse_me(&resp).ok().flatten().or_else(|| self.me.take());
+                if self.me.is_some() {
+                    self.me_asked_afresh();
+                } else {
+                    self.me_failed();
+                }
+            }
             Key::Logout | Key::LogoutRefresh | Key::LogoutAgain => {}
         }
     }
@@ -631,6 +652,18 @@ impl<H: DesktopHost> DesktopApp<H> {
         if !ended {
             self.note = Some(LOGOUT_NOTE.into());
         }
+    }
+
+    /// Who is signed in couldn't be told: ask again after a wait that doubles on every failure.
+    fn me_failed(&mut self) {
+        self.me_retry = self.host.now() + self.me_wait;
+        self.me_wait = (self.me_wait * 2.0).min(ME_RETRY_MAX);
+    }
+
+    /// An answer came, or the sign-in changed: the next failure waits the shortest time again.
+    fn me_asked_afresh(&mut self) {
+        self.me_retry = 0.0;
+        self.me_wait = ME_RETRY_FIRST;
     }
 
     fn on_poll(&mut self, resp: &craftcloud_core::http::HttpResponse) {
@@ -716,6 +749,7 @@ impl<H: DesktopHost> DesktopApp<H> {
         self.host.sign_out();
         self.tokens = None;
         self.me = None;
+        self.me_asked_afresh();
         self.overlay = None;
         self.editing = None;
         self.settings = ClientSettings {

@@ -304,6 +304,40 @@ fn with_state(state: SyncState) -> H {
 }
 
 #[test]
+fn who_is_signed_in_is_asked_again_after_a_wait_that_grows() {
+    // The main window asks who is signed in once; an offline window used to ask again on the
+    // very next frame after every failure, and redraw for each answer.
+    let mut h = with_state(SyncState::UpToDate);
+    let asked = |h: &H| h.state().host.net.sent_to("/api/auth/me");
+    assert_eq!(asked(&h), 1);
+    h.state_mut().host.net.answer("/api/auth/me", Err("Can't connect to the server (refused).".into()));
+    h.run();
+    h.run();
+    assert_eq!(asked(&h), 1, "not asked again at once");
+    h.state_mut().host.net.clock = 4.9;
+    h.run();
+    assert_eq!(asked(&h), 1, "not asked again before 5 s");
+    h.state_mut().host.net.clock = 5.0;
+    h.run();
+    assert_eq!(asked(&h), 2, "asked again after 5 s");
+
+    // A refused answer counts as a failure too, and the second wait is twice as long.
+    h.state_mut().host.net.answer("/api/auth/me", Ok(HttpResponse::new(502, Vec::new())));
+    h.run();
+    h.state_mut().host.net.clock = 10.0;
+    h.run();
+    assert_eq!(asked(&h), 2, "the second wait is longer than the first");
+    h.state_mut().host.net.clock = 15.0;
+    h.run();
+    assert_eq!(asked(&h), 3, "asked again after 10 s");
+
+    h.state_mut().host.net.answer("/api/auth/me", ok(&fixture("me.json")));
+    h.run();
+    assert_eq!(h.state().me.as_ref().map(|m| m.user.username.as_str()), Some("john"));
+    assert!(h.state().error.is_none(), "who is signed in is a detail: no error shown");
+}
+
+#[test]
 fn a_saved_session_goes_straight_to_syncing() {
     let mut h = with_state(SyncState::UpToDate);
     assert_eq!(h.state().host.started.len(), 1);
