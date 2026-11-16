@@ -128,7 +128,7 @@ impl CliError {
     pub fn transport(e: String) -> Self {
         let kind = if e == craftcloud_native::session::SIGNED_OUT {
             Fail::SignedOut
-        } else if e.starts_with("Can't connect") || e.starts_with("Can't find") {
+        } else if craftcloud_native::http::is_unreachable(&e) {
             Fail::Unreachable
         } else {
             Fail::Error
