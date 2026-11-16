@@ -2,11 +2,9 @@
 
 **Stage: early alpha** · version 0.1.1 (fixes for 0.1.0, the first release: a published image and desktop builds)
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (trace logs leave out HTTP
-> bodies and headers; a cloud file listed without an ETag is never trashed; an idle window uses next to no CPU)
 > **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (the release checklist and the
-> Release workflow check the Craft web app pins; trace logs leave out HTTP bodies and headers; a cloud file listed
-> without an ETag is never trashed)
+> Release workflow check the Craft web app pins; an idle window uses next to no CPU; trace logs leave out HTTP
+> bodies and headers; a cloud file listed without an ETag is never trashed)
 
 CraftCloud is a self-hosted cloud for the Craft apps: the unmodified OxiCloud server in a Docker image, CraftCloud's
 own web frontend (Rust, egui, WebAssembly), a desktop sync client with a command line, and a small admin service.
