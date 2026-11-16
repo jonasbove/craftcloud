@@ -102,8 +102,9 @@ What each screen shows:
   - The tray follows `apps/craftcloud/src/tray.rs`: a disabled status line ("CraftCloud · " and the header's status
     text), Open CraftCloud folder, Open in browser, Sync now, Pause / Resume syncing, a **Recent files** submenu (the
     last 5 file names, newest first), then Show CraftCloud, Settings… and Quit CraftCloud, with no shortcuts. With
-    the folder missing, Open CraftCloud folder and Sync now are off. The icon has four looks: up to date, syncing,
-    paused (also signed out and mass delete) and error (also offline and folder missing).
+    the folder missing, Open CraftCloud folder and Sync now are off; "Resume syncing" shows only while paused. The
+    icon has four looks: up to date, syncing, paused (also signed out and mass delete, whose menu still says Pause
+    syncing) and error (also offline and folder missing).
 - **Single sign-on** (page v2 · Single sign-on):
   - **Admin › Server › Single sign-on** (below the web apps, `admin.rs` `sso_ui`): the state badge, two columns
     (button name, issuer URL, client ID, client secret masked / scopes, admin groups and the Off/On rows for

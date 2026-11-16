@@ -75,8 +75,8 @@ pub struct Tray {
     /// "Open CraftCloud folder" and "Sync now": off while the folder is missing, as in the window.
     folder: MenuItem,
     sync: MenuItem,
-    /// Whether they were last shown off.
-    missing: bool,
+    /// What the menu items last showed.
+    items: Option<MenuState>,
     recent: Vec<MenuItem>,
     /// The paths the recent items stand for (read by the menu's event handler).
     recent_paths: Arc<Mutex<Vec<String>>>,
@@ -116,6 +116,40 @@ impl Look {
             Self::Paused => [0xff, 0xc1, 0x4d],
             Self::Error => [0xff, 0x62, 0x59],
         }
+    }
+}
+
+/// The menu items that follow the sync's state (design frame `v2-desktop-tray`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MenuState {
+    /// "Pause syncing", or "Resume syncing" while paused. Only a pause is resumed: signed out and
+    /// waiting for you share the paused icon, but a pick pauses them (`main.rs`, `TogglePause`).
+    pause: PauseItem,
+    /// "Open CraftCloud folder" and "Sync now": off while the folder is missing, as in the window.
+    folder: bool,
+    sync: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PauseItem {
+    Pause,
+    Resume,
+}
+
+impl PauseItem {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Pause => "Pause syncing",
+            Self::Resume => "Resume syncing",
+        }
+    }
+}
+
+impl MenuState {
+    fn of(state: &SyncState) -> Self {
+        let missing = *state == SyncState::FolderMissing;
+        let pause = if *state == SyncState::Paused { PauseItem::Resume } else { PauseItem::Pause };
+        Self { pause, folder: !missing, sync: !missing }
     }
 }
 
@@ -230,19 +264,7 @@ impl Tray {
             let _ = tx.send(action);
             wake();
         }));
-        Ok(Self {
-            icon,
-            status,
-            pause,
-            folder,
-            sync,
-            missing: false,
-            recent,
-            recent_paths,
-            shown_recent: Vec::new(),
-            shown: None,
-            line: String::new(),
-        })
+        Ok(Self { icon, status, pause, folder, sync, items: None, recent, recent_paths, shown_recent: Vec::new(), shown: None, line: String::new() })
     }
 
     /// Shows the sync state in the icon, tooltip and first menu line, and the recent files.
@@ -272,14 +294,15 @@ impl Tray {
             if let Ok(icon) = draw(look) {
                 let _ = self.icon.set_icon(Some(icon));
             }
-            self.pause.set_text(if look == Look::Paused { "Resume syncing" } else { "Pause syncing" });
             self.shown = Some(look);
         }
-        let missing = *state == SyncState::FolderMissing;
-        if self.missing != missing {
-            self.folder.set_enabled(!missing);
-            self.sync.set_enabled(!missing);
-            self.missing = missing;
+        // Apart from the icon: signed out shares the paused look, but not the pause item.
+        let items = MenuState::of(state);
+        if self.items != Some(items) {
+            self.pause.set_text(items.pause.label());
+            self.folder.set_enabled(items.folder);
+            self.sync.set_enabled(items.sync);
+            self.items = Some(items);
         }
         if self.line != line {
             self.line = line.to_owned();
@@ -407,7 +430,7 @@ mod tests {
 
     use craftcloud_core::sync::SyncState;
 
-    use super::{PROGRESS_EVERY, QUIET_CHECK, TrayView, show_now};
+    use super::{Look, MenuState, PROGRESS_EVERY, QUIET_CHECK, TrayView, show_now};
 
     fn view(state: SyncState, line: &str, moving: bool) -> TrayView {
         TrayView { state, line: line.into(), recent: Vec::new(), moving }
@@ -445,5 +468,50 @@ mod tests {
         assert!(show_now(Some(&next), &up, NO_TIME, NO_TIME));
         assert!(show_now(Some(&next), &view(SyncState::SignedOut, "Signed out", false), NO_TIME, NO_TIME));
         assert!(show_now(Some(&up), &view(SyncState::Failed("x".into()), "Error", false), NO_TIME, NO_TIME));
+    }
+
+    /// Every state the sync can be in, with the icon look the design frame gives it.
+    fn states() -> Vec<(SyncState, Look)> {
+        vec![
+            (SyncState::Idle, Look::UpToDate),
+            (SyncState::UpToDate, Look::UpToDate),
+            (SyncState::Scanning, Look::Syncing),
+            (SyncState::Downloading, Look::Syncing),
+            (SyncState::Paused, Look::Paused),
+            (SyncState::SignedOut, Look::Paused),
+            (SyncState::MassDelete { deletes: 30 }, Look::Paused),
+            (SyncState::Offline("down".into()), Look::Error),
+            (SyncState::FolderMissing, Look::Error),
+            (SyncState::Failed("x".into()), Look::Error),
+        ]
+    }
+
+    #[test]
+    fn the_icon_looks_follow_the_frame() {
+        // v2-desktop-tray: "Paused also stands for signed out and waiting for you (mass delete); Error for
+        // offline, folder missing and a failed sync."
+        for (state, look) in states() {
+            assert!(Look::of(&state) == look, "{state:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_pause_offers_resume() {
+        assert_eq!(MenuState::of(&SyncState::Paused).pause.label(), "Resume syncing");
+        // Signed out and waiting for you share the paused icon, but the pick pauses them, so the item says so.
+        for (state, _) in states().into_iter().filter(|(s, _)| *s != SyncState::Paused) {
+            assert_eq!(MenuState::of(&state).pause.label(), "Pause syncing", "{state:?}");
+        }
+    }
+
+    #[test]
+    fn a_missing_folder_turns_off_open_folder_and_sync_now() {
+        let missing = MenuState::of(&SyncState::FolderMissing);
+        assert!(!missing.folder && !missing.sync);
+        assert_eq!(missing.pause.label(), "Pause syncing");
+        for (state, _) in states().into_iter().filter(|(s, _)| *s != SyncState::FolderMissing) {
+            let items = MenuState::of(&state);
+            assert!(items.folder && items.sync, "{state:?}");
+        }
     }
 }

@@ -101,6 +101,11 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-16: Desktop: the tray checked item by item against the v2 tray frame (#25). Order, labels, separators,
+  the status line, Recent files, the folder-missing items and the four icon looks matched; the pause item didn't:
+  signed out and waiting for you (mass delete) share the paused icon, so the menu said "Resume syncing" and the pick
+  paused. "Resume syncing" now shows only while paused, as in the frame (`tray.rs`, `MenuState`, tested). Not in
+  the frame yet: the tray dot stays green for "1 conflict" and "N not synced", where the header's dot is amber.
 - 2026-11-16: Roadmap: M9, sync with any WebDAV server (Nextcloud, ownCloud, a NAS …), planned for 0.2.0 on the
   branch `feature/webdav-support`. The Windows command line (`craftcloud.com`, the PATH entry, the uninstall's
   cleanup) leaves Upcoming: it was tried on Windows 11.
