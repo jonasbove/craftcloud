@@ -47,8 +47,8 @@ CRAFTCLOUD_TEST_SERVER=http://127.0.0.1:8093 CRAFTCLOUD_TEST_USER=john CRAFTCLOU
 docker compose -p craftcloud-mine down -v
 ```
 
-The live tests create the owner on a fresh server and are skipped unless those variables are set
-(never in CI). Use a throwaway server only, never one with real files. Each test syncs only top-level
+The live tests create the owner on a fresh server and are skipped unless those variables are set.
+CI's `live` job runs them, and `cli_live`, on every pull request against an image built from it. Use a throwaway server only, never one with real files. Each test syncs only top-level
 folders of its own (`live-<test>-<seconds>-<pid>-…`) and, passed or failed, moves them and their kept versions to the
 trash and deletes them from there, so what is already on the account doesn't change the results.
 

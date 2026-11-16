@@ -101,6 +101,10 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-16: CI: the live sync tests run on every pull request and push to `main`. A `live` job in `ci.yml`,
+  beside the gate, builds the server image from the tree, starts it with `scripts/smoke-test` and runs
+  `cli_live.rs` and `live.rs` against it (the server's logs kept as an artifact when they fail), so a change to the
+  engine is checked against a real OxiCloud before it is merged, not only before a release.
 - 2026-11-16: Versions: a kept version's content time is never shown after its replacement time
   (`versions::Version::modified_at`, which the command line and the web frontend both use). OxiCloud rounds
   `getlastmodified` to the nearest second (UPSTREAM.md C17) and the replacement time is the client's clock, so a

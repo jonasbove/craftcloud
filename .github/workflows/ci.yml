@@ -79,6 +79,82 @@ jobs:
           test -f dist/web/index.html
           ls -la dist/web
 
+  # The live sync tests (crates/native/tests/live.rs, apps/craftcloud/tests/cli_live.rs) against a
+  # server image built from this tree in this job, on every pull request and push: the sync engine's
+  # renames, moves, deletes to the trash, conflicts and versions checked against a real OxiCloud, not
+  # only the decisions the gate's unit tests cover. Its own job, so `gate` stays as fast as it was.
+  # No image layer cache, as in release.yml's server-image (about 4 minutes on these runners).
+  live:
+    name: live sync tests (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Build the server image
+        run: |
+          version="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          docker build --target default --build-arg CRAFTCLOUD_VERSION="$version" --build-arg CARGO_BUILD_JOBS=4 \
+            -t craftcloud:live .
+      - name: Start the server
+        # Postgres and the image through compose.yaml; smoke-test waits for /ready and checks the
+        # basics. KEEP=1 leaves it running without an owner: the tests create it.
+        run: KEEP=1 PROJECT=craftcloud-live scripts/smoke-test craftcloud:live 8098
+      - name: Linux build packages (egui/winit/wgpu headers, as craft-launcher)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # installs the toolchain named below
+        with:
+          toolchain: 1.100.0  # = rust-toolchain.toml
+      # The gate's cache (main's test builds); this job only reads it.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: gate
+          save-if: false
+      - name: Build the live tests
+        run: |
+          cargo test -p craftcloud --test cli_live --no-run
+          cargo test -p craftcloud-native --test live --no-run
+      - name: Run the live tests
+        env:
+          CRAFTCLOUD_TEST_SERVER: http://127.0.0.1:8098
+          CRAFTCLOUD_TEST_USER: john
+          # The silent-connection test needs a short idle limit and is skipped without one.
+          CRAFTCLOUD_HTTP_IDLE_SECS: "5"
+        run: |
+          # A throwaway owner on the throwaway server above; the password stays out of the log.
+          CRAFTCLOUD_TEST_PASSWORD="live-$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
+          echo "::add-mask::$CRAFTCLOUD_TEST_PASSWORD"
+          export CRAFTCLOUD_TEST_PASSWORD
+          # The command line first: its sign-in doesn't wait out the server's limit on sign-ins
+          # per minute (429), live.rs's does.
+          cargo test -p craftcloud --test cli_live -- --test-threads 1
+          cargo test -p craftcloud-native --test live -- --test-threads 1
+      - name: Server logs
+        if: failure()
+        run: |
+          mkdir -p "$RUNNER_TEMP/server-logs"
+          for c in $(docker ps -aq --filter label=com.docker.compose.project=craftcloud-live); do
+            name="$(docker inspect --format '{{.Name}}' "$c" | tr -d /)"
+            docker logs "$c" > "$RUNNER_TEMP/server-logs/$name.log" 2>&1 || true
+            echo "::group::$name"
+            tail -n 200 "$RUNNER_TEMP/server-logs/$name.log"
+            echo "::endgroup::"
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: live-server-logs
+          path: ${{ runner.temp }}/server-logs
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Stop the server
+        if: always()
+        # compose.yaml asks for POSTGRES_PASSWORD even to stop; any value does here.
+        env:
+          POSTGRES_PASSWORD: unused
+        run: docker compose -p craftcloud-live down -v || true
+
   # Licences, RustSec advisories, bans and sources (deny.toml), as the Craft apps check them. The
   # sources check also stands in for their git-sources job: git dependencies only from storytold.
   # A new advisory can turn this red on an unrelated change: update the crate, or add an `ignore`

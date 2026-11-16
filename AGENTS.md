@@ -182,7 +182,8 @@ has the map.
   `KEEP=1 PROJECT=craftcloud-<name> scripts/smoke-test craftcloud:dev <free port>`. `PROJECT` lets several run side
   by side; `WEB_APPS=on` needs the `-apps` image (`--target with-apps`). Tear it down afterwards:
   `docker compose -p craftcloud-<name> down -v`.
-- **Live sync tests** against that server (never in CI; on a fresh server they create the owner first):
+- **Live sync tests** against that server (on a fresh server they create the owner first; CI's `live` job runs them
+  on every pull request against an image built from the tree):
   `CRAFTCLOUD_TEST_SERVER=http://127.0.0.1:<port> CRAFTCLOUD_TEST_USER=john CRAFTCLOUD_TEST_PASSWORD=… CRAFTCLOUD_HTTP_IDLE_SECS=5 cargo test -p craftcloud-native --test live -- --test-threads 1`.
 - **The two-client smoke test** (any server, a test account; never in CI): the same variables, then
   `cargo xtask e2e-sync` (`--bin PATH` for another build, `--keep` to look afterwards). Two scratch clients sync a
@@ -234,8 +235,10 @@ README's Status section in step.
 
 ## CI workflows
 - `.github/workflows/ci.yml` (**CI**): `test` runs `cargo xtask ci` on Linux and checks that `Cargo.lock` is
-  unchanged; `web` builds the web frontend with Trunk. Linux only: in a private repository macOS and Windows minutes
-  cost 10× and 2×.
+  unchanged; `web` builds the web frontend with Trunk; `live` builds the server image from the tree, starts it with
+  `scripts/smoke-test` (`KEEP=1`) and runs `apps/craftcloud/tests/cli_live.rs` and `crates/native/tests/live.rs`
+  against it, the server's logs kept as an artifact when they fail. Linux only: in a private repository macOS and
+  Windows minutes cost 10× and 2×.
 - `.github/workflows/release.yml` (**Release**, replaces the old `desktop.yml`): on `v*` tags and by hand, the
   Craft apps' release file set from `packaging/` (Linux AppImage, deb, rpm, tar.gz, Flatpak and Arch packages for
   x86_64 and aarch64; Windows x64 and arm64 MSI and portable zip; a universal macOS DMG; FreeBSD and Linux riscv64
