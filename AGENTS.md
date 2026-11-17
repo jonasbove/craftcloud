@@ -137,9 +137,11 @@ has the map.
   - **Never trash a cloud folder** unless a fresh listing of it says it is empty (or everything in it is unchanged).
     A folder whose listing failed is unknown.
   - **Writes are guarded:** create with `If-None-Match: *`, overwrite with `If-Match: <etag>`; a 412 is a change made
-    elsewhere, never something to force. Before an overwrite the old bytes go to `.craftcloud/versions/<path>/<time>`
-    (5 kept). Changes made in two places become a conflict copy, never a silent overwrite. Mass deletes wait for the
-    person.
+    elsewhere, never something to force. Before an overwrite the old bytes are kept: in the server's own versions
+    where the check on connect confirms it keeps them (Nextcloud, ownCloud), otherwise in
+    `.craftcloud/versions/<path>/<time>` (5 kept; OxiCloud). Where the server ignores a guard, the client never syncs
+    both ways ([WEBDAV-STORAGE.md](docs/WEBDAV-STORAGE.md)). Changes made in two places become a conflict copy, never
+    a silent overwrite. Mass deletes wait for the person.
   - **Every device moves past a change to the sync rules together.** A change to what the sync skips or how it
     decides can make an older client undo it. Add an "upgrade all devices together" entry to
     [docs/RELEASE-NOTES.md](docs/RELEASE-NOTES.md) in the same change.
