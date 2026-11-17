@@ -118,7 +118,7 @@ PINNED = 3
 
 USER = ("JD", "John Doe")  # demo account
 STORAGE = ("12.4 GB of 100 GB", 0.124)
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 OXICLOUD = "0.10.0"
 
 # --- text styles ---------------------------------------------------------------------------------

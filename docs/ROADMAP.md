@@ -130,6 +130,8 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   `xdg-open`, the autostart entry, and the window drawn in software. Found: on X11 a start at login opens the
   window, and with no tray host (stock GNOME) the client takes the tray as up, so closing the window leaves it
   invisible; both have fixes of their own. A real login, the lock screen and the KDE panel stay untested.
+- 2026-11-17: Desktop: Settings' "Pause syncing" switch (Off | On, where Off meant syncing) is now "Syncing" with
+  Paused | Active. The design (`design/`, rebuilt with FigCraft 0.18.1) matches it and shows version 0.2.0.
 - 2026-11-16: CI: the live sync tests run on every pull request and push to `main`. A `live` job in `ci.yml`,
   beside the gate, builds the server image from the tree, starts it with `scripts/smoke-test` and runs
   `cli_live.rs` and `live.rs` against it (the server's logs kept as an artifact when they fail), so a change to the

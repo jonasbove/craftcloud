@@ -697,7 +697,7 @@ def v2_device(d, name, x, y, state):
                                                                                           "arrow-right"))
     elif state == "confirm":
         p = panel(d, body, "Device", sw - 48)
-        for k, v in (("Name", "Studio"), ("System", "Linux · CraftCloud 0.1.0"), ("Asked", "Today 14:30")):
+        for k, v in (("Name", "Studio"), ("System", "Linux · CraftCloud 0.2.0"), ("Asked", "Today 14:30")):
             rr = hstack(d, p, k, gap=0)
             kk = hud(d, rr, k, name="k")
             d.set(kk, sizingH="fixed", width=110)
@@ -1232,8 +1232,8 @@ def v2_desktop_settings(d, name, x, y):
     p = panel(d, b, "On this computer", cw)
     r, slot = row(d, p, "Start at login", 130)
     cells(d, slot, ("Off", "On"), sel="On", name="Login")
-    r, slot = row(d, p, "Pause syncing", 130)
-    cells(d, slot, ("Off", "On"), sel="Off", name="Pause")
+    r, slot = row(d, p, "Syncing", 130)
+    cells(d, slot, ("Paused", "Active"), sel="Active", name="Syncing")
     r, slot = row(d, p, "Appearance", 200)
     cells(d, slot, ("System", "Dark", "Light"), sel="System", name="Theme")
     p = panel(d, b, "About", cw)

@@ -21,6 +21,10 @@
   window; when a host comes up later (a bar that starts after the client), the icon shows and the window hides
   into it as before. On Sway or Hyprland a bar that starts more than three seconds after `craftcloud --hidden`
   now gets a window at login; start the bar first, or the client after it.
+- **Desktop: the pause switch says what it does.** Settings › On this computer had "Pause syncing" with Off and On,
+  so "Off" meant syncing. It is now **Syncing**, with **Paused** and **Active**. The tray menu keeps "Pause syncing"
+  and "Resume syncing".
+
 - **Desktop: an idle window uses next to no CPU** (#3). The desktop client's window drew itself four times a second for as
   long as it was open, even with nothing to show. Without a graphics card (a virtual machine, or a computer that
   draws in software) that kept several cores busy. Now it draws when something changes (a sync, an answer from
