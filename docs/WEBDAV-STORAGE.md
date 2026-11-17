@@ -1,7 +1,8 @@
 # Any WebDAV server as the storage: design
 
 Status: **design, decisions taken** (milestone M9, planned for 0.3.0, on `main` behind an opt-in until the
-release; section 16). Today the desktop client and the `craftcloud` command line sync only with CraftCloud's own server (OxiCloud).
+release); one decision pending, the wording of AGENTS.md's delete rule (section 16, Q12). Today the desktop client
+and the `craftcloud` command line sync only with CraftCloud's own server (OxiCloud).
 This document says how they can sync with other WebDAV servers (Nextcloud, ownCloud, OpenCloud, a NAS …) without
 ever making the sync less safe. Which mode each server gets is measured, not promised: OpenCloud and
 `rclone serve webdav`, for example, get download only (section 16).
@@ -14,7 +15,9 @@ non-negotiables in [AGENTS.md](../AGENTS.md), which bind every part of it. Code 
 The facts about the other servers below were **measured on 2026-11-16**: by hand with `curl` against Nextcloud 31,
 ownCloud 10.15 and OpenCloud (rolling), and with a throwaway spike branch that made today's engine talk plain
 WebDAV to all three and ran the live sync suite against them. The spike is not for merging; section 4 lists what
-it taught.
+it taught. **These figures (the server answers, the live-suite counts, "1 of 3 runs") are not reproducible from
+the repository:** neither the curl transcripts nor the spike are in it. Pull request 5 (the live tests against
+these servers) makes them reproducible; until then they stand as measured on that day.
 
 ## 1. Intent
 
@@ -108,7 +111,7 @@ What had to change, and what the design does instead:
 | Create a file on OpenCloud | Upload under a temporary name, `MOVE` with `Overwrite: F`, then compare `oc:checksums` SHA1 | Not used: OpenCloud gets download only (Q1) |
 | Find a folder's id | `oc:fileid` | Entries carry an optional file id; moves pair by it where present |
 
-## 5. What the servers do (measured on 2026-11-16)
+## 5. What the servers do (measured on 2026-11-16, not reproducible from the repository)
 
 | Behaviour | OxiCloud 0.10.0 | Nextcloud 31 | ownCloud 10.15 | OpenCloud |
 |---|---|---|---|---|
@@ -265,7 +268,11 @@ generic WebDAV driver with their profile.
 ### 7.5 The probe
 
 **Where.** In `.craftcloud/probe/<device>-<random>/` on the server, so two devices probing at once never meet. It
-starts by sweeping probe folders older than a day (a crashed probe), the way stale part files are swept.
+starts by sweeping probe folders a crashed probe left. A folder's age is read **only from the server's clock**:
+its `getlastmodified` against the `Date` header of the same listing, never against this computer's clock, so a
+device whose clock is off can't take another device's running probe for an old one. Only folders older than a
+day by that measure go (a probe takes seconds), and only through `purge_own`, inside `.craftcloud/`. A listing
+without a `Date` header or a time sweeps nothing.
 
 **When.** On connect; at start when the cached result is older than a day or the server's version string changed;
 and on "Check again". The result is cached in the settings folder (`storage-check.json`: the date, the server's
@@ -320,7 +327,7 @@ probe, and says so in the activity list.
 | **Create only if absent** | `PUT` with `If-None-Match: *`; 412 → conflict copy | No two-way: download only | Ignored (reva#866) → download only (Q1) |
 | **Overwrite only if unchanged** | `PUT` with `If-Match`; 412 → conflict copy | No two-way | Honoured, not shown to be atomic (reva#959); moot in download only |
 | **Old bytes kept before an overwrite** | Server versions by file id (they follow renames; `move_versions` is a no-op) | Client versions: `COPY` into `.craftcloud/versions/<path>/<time>`, 5 kept, as today. Without `COPY` either: no two-way (Q2) | Server versions |
-| **Delete only if unchanged** | `DELETE` (or the trash `MOVE`) with `If-Match` | Check, then move to a trash: a one-request window, the same as OxiCloud's REST trash today, acceptable only because the file lands in a trash | `DELETE` ignores `If-Match` (reva#961); moot in download only |
+| **Delete only if unchanged** | `DELETE` (or the trash `MOVE`) with `If-Match` | Check, then move to a trash. The window is the requests between the check and the move, the same window OxiCloud has today: `still_at` lists the parent folder, then the file's REST id is looked up (`folder_id`, `child_id`, a few requests) and `files::trash` moves it. A change landing in that window goes to the trash with the file, never lost; acceptable only because the file lands in a trash | `DELETE` ignores `If-Match` (reva#961); moot in download only |
 | **Deletes go to a trash, never for good** | Server trash, confirmed by the probe's round trip | Client trash: `MOVE` with `Overwrite: F` to `.craftcloud/trash/<time>-<device>/<path>` (the original path is in the name, for a restore); permanent `DELETE` only through `purge_own`, after the retention (Q5) | Server trash |
 | **A folder trashed only if a fresh listing says it holds nothing new** | `cloud_holds` re-lists every level now, as today; any skipping of unchanged folders never applies to this listing | Same | Same |
 | **A folder trashed as one item** | `DELETE` of the folder into the server trash | One `MOVE` of the folder into the client trash | Server trash |
@@ -346,8 +353,13 @@ local side:
   not uploaded: this server only syncs downwards". If the cloud then changes it too, the local file becomes a
   **local** conflict copy (not uploaded) and the cloud version comes down.
 - A file **deleted here** comes back from the cloud on the next cycle (the folder is a mirror of the cloud).
-- A file **deleted in the cloud** is deleted here, through the mass-delete hold, unless it changed here (then it
-  stays, as today).
+- A file **deleted in the cloud** is never deleted here for good, since the server may have no trash and this may
+  be the last copy: after the mass-delete hold, it is **moved into `.craftcloud/trash/` in the local folder**
+  (ignored by the sync, kept 30 days like the client trash, Q5, and shown by `craftcloud trash ls` beside the cloud's trash). A file
+  changed here since the last sync stays where it is, as today.
+- A folder whose **cloud listing failed** (an error, a non-207, an href outside the base) is unknown: everything
+  under it is held, neither downloaded over nor taken as deleted, and the activity list says so, as in two-way
+  sync.
 - A file **new here** stays here and is listed once as not uploaded.
 
 ## 10. Sign-in and tokens
@@ -426,8 +438,8 @@ local side:
   server type, every device syncing that account must run 0.3.0 or later.
 - **AGENTS.md's wording.** The sign-in line is amended in this change (Q11). The delete line ("WebDAV `DELETE` is
   permanent; deletes go to the cloud's trash over REST") is written for OxiCloud; its rule stays (never a
-  permanent delete of the person's files), and the pull request that adds the generic driver rewords it to say
-  how each server meets it.
+  permanent delete of the person's files). Its new wording is a decision pending (Q12); AGENTS.md is not changed
+  until it is taken.
 - **A folder another client syncs.** If the chosen local folder holds another sync client's database
   (`.sync_*.db`, `.owncloudsync.log`, `.csync_journal.db`), the client refuses it: two engines on one folder fight.
 
@@ -531,8 +543,8 @@ on.
 
 ## 16. Decisions
 
-The maintainer took the recommendations below after a research pass confirmed them, and answered Q10. No question
-is left open.
+The maintainer took the recommendations below after a research pass confirmed them, and answered Q10. One
+decision is pending: Q12, the wording of AGENTS.md's delete rule.
 
 | # | Question | Decision | Why, and the evidence |
 |---|---|---|---|
@@ -547,6 +559,7 @@ is left open.
 | Q9 | **SHA1 besides SHA-256** in the sync state | **Not now** | Not needed without the OpenCloud workaround (Q1). For later: ocdav accepts an `OC-Checksum` header on upload, a check by the server that the bytes arrived whole |
 | Q10 | **Where the work lands** | **On `main`**, one shippable pull request at a time, the new server kinds hidden and refused without an explicit opt-in until the 0.3.0 release pull request turns them on (below) | Pull requests 1 to 3 rewrite `crates/native/src/sync.rs`; on a long-lived branch every 0.2.x sync fix landing meanwhile would have to be merged by hand into moved code. The opt-in keeps a 0.2.x hotfix tagged from `main` from shipping `--kind webdav` early |
 | Q11 | **AGENTS.md said the client never sees a password** | **Amended in this change** to: "The client never asks for or stores your account password: it signs in through the server's browser sign-in, or with an app password you make on the server." (modelled on Nextcloud's public Login Flow docs) | It is already true of today's client (device flow only), and it binds the pull requests that follow |
+| Q12 | **AGENTS.md's "WebDAV `DELETE` is permanent" rule** is written for OxiCloud only | **Pending the maintainer.** Proposed wording: "A delete never removes a file for good: it goes to the server's own trash (OxiCloud: over REST; Nextcloud and ownCloud: their WebDAV DELETE, which the check on connect confirms lands in the trash), or to `.craftcloud/trash/` where the server has none." | It changes a non-negotiable, so it is decided on its own, not folded into Q11. AGENTS.md keeps today's wording until then; the generic driver (pull request 4) needs it settled first |
 
 ### The opt-in until 0.3.0 (Q10)
 
