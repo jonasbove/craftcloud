@@ -56,7 +56,7 @@ backup of anything you sync with it.
 | M6 Files on demand | Placeholders that download when opened (Windows, Linux, macOS) | Design only |
 | M7 Signed desktop builds | Signed and notarized macOS builds, signed Windows builds | Not started; v1 is unsigned |
 | M8 Native NixOS deployment | OxiCloud, Caddy and craftcloud-admin as NixOS services without Docker, with the Craft web apps built by Nix from `apps.toml` | Not started; the NixOS module runs the Docker image today |
-| M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Planned for 0.3.0 |
+| M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Planned for 0.3.0, on `main` behind an opt-in until the release |
 | M10 No Python in the tree | The operator scripts without Python (sh and curl) and the packaging icons in Rust (0.3.0), then the design build (`design/tools`, FigCraft) as `cargo xtask design` | 0.3.0: scripts and icons in progress; the design build later |
 
 ## Current focus
@@ -102,6 +102,10 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
      the server, never the account's password.
    - Desktop and command line only; the web frontend stays with OxiCloud. It changes how the sync decides, so it
      comes with an "upgrade all devices together" entry in [RELEASE-NOTES.md](RELEASE-NOTES.md).
+   - The design, with the decisions taken: [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) (the storage trait, the check,
+     the modes, sign-in per server, the tests and the order of the pull requests).
+   - The work lands on `main`, one pull request at a time; the new server kinds stay hidden and refused unless
+     `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` is set, until the 0.3.0 release turns them on.
 9. **No Python in the tree (M10), part 1, for 0.3.0:** `scripts/create-owner`, `add-user`, `app-password` and
    `smoke-test` read and write JSON through `python3 -c` one-liners; they read and write it with sed instead, so they
    run without Python (sh and curl). `packaging/icons.sh` (Pillow) becomes
@@ -124,6 +128,11 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   from the logo by `cargo xtask icons`, in Rust; `packaging/icons.sh` and its Python/Pillow need are gone. The
   committed icons were rendered again with it: the same files, sizes and entries, Lanczos on premultiplied alpha
   as before, within a few levels of the old ones (mostly smaller files).
+- 2026-11-17: Docs: the design for M9, any WebDAV server as the storage ([WEBDAV-STORAGE.md](WEBDAV-STORAGE.md)),
+  from the servers' answers measured on 2026-11-16 and a throwaway spike against Nextcloud, ownCloud and
+  OpenCloud. The maintainer took its recommendations after a research pass; the work lands on `main` behind
+  `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` until the 0.3.0 release. AGENTS.md's sign-in rule now reads "never the
+  account password", and its delete rule "a delete never removes a file for good", with how each server meets it.
 - 2026-11-17: Web: the version a page shows before the server's config arrives is this build's own, not a fixed
   "0.1.0"; the README's screenshots (`docs/screenshots/`) are rendered again by `web_shots`, which now takes the
   version from the build too, so they say 0.2.0.
@@ -460,3 +469,4 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 | 2026-11-16 | minor | M9, any WebDAV server as the storage; the Upcoming list put back in order after a merge, without the Windows command line, which is done. |
 | 2026-11-16 | minor | Version 0.2.0; M4 done; M9 planned for 0.3.0. |
 | 2026-11-17 | minor | M10, no Python in the tree. |
+| 2026-11-17 | minor | M9's design, with the decisions; on `main` behind an opt-in until 0.3.0. |

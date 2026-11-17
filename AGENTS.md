@@ -131,8 +131,9 @@ has the map.
   - **One rule for what the sync skips** (`core::names::ignored`, CraftCloud's own `.craftcloud/`, names the cloud
     can't take), applied to the local scan, the cloud listing and the saved state alike. A name the sync leaves
     alone is never downloaded, uploaded or taken as deleted.
-  - **WebDAV `DELETE` is permanent** (and recursive on a folder). Deletes go to the cloud's trash over REST, a folder
-    as one item, so a restore brings it back whole.
+  - **A delete never removes a file for good:** it goes to the server's own trash (OxiCloud: over REST; Nextcloud
+    and ownCloud: their WebDAV `DELETE`, which the check on connect confirms lands in the trash), or to
+    `.craftcloud/trash/` where the server has none. A folder goes as one item, so a restore brings it back whole.
   - **Never trash a cloud folder** unless a fresh listing of it says it is empty (or everything in it is unchanged).
     A folder whose listing failed is unknown.
   - **Writes are guarded:** create with `If-None-Match: *`, overwrite with `If-Match: <etag>`; a 412 is a change made
@@ -159,8 +160,10 @@ has the map.
 - **The window always opens.** Nothing slow blocks the main thread before the first frame: the keychain and the tray
   answer over D-Bus on Linux and may hang, so they run on threads of their own (`apps/craftcloud/src/main.rs`,
   `tray.rs`). A missing tray, keychain or notification service degrades the client, never stops it.
-- **Desktop sign-in is through the browser only** (OxiCloud's OAuth 2.0 device flow; the client never sees a
-  password). Tokens live in the OS keychain. Treat a device token like the account's password.
+- **The client never asks for or stores your account password:** it signs in through the server's browser sign-in
+  (OxiCloud's OAuth 2.0 device flow, Nextcloud's Login Flow v2), or with an app password you make on the server
+  ([docs/WEBDAV-STORAGE.md](docs/WEBDAV-STORAGE.md) § 10). Tokens and app passwords live in the OS keychain. Treat
+  either like the account's password.
 - **Never break wasm.** `crates/core` and `crates/ui-egui` build for `wasm32-unknown-unknown`, and `cargo xtask ci`
   checks it. Desktop-only code goes in `crates/native` or `apps/craftcloud`.
 - **The gate:** `cargo xtask ci` (fmt, clippy `-D warnings`, tests, wasm clippy) before every commit; run
