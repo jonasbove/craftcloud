@@ -22,16 +22,35 @@ ask() { # variable, prompt, secret
     if [ "${3:-}" = secret ]; then stty echo 2>/dev/null || true; echo; fi
     eval "$1=\$value"
 }
-json() { python3 -I -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
+# A value as a JSON string, quotes included. It reaches sed through a pipe from the shell's own printf, so a
+# password never shows in a command line (`ps`). Byte by byte: `\` and `"` never occur inside a UTF-8 sequence,
+# so other characters pass through unchanged; control characters become \u00XX.
+json() {
+    printf '"%s"' "$(printf '%s' "$1" | LC_ALL=C sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e "$json_controls")"
+}
+json_controls=""
+for i in 1 2 3 4 5 6 7 8 9 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31; do
+    json_controls="${json_controls}s/$(printf "\\$(printf '%03o' "$i")")/\\\\u00$(printf '%02x' "$i")/g
+"
+done
+# The field `$1` of the JSON answer on stdin: a string (with \", \\ and \/ undone), or true, false, null or a
+# number; nothing when it isn't there. The servers' answers name these fields once.
+json_get() {
+    tr '\n' ' ' | LC_ALL=C sed -n -E \
+        -e "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\".*/\\1/" -e "t done" \
+        -e "s/.*\"$1\"[[:space:]]*:[[:space:]]*(true|false|null|-?[0-9][0-9.eE+-]*).*/\\1/p" -e b \
+        -e ":done" -e 's/\\(["\\/])/\1/g' -e p
+}
 
 ask CRAFTCLOUD_USER "Your admin username"
 ask CRAFTCLOUD_PASSWORD "Your admin password" secret
-login="$(curl -fsS -H 'Content-Type: application/json' \
-    -d "{\"username\": $(json "$CRAFTCLOUD_USER"), \"password\": $(json "$CRAFTCLOUD_PASSWORD")}" "$SERVER/api/auth/login")" || {
+login="$(printf '%s' "{\"username\": $(json "$CRAFTCLOUD_USER"), \"password\": $(json "$CRAFTCLOUD_PASSWORD")}" |
+    curl -fsS -H 'Content-Type: application/json' --data-binary @- "$SERVER/api/auth/login")" || {
     echo "Sign-in failed: check the address, username and password." >&2
     exit 1
 }
-token="$(printf '%s' "$login" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
+token="$(printf '%s' "$login" | json_get access_token)"
+[ -n "$token" ] || { echo "Sign-in failed: the server's answer has no access_token." >&2; exit 1; }
 
 ask NEW_USER "New user's username"
 ask NEW_EMAIL "New user's email"
@@ -43,15 +62,14 @@ while :; do
 done
 
 body="{\"username\": $(json "$NEW_USER"), \"email\": $(json "$NEW_EMAIL"), \"password\": $(json "$NEW_PASSWORD"), \"role\": \"user\"}"
-status="$(curl -sS -o /tmp/craftcloud-add-user.$$ -w '%{http_code}' -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "$body" "$SERVER/api/admin/users")"
+status="$(printf '%s' "$body" | curl -sS -o /tmp/craftcloud-add-user.$$ -w '%{http_code}' -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data-binary @- "$SERVER/api/admin/users")"
 answer="$(cat /tmp/craftcloud-add-user.$$)"
 rm -f /tmp/craftcloud-add-user.$$
 if [ "$status" = 201 ]; then
     echo "Created user '$NEW_USER'. They sign in at $SERVER (or in the desktop client) with that username and password."
 else
-    reason="$(printf '%s' "$answer" | python3 -I -c 'import json,sys
-try: d=json.load(sys.stdin); print(d.get("message") or d.get("error") or d)
-except Exception: print("")')"
+    reason="$(printf '%s' "$answer" | json_get message)"
+    [ -n "$reason" ] || reason="$(printf '%s' "$answer" | json_get error)"
     echo "The server refused ($status): ${reason:-$answer}" >&2
     exit 1
 fi

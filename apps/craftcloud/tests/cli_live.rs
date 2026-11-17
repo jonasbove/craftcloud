@@ -253,3 +253,109 @@ fn logout_ends_the_session(env: &Env) {
     let after = execute(&auth::refresh(&server, &refresh_token)).unwrap();
     assert!(!after.is_success(), "the refresh token still works after logout ({})", after.status);
 }
+
+/// The operator scripts (`scripts/create-owner`, `add-user`, `app-password`) against the same server: they need
+/// only sh and curl (a `python3` earlier in `PATH` fails, and the test checks it never ran), and passwords with
+/// `"`, `\`, `$` and letters outside ASCII reach the server as typed. It runs after the command line's test,
+/// which leaves sign-ins to spare under the server's limit per minute; on a fresh server (this test alone) it
+/// also creates the owner with `create-owner`.
+#[cfg(unix)]
+#[test]
+fn the_operator_scripts() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+
+    let (Ok(server), Ok(user), Ok(password)) =
+        (std::env::var("CRAFTCLOUD_TEST_SERVER"), std::env::var("CRAFTCLOUD_TEST_USER"), std::env::var("CRAFTCLOUD_TEST_PASSWORD"))
+    else {
+        eprintln!("skipped: CRAFTCLOUD_TEST_SERVER not set");
+        return;
+    };
+    let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts");
+    let fake = tempfile::tempdir().unwrap();
+    let called = fake.path().join("python-called");
+    for name in ["python3", "python"] {
+        let stub = fake.path().join(name);
+        std::fs::write(&stub, format!("#!/bin/sh\ntouch '{}'\nexit 97\n", called.display())).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = format!("{}:{}", fake.path().display(), std::env::var("PATH").unwrap_or_default());
+    // Runs a script with only `vars` set of the variables the scripts read; waits out a 429 once.
+    let run = |script: &str, args: &[&str], vars: &[(&str, &str)]| -> (Option<i32>, String, String) {
+        let once = || {
+            let mut cmd = Command::new(scripts.join(script));
+            cmd.args(args).env("PATH", &path).stdin(Stdio::null());
+            for var in
+                ["CRAFTCLOUD_USER", "CRAFTCLOUD_PASSWORD", "NEW_USER", "NEW_EMAIL", "NEW_PASSWORD", "OWNER_USER", "OWNER_EMAIL", "OWNER_PASSWORD"]
+            {
+                cmd.env_remove(var);
+            }
+            let out = cmd.envs(vars.iter().copied()).output().unwrap();
+            (out.status.code(), String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned())
+        };
+        let first = once();
+        if !first.2.contains("error: 429") {
+            return first;
+        }
+        std::thread::sleep(Duration::from_secs(65));
+        once()
+    };
+    let base = ServerUrl::parse(&server).unwrap();
+
+    // create-owner: makes the owner on a fresh server, and refuses once there is one.
+    let email = format!("{user}@example.org");
+    if !auth::parse_status(&execute(&auth::status(&base)).unwrap()).unwrap().initialized {
+        let (code, out, err) = run("create-owner", &[&server], &[("OWNER_USER", &user), ("OWNER_EMAIL", &email), ("OWNER_PASSWORD", &password)]);
+        assert_eq!(code, Some(0), "create-owner: {err}");
+        assert!(out.contains(&format!("Created the owner '{user}'")), "{out}");
+    }
+    let (code, _, err) = run("create-owner", &[&server], &[("OWNER_USER", "x"), ("OWNER_EMAIL", "x@example.org"), ("OWNER_PASSWORD", "12345678")]);
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("already has an owner"), "{err}");
+
+    // add-user: a password with JSON's special characters and more works for signing in.
+    let name = format!("script-{}", std::process::id());
+    let tricky = format!("pw \"q\" \\ $HOME ünï ✓ 😀 {}", std::process::id());
+    let new_email = format!("{name}@example.org");
+    let admin = [("CRAFTCLOUD_USER", user.as_str()), ("CRAFTCLOUD_PASSWORD", password.as_str())];
+    let add = [admin[0], admin[1], ("NEW_USER", name.as_str()), ("NEW_EMAIL", new_email.as_str()), ("NEW_PASSWORD", tricky.as_str())];
+    let (code, out, err) = run("add-user", &[&server], &add);
+    assert_eq!(code, Some(0), "add-user: {err}");
+    assert!(out.contains(&format!("Created user '{name}'")), "{out}");
+    let mut signed_in = execute(&auth::login(&base, &name, &tricky)).unwrap();
+    if signed_in.status == 429 {
+        std::thread::sleep(Duration::from_secs(65));
+        signed_in = execute(&auth::login(&base, &name, &tricky)).unwrap();
+    }
+    assert!(auth::parse_login(&signed_in).is_ok(), "the new user can't sign in with the password add-user sent ({})", signed_in.status);
+    // …and the server's reason when it refuses.
+    let (code, _, err) = run("add-user", &[&server], &add);
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("The server refused (409)") && err.contains("already exists"), "{err}");
+
+    // app-password: prints a password that opens WebDAV; the label has JSON's special characters too.
+    let (code, out, err) = run("app-password", &[&server, "Label \"quoted\" \\ ü"], &admin);
+    assert_eq!(code, Some(0), "app-password: {err}");
+    assert!(
+        out.contains(&format!("  Username:      {user}\n")) && out.contains(&format!("  WebDAV URL:    {server}/webdav/\n")),
+        "app-password's output changed"
+    );
+    let app_password = out.lines().find_map(|l| l.strip_prefix("  App password:  ")).unwrap_or_default().to_owned();
+    assert!(!app_password.is_empty(), "no app password in the output");
+    // The credentials go to curl on stdin, not in its command line.
+    let mut curl = Command::new("curl")
+        .args(["-sS", "-K", "-", "-o", "/dev/null", "-w", "%{http_code}", "-X", "PROPFIND", "-H", "Depth: 0"])
+        .arg(format!("{server}/webdav/"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(&mut curl.stdin.take().unwrap(), format!("user = \"{user}:{app_password}\"\n").as_bytes()).unwrap();
+    let dav = curl.wait_with_output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&dav.stdout), "207", "WebDAV with the new app password");
+    let (code, _, err) = run("app-password", &[&server], &[("CRAFTCLOUD_USER", &user), ("CRAFTCLOUD_PASSWORD", "not-the-password")]);
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("Sign-in failed"), "{err}");
+
+    assert!(!called.exists(), "a script ran python");
+}
