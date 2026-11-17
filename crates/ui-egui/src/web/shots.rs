@@ -15,7 +15,11 @@ type H = Harness<'static, WebApp<FakeBackend>>;
 
 const UNINIT: &[u8] = br#"{"initialized":false,"admin_count":0,"registration_allowed":false}"#;
 const INIT: &[u8] = br#"{"initialized":true,"admin_count":1,"registration_allowed":false}"#;
-const CONFIG: &[u8] = br#"{"version":"0.1.0","web_apps":false,"public_url":"https://cloud.example.org","enabled_apps":[]}"#;
+/// The server's config.json as the screenshots' server answers it, with this build's version (a fixed one went stale).
+fn config() -> Vec<u8> {
+    format!(r#"{{"version":"{}","web_apps":false,"public_url":"https://cloud.example.org","enabled_apps":[]}}"#, env!("CARGO_PKG_VERSION"))
+        .into_bytes()
+}
 const ROOT: &str = "root1";
 /// The link to the folder Team (`/s/tokF`).
 const SHARED_FOLDER: &[u8] = br#"{"id":"s1","item_id":"top","item_name":"Team","item_type":"folder","token":"tokF","url":"https://cloud.example.org/s/tokF","has_password":false,"created_at":"2026-11-13T09:00:00Z"}"#;
@@ -57,7 +61,7 @@ fn visit(path: &str, code: Option<&str>, size: egui::Vec2, theme: egui::Theme) -
 fn start(h: &mut H, status: &[u8], signed_in: bool) {
     let b = &mut h.state_mut().backend;
     b.answer("/api/auth/status", ok(status));
-    b.answer("/craftcloud/config.json", ok(CONFIG));
+    b.answer("/craftcloud/config.json", ok(&config()));
     let me = if signed_in { ok(&fixture("me.json")) } else { Ok(HttpResponse::new(401, Vec::new())) };
     b.answer("/api/auth/me", me);
     h.run();
@@ -96,7 +100,7 @@ fn files(size: egui::Vec2, theme: egui::Theme, items: &[Value]) -> H {
     start(&mut h, INIT, true);
     let b = &mut h.state_mut().backend;
     b.answer("/api/folders", json_ok(&json!([{"id": ROOT, "name": "Personal", "path": "/Personal", "parent_id": null}])));
-    b.answer("/craftcloud/config.json", ok(CONFIG));
+    b.answer("/craftcloud/config.json", ok(&config()));
     h.run();
     let b = &mut h.state_mut().backend;
     b.answer(&format!("/api/folders/{ROOT}/resources?limit=200"), json_ok(&listing(items)));
