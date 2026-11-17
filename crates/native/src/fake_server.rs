@@ -164,9 +164,40 @@ fn read_request(conn: &TcpStream) -> Option<Seen> {
             headers.push((name, value));
         }
     }
-    let mut body = vec![0; length];
-    reader.read_exact(&mut body).ok()?;
+    let chunked = headers.iter().any(|(n, v)| n == "transfer-encoding" && v.eq_ignore_ascii_case("chunked"));
+    let body = if chunked {
+        // ureq sends a request without a body (a POST that triggers a job) chunked. Read it to the
+        // end: closing the connection with its last chunk unread resets it, and the client then
+        // sometimes loses the answer ("Peer disconnected"), which made tests flaky.
+        read_chunked(&mut reader)?
+    } else {
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).ok()?;
+        body
+    };
     Some(Seen { method, path, headers, body: String::from_utf8_lossy(&body).into_owned() })
+}
+
+/// A chunked body, up to and including its last (empty) chunk and the trailer's end.
+fn read_chunked(reader: &mut impl BufRead) -> Option<Vec<u8>> {
+    let mut body = Vec::new();
+    loop {
+        let mut size = String::new();
+        reader.read_line(&mut size).ok()?;
+        let size = usize::from_str_radix(size.trim().split(';').next()?.trim(), 16).ok()?;
+        if size == 0 {
+            loop {
+                let mut trailer = String::new();
+                if reader.read_line(&mut trailer).ok()? == 0 || trailer.trim().is_empty() {
+                    return Some(body);
+                }
+            }
+        }
+        let mut chunk = vec![0; size + 2];
+        reader.read_exact(&mut chunk).ok()?;
+        chunk.truncate(size);
+        body.extend(chunk);
+    }
 }
 
 /// A WebDAV `PROPFIND` answer (207) for `folder` holding `files` (name, ETag; `None` for an entry
@@ -193,4 +224,26 @@ pub fn listing(folder: &str, files: &[(&str, Option<&str>)], subfolders: &[&str]
     }
     xml.push_str("</D:multistatus>");
     (207, xml)
+}
+
+#[cfg(test)]
+mod tests {
+    use craftcloud_core::http::{HttpRequest, Method};
+
+    use super::FakeServer;
+
+    #[test]
+    fn a_post_without_a_body_is_always_answered() {
+        // ureq sends it chunked; with its last chunk left unread the connection was reset and the
+        // answer lost now and then (about 1 in 300), which made the golden no-room test flaky.
+        let server = FakeServer::start(|_| (200, "{}".into()));
+        for n in 0..500 {
+            let req = HttpRequest::new(Method::Post, format!("{}/api/admin/jobs/x/trigger", server.url));
+            let answer = crate::http::execute(&req);
+            assert_eq!(answer.map(|r| r.status), Ok(200), "request {n}");
+        }
+        let seen = server.seen();
+        assert_eq!(seen[0].header("transfer-encoding"), Some("chunked"), "the case this covers");
+        assert!(seen.iter().all(|r| r.body.is_empty()));
+    }
 }
