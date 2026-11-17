@@ -315,6 +315,99 @@ impl Tray {
 /// How long the tray may take to come up before the client says so in its log.
 const TRAY_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// The tray host's well-known name on the session bus (the StatusNotifierItem specification).
+/// The icon shows only while something owns it: Plasma, Xfce's panel, a bar's tray module, or
+/// GNOME's AppIndicator extension; stock GNOME has none.
+pub const HOST_NAME: &str = "org.kde.StatusNotifierWatcher";
+
+/// Follows the tray host on the session bus. The StatusNotifierItem backend registers the icon
+/// whether or not a host is there (one may come later: a bar that starts after the client), so
+/// "the tray is up" must be read off the bus, not off the registration: with no host, closing
+/// the window would leave the client running with no icon and no window.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+mod host {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use zbus::blocking::fdo::DBusProxy;
+    use zbus::blocking::{Connection, MessageIterator};
+
+    use super::HOST_NAME;
+
+    /// Whether a host owns the name on `conn` now.
+    pub(super) fn present(conn: &Connection) -> zbus::Result<bool> {
+        Ok(DBusProxy::new(conn)?.name_has_owner(HOST_NAME.try_into()?)?)
+    }
+
+    /// Keeps `ready` true while a host owns the name on `conn`: one look, then every change of
+    /// the name's owner; `changed` is called after each. Returns only when the connection ends.
+    pub(super) fn follow(conn: &Connection, ready: &AtomicBool, changed: &dyn Fn(bool)) -> zbus::Result<()> {
+        let rule = zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .sender("org.freedesktop.DBus")?
+            .interface("org.freedesktop.DBus")?
+            .member("NameOwnerChanged")?
+            .arg(0, HOST_NAME)?
+            .build();
+        // Subscribed before the look, so a host that comes up in between isn't missed.
+        let signals = MessageIterator::for_match_rule(rule, conn, Some(16))?;
+        let now = present(conn)?;
+        ready.store(now, Ordering::Release);
+        changed(now);
+        for message in signals.flatten() {
+            // NameOwnerChanged(name, old_owner, new_owner): an empty new owner is the host going.
+            let Ok((_, _, new_owner)) = message.body().deserialize::<(String, String, String)>() else { continue };
+            let now = !new_owner.is_empty();
+            ready.store(now, Ordering::Release);
+            changed(now);
+        }
+        Ok(())
+    }
+
+    /// [`follow`] on the session bus, on a thread of its own; `wake` after every change. Without
+    /// a session bus the icon can't have registered either, so `ready` stays false.
+    pub(super) fn follow_on_thread(ready: Arc<AtomicBool>, wake: impl Fn() + Send + 'static) {
+        let spawned = std::thread::Builder::new().name("craftcloud-tray-host".into()).spawn(move || {
+            let conn = match Connection::session() {
+                Ok(conn) => conn,
+                Err(e) => {
+                    log::warn!("no tray (no session bus: {e}); closing the window quits");
+                    return;
+                }
+            };
+            let result = follow(&conn, &ready, &|present| {
+                if present {
+                    log::info!("tray icon ready (a tray host owns {HOST_NAME})");
+                } else {
+                    log::warn!(
+                        "no tray host on the session bus ({HOST_NAME}): the icon shows once one starts (on GNOME, the AppIndicator extension); until then closing the window quits"
+                    );
+                }
+                wake();
+            });
+            if let Err(e) = result {
+                log::warn!("lost track of the tray host: {e}");
+            }
+        });
+        if let Err(e) = spawned {
+            log::warn!("no tray (couldn't follow the tray host: {e}); closing the window quits");
+        }
+    }
+}
+
+/// macOS and Windows have a tray of their own: an icon that registered is shown.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+mod host {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    pub(super) fn follow_on_thread(ready: Arc<AtomicBool>, wake: impl Fn() + Send + 'static) {
+        ready.store(true, Ordering::Release);
+        log::info!("tray icon ready");
+        wake();
+    }
+}
+
 /// The tray as the client sees it. Where the tray works without a window event loop (the
 /// StatusNotifierItem backend on Linux and the BSDs), it lives on a thread of its own, so a tray
 /// host or D-Bus that is slow to answer never holds up the window; elsewhere it's made on the main
@@ -343,12 +436,14 @@ impl TrayHandle {
         let done = Arc::new(AtomicBool::new(false));
         let (ready_t, done_t, wake) = (Arc::clone(&ready), Arc::clone(&done), Arc::new(wake));
         let spawned = std::thread::Builder::new().name("craftcloud-tray".into()).spawn(move || {
+            let wake_host = Arc::clone(&wake);
             let tray = Tray::new(move || wake(), tx);
             done_t.store(true, Ordering::Release);
             match tray {
                 Ok(mut tray) => {
-                    ready_t.store(true, Ordering::Release);
-                    log::info!("tray icon ready");
+                    // The icon is registered (or will be, once a host comes up); whether anything
+                    // shows it is the host's presence, followed on a thread of its own.
+                    host::follow_on_thread(ready_t, move || wake_host());
                     for view in rx {
                         tray.show(&view);
                     }
@@ -391,7 +486,9 @@ impl TrayHandle {
         }
     }
 
-    /// Whether the tray icon is up, so closing the window can leave the client in it.
+    /// Whether the tray icon is up and something shows it (a tray host owns [`HOST_NAME`]), so
+    /// closing the window can leave the client in it. It follows the host: a bar that starts
+    /// later makes it true, a host that quits makes it false.
     pub fn is_ready(&self) -> bool {
         self.ready.load(Ordering::Acquire)
     }
@@ -502,6 +599,92 @@ mod tests {
         for (state, _) in states().into_iter().filter(|(s, _)| *s != SyncState::Paused) {
             assert_eq!(MenuState::of(&state).pause.label(), "Pause syncing", "{state:?}");
         }
+    }
+
+    /// A session bus of its own (never the computer's): `dbus-daemon` on a socket in a temporary
+    /// folder, ended with the test. `None` where there is no `dbus-daemon` to run.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    struct PrivateBus {
+        daemon: std::process::Child,
+        address: String,
+        _dir: tempfile::TempDir,
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    impl PrivateBus {
+        fn start() -> Option<Self> {
+            use std::io::BufRead;
+            let dir = tempfile::tempdir().ok()?;
+            let socket = dir.path().join("bus");
+            let mut daemon = std::process::Command::new("dbus-daemon")
+                .args(["--session", "--nofork", "--print-address", &format!("--address=unix:path={}", socket.display())])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .ok()?;
+            let mut address = String::new();
+            let read = daemon.stdout.take().map(|out| std::io::BufReader::new(out).read_line(&mut address));
+            if !matches!(read, Some(Ok(n)) if n > 0) {
+                let _ = daemon.kill();
+                return None;
+            }
+            Some(Self { daemon, address: address.trim().to_owned(), _dir: dir })
+        }
+
+        fn connect(&self) -> zbus::blocking::Connection {
+            zbus::blocking::connection::Builder::address(self.address.as_str()).unwrap().build().unwrap()
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    impl Drop for PrivateBus {
+        fn drop(&mut self) {
+            let _ = self.daemon.kill();
+            let _ = self.daemon.wait();
+        }
+    }
+
+    /// Stock GNOME has no tray host: the icon registers all the same (so it shows when one comes
+    /// up later), but the client must know nobody shows it. Before this, `is_ready` was true
+    /// whenever the registration went through, and closing the window on such a desktop left
+    /// the client running with no icon and no window.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[test]
+    fn the_tray_is_ready_only_while_a_host_owns_the_watcher_name() {
+        use super::{HOST_NAME, host};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let Some(bus) = PrivateBus::start() else {
+            eprintln!("skipped: no dbus-daemon to start a private bus with");
+            return;
+        };
+        let ready = Arc::new(AtomicBool::new(false));
+        let looks = Arc::new(AtomicUsize::new(0));
+        let follower = bus.connect();
+        let (ready_t, looks_t) = (Arc::clone(&ready), Arc::clone(&looks));
+        std::thread::spawn(move || {
+            let _ = host::follow(&follower, &ready_t, &|_| {
+                looks_t.fetch_add(1, Ordering::AcqRel);
+            });
+        });
+        let wait_for = |looked: usize, want: bool| {
+            let end = std::time::Instant::now() + Duration::from_secs(10);
+            while std::time::Instant::now() < end {
+                if looks.load(Ordering::Acquire) >= looked && ready.load(Ordering::Acquire) == want {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            false
+        };
+        assert!(wait_for(1, false), "nothing owns {HOST_NAME} on a fresh bus");
+        // A tray host starts (Plasma, a panel, GNOME's AppIndicator extension): it claims the name.
+        let host = bus.connect();
+        host.request_name(HOST_NAME).unwrap();
+        assert!(wait_for(2, true), "a host came up");
+        host.release_name(HOST_NAME).unwrap();
+        assert!(wait_for(3, false), "the host went away");
     }
 
     #[test]

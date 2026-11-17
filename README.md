@@ -280,7 +280,8 @@ cd craftcloud-<ver>-linux-x86_64
 ```
 
 CraftCloud then shows up in your app launcher. It lives in the tray (StatusNotifierItem): KDE, Xfce, Cinnamon and
-most desktops show it; on GNOME install the AppIndicator extension. **Settings › Start at login** writes an XDG
+most desktops show it; on GNOME install the AppIndicator extension. Without a tray (stock GNOME) the window is
+the client: closing it quits, and a start at login opens it. **Settings › Start at login** writes an XDG
 autostart entry, which GNOME, KDE and Xfce run. It tells you about conflicts, a sign-in that ran out and a sync
 that can't go on with a desktop notification; clicking one opens the window.
 
