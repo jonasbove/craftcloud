@@ -1,9 +1,9 @@
 # CraftCloud roadmap
 
-**Stage: early alpha** · version 0.1.1 (fixes for 0.1.0, the first release: a published image and desktop builds)
+**Stage: early alpha** · version 0.2.0 (share links and version history on the web, the Windows fixes, server hardening)
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-17 · **Change:** minor (the desktop client checked on KDE
-> Plasma, GNOME and Xfce, in [LINUX-DESKTOPS.md](LINUX-DESKTOPS.md); on Linux the tray counts as up only while a tray
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-17 · **Change:** minor (version 0.2.0; M9 moves to
+> 0.3.0); on Linux the tray counts as up only while a tray
 > host is on the bus, so closing the window on stock GNOME quits instead of leaving an invisible client; a start at
 > login stays in the tray on Windows and X11, and opens the window where there is no tray; an offline desktop window waits before asking who is signed in again; the
 > release checklist and the Release workflow check the Craft web app pins; an idle window uses next to no CPU; trace
@@ -48,14 +48,14 @@ backup of anything you sync with it.
 |---|---|---|
 | M0 Server image | OxiCloud unmodified behind Caddy, CraftCloud's settings service, slim and `-apps` images, NixOS module | Done |
 | M1 Sync client | Device sign-in, a two-way sync folder with guarded writes, versions and conflict copies, tray | Done; hardening continues from testers' reports |
-| M2 Web frontend | Setup, sign-in, device approval, home, the file browser, admin, single sign-on | Done, except the share-link sheet |
+| M2 Web frontend | Setup, sign-in, device approval, home, the file browser, admin, single sign-on, share links | Done |
 | M3 Command line and integration | `craftcloud <command>` for files, sync, sharing, versions and admin; the contract the Craft apps and the launcher can use | Done; the command line prints in Windows terminals too (tried on Windows 11) |
-| M4 First release | Published images, a tagged desktop release, release notes | Not started |
+| M4 First release | Published images, a tagged desktop release, release notes | Done: 0.1.0 on 2026-11-14, then 0.1.1 and 0.2.0 |
 | M5 Craft web apps in the browser | Open a cloud file in its Craft web app from the web file browser and save it back (`craft-web-host`, the shim for the others) | Serving and gating done; the editor page and the shim not built |
 | M6 Files on demand | Placeholders that download when opened (Windows, Linux, macOS) | Design only |
 | M7 Signed desktop builds | Signed and notarized macOS builds, signed Windows builds | Not started; v1 is unsigned |
 | M8 Native NixOS deployment | OxiCloud, Caddy and craftcloud-admin as NixOS services without Docker, with the Craft web apps built by Nix from `apps.toml` | Not started; the NixOS module runs the Docker image today |
-| M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Planned |
+| M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Planned for 0.3.0 |
 
 ## Current focus
 
@@ -67,9 +67,7 @@ places, names the cloud can't take, interrupted downloads, quota) and the second
 
 In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and the docs linked.
 
-1. **A first release:** a published image (slim and `-apps`), a first run of the **Release** workflow
-   (`release.yml`) on a tag, a release signing key (`RELEASE_SIGNING_KEY`), and the AUR recipes in
-   `packaging/arch/`, with [RELEASE-NOTES.md](RELEASE-NOTES.md).
+1. **The AUR packages:** the recipes in `packaging/arch/` (`craftcloud`, `craftcloud-bin`) published to the AUR.
 2. **Craft web apps in the browser:** the page that frames an app and talks `craft-web-host`, and the shim for the
    apps without it ([CRAFT-INTEGRATION.md § 6](CRAFT-INTEGRATION.md#6-the-craft-web-apps-in-the-browser)).
 3. **macOS deep links:** an Apple Event (`kAEGetURL`) handler, so a `craftcloud://` click opens the file.
@@ -105,6 +103,11 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-16: Version 0.2.0: share links, the public share page and version history on the web, single sign-on
+  setup in plain words, Linux notifications, the Windows fixes found testing 0.1.1, the server hardening, a Home
+  Manager module, the sync fixes the property tests and the engine tests found (upgrade all devices together), and
+  the sign-out and trace-log fixes. Tests: property, engine, mixed-version e2e, e2e-web, live tests in CI and on
+  Windows. M9 (any WebDAV server) moves to 0.3.0.
 - 2026-11-17: Desktop (Linux, X11): a start at login (`--hidden`) stays in the tray, and opens the window where
   there is no tray. X11 had the Windows problem below (eframe shows the window after its first frame), and the
   same rule hides it again; once unmapped, X11 sends no new `VisibilityNotify`, so eframe still takes the window
@@ -431,3 +434,4 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 | 2026-11-14 | major | First version: the README's roadmap moves here, rebuilt from the docs and the git history. |
 | 2026-11-15 | minor | M8, a native NixOS deployment, with the Craft web apps built by Nix from `apps.toml`. |
 | 2026-11-16 | minor | M9, any WebDAV server as the storage; the Upcoming list put back in order after a merge, without the Windows command line, which is done. |
+| 2026-11-16 | minor | Version 0.2.0; M4 done; M9 planned for 0.3.0. |

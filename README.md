@@ -161,7 +161,7 @@ forwards to `CRAFTCLOUD_BIND:CRAFTCLOUD_HOST_PORT`.
 **Images:** every release publishes `ghcr.io/jonasbove/craftcloud:<ver>` and `:latest` (slim), and `:<ver>-apps`
 and `:latest-apps` with the Craft apps for the browser (about 770 MB to download, 2.1 GB on disk). The same
 images are on Docker Hub as `jonasbove/craftcloud` (`docker.io/jonasbove/craftcloud:<ver>`). To choose
-when you update, pin a version in `.env`: `CRAFTCLOUD_IMAGE=ghcr.io/jonasbove/craftcloud:0.1.1`. Each image
+when you update, pin a version in `.env`: `CRAFTCLOUD_IMAGE=ghcr.io/jonasbove/craftcloud:0.2.0`. Each image
 carries a signed build-provenance attestation:
 `gh attestation verify oci://ghcr.io/jonasbove/craftcloud:<ver> --repo jonasbove/craftcloud`.
 
@@ -204,8 +204,7 @@ inputs.craftcloud = {
 ```
 
 `image` defaults to `ghcr.io/jonasbove/craftcloud:latest`; set `services.craftcloud.image` to a pinned version
-(`ghcr.io/jonasbove/craftcloud:0.1.1`), the `-apps` image, or your own registry's.
-(`ghcr.io/jonasbove/craftcloud:0.1.0`), the `-apps` image, or your own registry's.
+(`ghcr.io/jonasbove/craftcloud:0.2.0`), the `-apps` image, or your own registry's.
 `imageFile` loads the image from the Nix store instead of a registry (a `pkgs.dockerTools.pullImage` pinned by
 digest, for a machine that can't reach one).
 
@@ -218,7 +217,7 @@ nix build .#checks.x86_64-linux.vm-sync -L
 
 ## Status
 
-CraftCloud is in **early alpha**: version 0.1.1 is the current release (fixes for 0.1.0, the first). [**docs/ROADMAP.md**](docs/ROADMAP.md) has
+CraftCloud is in **early alpha**: version 0.2.0 is the current release. [**docs/ROADMAP.md**](docs/ROADMAP.md) has
 where each part stands, the milestones and what's next; [docs/STATUS.md](docs/STATUS.md) what works, how it was
 checked, and the known limits.
 
@@ -280,10 +279,9 @@ cd craftcloud-<ver>-linux-x86_64
 ```
 
 CraftCloud then shows up in your app launcher. It lives in the tray (StatusNotifierItem): KDE, Xfce, Cinnamon and
-most desktops show it; on GNOME install the AppIndicator extension. Without a tray (stock GNOME) the window is
-the client: closing it quits, and a start at login opens it. **Settings › Start at login** writes an XDG
 most desktops show it; on GNOME install the AppIndicator extension (`gnome-shell-extension-appindicator`, or
-"AppIndicator and KStatusNotifierItem Support"), then log out and in. **Settings › Start at login** writes an XDG
+"AppIndicator and KStatusNotifierItem Support"), then log out and in. Without a tray (stock GNOME) the window is the
+client: closing it quits, and a start at login opens it. **Settings › Start at login** writes an XDG
 autostart entry, which GNOME, KDE and Xfce run. It tells you about conflicts, a sign-in that ran out and a sync
 that can't go on with a desktop notification; clicking one opens the window. The sign-in goes to the keychain (GNOME
 Keyring, or KDE's wallet with its Secret Service on). Without one, or with a KDE wallet that hasn't been set up

@@ -1038,7 +1038,7 @@ dependencies = [
 
 [[package]]
 name = "craftcloud"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "clap",
  "craftcloud-core",
@@ -1061,7 +1061,7 @@ dependencies = [
 
 [[package]]
 name = "craftcloud-admin"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "craftcloud-core",
  "env_logger",
@@ -1075,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "craftcloud-cli"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "ctrlc",
  "tempfile",
@@ -1083,7 +1083,7 @@ dependencies = [
 
 [[package]]
 name = "craftcloud-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "craft-dav",
  "craft-xml",
@@ -1098,7 +1098,7 @@ dependencies = [
 
 [[package]]
 name = "craftcloud-native"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "craft-settings",
  "craftcloud-core",
@@ -1119,7 +1119,7 @@ dependencies = [
 
 [[package]]
 name = "craftcloud-ui-egui"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "craftcloud-core",
  "egui",
@@ -1131,7 +1131,7 @@ dependencies = [
 
 [[package]]
 name = "craftcloud-web"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "craftcloud-core",
  "craftcloud-ui-egui",
@@ -6113,7 +6113,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "brotli",
  "flate2",
