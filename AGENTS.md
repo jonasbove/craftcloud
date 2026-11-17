@@ -297,7 +297,7 @@ README's Status section in step.
   the workflows never create labels, add only type, platform and area labels (and those two on issues), never
   remove one, and never re-add one a person removed.
 - One app id everywhere: `io.github.jonasbove.craftcloud` (window app id, desktop entry, icons, AppStream, Flatpak,
-  macOS bundle, start-at-login entries). `packaging/icons.sh` regenerates every packaging icon from the logo.
+  macOS bundle, start-at-login entries). `cargo xtask icons` regenerates every packaging icon from the logo.
 - Don't add or change CI in a feature or fix change. Moving the workflows to `storytold/craft-common-actions` is its
   own task.
 

@@ -45,7 +45,7 @@ Laid out like the ArtCraft Launcher:
 | `apps/craftcloud-cli` | `craftcloud.com` on Windows: a console program that runs `craftcloud.exe` (a GUI program) for a terminal and passes its output through ([CLI.md › Windows](CLI.md#windows)) |
 | `apps/craftcloud-web` | The web frontend, built with Trunk |
 | `apps/craftcloud-admin` | The image's settings service |
-| `xtask` | `cargo xtask ci`: fmt, clippy, tests and the wasm build. `fetch-apps` downloads, checks (sha256), unpacks and precompresses the Craft web builds for the `-apps` image; `bump-apps` updates their pins in `apps.toml` |
+| `xtask` | `cargo xtask ci`: fmt, clippy, tests and the wasm build. `fetch-apps` downloads, checks (sha256), unpacks and precompresses the Craft web builds for the `-apps` image; `bump-apps` updates their pins in `apps.toml`; `icons` renders the packaging icons from the logo |
 
 ## Sync
 

@@ -6,6 +6,7 @@ mod bump_apps;
 mod e2e;
 mod e2e_web;
 mod fetch_apps;
+mod icons;
 mod manifest;
 
 use std::path::{Path, PathBuf};
@@ -24,6 +25,9 @@ commands:
   bump-apps [--check] [--app <id>]...
          update apps.toml's pins (version, asset, sha256) from each app's latest GitHub release;
          --check only reports, and fails if a pin is out of date
+  icons [SOURCE.png]
+         render the packaging icons (Linux hicolor PNGs, the Windows .ico, the macOS .icns) from
+         the logo, design/assets/logo/craftcloud-logo-1024.png by default
   e2e-sync  two scratch clients sync a fresh folder on CRAFTCLOUD_TEST_SERVER and check each other
             (create, edit, rename, move, delete to the trash, conflicts, …): docs/TESTING.md
   e2e-web   the web frontend in headless Chromium against a fresh server (setup, sign-in, upload, share
@@ -38,6 +42,7 @@ fn main() -> ExitCode {
         Some("web") => cmd_web(),
         Some("fetch-apps") => fetch_apps::cmd(args.get(1..).unwrap_or_default()),
         Some("bump-apps") => bump_apps::cmd(args.get(1..).unwrap_or_default()),
+        Some("icons") => icons::cmd(args.get(1..).unwrap_or_default(), &root()),
         Some("e2e-sync") => e2e::cmd(args.get(1..).unwrap_or_default(), &root()),
         Some("e2e-web") => e2e_web::cmd(args.get(1..).unwrap_or_default(), &root()),
         Some("-h" | "--help" | "help") | None => {

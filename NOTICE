@@ -16,7 +16,7 @@ This project includes or adapts work from:
 
 - The CraftCloud mark (the mackerel; design/assets/logo/) is CraftCloud's own. The packaging icons
   (packaging/linux/icons/, packaging/macos/craftcloud.icns, apps/craftcloud/assets/craftcloud.ico)
-  are rendered from it by packaging/icons.sh.
+  are rendered from it by `cargo xtask icons` (xtask/src/icons.rs).
 
 - The Craft apps' names, taglines, colours and icons (https://github.com/storytold), MIT OR Apache-2.0,
   shown in the app catalog of the -apps image. The icons in crates/ui-egui/assets/app-icons/ (built
