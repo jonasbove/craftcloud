@@ -6,6 +6,12 @@
   login runs, showed the window a moment after it started. The window library shows every window itself once it
   has drawn its first frame, whatever was asked. Now a window that isn't meant to be seen hides itself again in the
   same step, so a start at login shows nothing; the tray's Show CraftCloud brings the window up as before.
+- **Linux on X11: a start at login stays in the tray too.** In an X11 session (Xfce, GNOME on Xorg, KDE on X11)
+  `craftcloud --hidden` opened the window for the same reason as on Windows, and it now stays in the tray the same
+  way. On every system a hidden start keeps the window hidden only where there is a tray to come back from:
+  without a tray host (stock GNOME without the AppIndicator extension) or a tray icon, the window opens, since it
+  is then the only way to the client. A tray host that comes up more than three seconds after the client is too
+  late for that start.
 - **Windows: a window hidden in the tray uses next to no CPU.** With the window closed into the tray, CraftCloud
   kept drawing a frame of it every second (on Windows the window library can't tell a hidden window from a shown
   one), which on a computer drawing in software kept a core busy. A hidden window now draws nothing; the frame

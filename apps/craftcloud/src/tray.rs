@@ -467,6 +467,21 @@ impl TrayHandle {
         Self { actions, ready, inner: Inner::Thread(updates), last: None, shown_at: Instant::now(), busy_since: None }
     }
 
+    /// A tray that is up and shown, with no icon behind it (tests of what the window does).
+    #[cfg(test)]
+    pub fn up_for_tests() -> Self {
+        let (_, actions) = channel();
+        let (updates, _) = channel::<TrayView>();
+        Self {
+            actions,
+            ready: Arc::new(AtomicBool::new(true)),
+            inner: Inner::Thread(updates),
+            last: None,
+            shown_at: Instant::now(),
+            busy_since: None,
+        }
+    }
+
     /// Makes the tray on this thread (macOS and Windows, inside the window's event loop).
     pub fn local(wake: impl Fn() + Send + Sync + 'static) -> Option<Self> {
         let (tx, actions) = channel();

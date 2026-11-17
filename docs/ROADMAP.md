@@ -2,10 +2,10 @@
 
 **Stage: early alpha** · version 0.1.1 (fixes for 0.1.0, the first release: a published image and desktop builds)
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (the desktop client checked on KDE
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-17 · **Change:** minor (the desktop client checked on KDE
 > Plasma, GNOME and Xfce, in [LINUX-DESKTOPS.md](LINUX-DESKTOPS.md); on Linux the tray counts as up only while a tray
 > host is on the bus, so closing the window on stock GNOME quits instead of leaving an invisible client; a start at
-> login stays in the tray on Windows; an offline desktop window waits before asking who is signed in again; the
+> login stays in the tray on Windows and X11, and opens the window where there is no tray; an offline desktop window waits before asking who is signed in again; the
 > release checklist and the Release workflow check the Craft web app pins; an idle window uses next to no CPU; trace
 > logs leave out HTTP bodies and headers; a cloud file listed without an ETag is never trashed)
 
@@ -105,6 +105,14 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-17: Desktop (Linux, X11): a start at login (`--hidden`) stays in the tray, and opens the window where
+  there is no tray. X11 had the Windows problem below (eframe shows the window after its first frame), and the
+  same rule hides it again; once unmapped, X11 sends no new `VisibilityNotify`, so eframe still takes the window
+  as drawn and the rule (and `ui` drawing nothing) holds in every pass. On top, a window that starts hidden counts
+  as shown when there is no tray to come back from (no tray host, or no icon on Windows and macOS), so it opens
+  instead of leaving a client nobody can reach, and every hidden start gives the Linux tray up to 3 s before the
+  window is made, so that is known. `a_hidden_start_stays_hidden_where_there_is_a_tray` fails without it; the
+  Windows test now runs with a tray up. Found in a headless Xfce session while checking the desktops.
 - 2026-11-16: Desktop, Windows: a start at login stays in the tray (#9), and a window hidden in the tray draws
   nothing. eframe creates every window hidden and calls `set_visible(true)` itself after the first frame it paints
   (`post_rendering`), whatever `with_visible(false)` asked; and winit's Windows backend never reports occlusion, so
