@@ -438,9 +438,13 @@ struct Window<'a> {
 
 impl<'a> Window<'a> {
     /// `saved` is the window's place and size from the last run, as eframe keeps it. A window
-    /// that can't hide (Wayland) is shown whatever was asked: it opens after all.
+    /// that can't hide (Wayland) is shown whatever was asked: it opens after all. So is one with
+    /// no tray to come back from (no tray host, or no icon): the window is then the client.
     fn new(client: &'a mut Client, cjk: Option<Receiver<Option<FontFile>>>, shown: bool, saved: Option<String>) -> Self {
-        let shown = shown || !client.can_hide;
+        if !shown && client.can_hide && !client.has_tray() {
+            log::info!("started hidden, but there is no tray to come back from: the window opens");
+        }
+        let shown = shown || !client.can_hide || !client.has_tray();
         Self { client, quitting: false, cjk, shown, placed: false, geometry: geometry::Keeper::new(saved) }
     }
 
@@ -737,10 +741,12 @@ fn main() -> ExitCode {
     let notes = notify::Notifier::spawn(move || show(control::ToWindow::Show));
     let mut client = Client { desktop, tray, keychain, can_hide, closed_to_tray: false, shows, notes, wake: Arc::clone(&wake) };
 
-    // Started hidden at login where a window can't hide: stay in the tray without mapping one, so
-    // no window flashes up. The tray gets a moment to come up; without it the window opens after all.
-    let tray_up = hidden && !can_hide && client.tray.as_ref().is_some_and(|t| wait_until(Duration::from_secs(3), || t.is_ready()));
-    let mut window = !tray_up;
+    // A hidden start gives the tray a moment to come up, so the window knows whether it can stay
+    // hidden (X11) or must open (no tray host). Where a window can't hide (Wayland), a tray that
+    // is up means no window is made at all, so none flashes up. Windows and macOS make their
+    // tray with the window (`TrayHandle::local`), so there is nothing to wait for here.
+    let tray_up = hidden && client.tray.as_ref().is_some_and(|t| wait_until(Duration::from_secs(3), || t.is_ready()));
+    let mut window = !(tray_up && !can_hide);
     // One pass per window: where a window can't hide, closing it ends the pass and the client
     // carries on in the tray until the window is asked for again.
     loop {
@@ -865,9 +871,23 @@ mod tests {
     /// and runs `logic` and `ui`, then paints. Returns the viewport commands and how many shapes
     /// `ui` drew.
     fn windows_pass(window: &mut Window<'_>) -> (Vec<egui::ViewportCommand>, usize) {
+        let info = ViewportInfo { minimized: Some(false), ..ViewportInfo::default() };
+        assert_eq!(info.visible(), None, "eframe reads this as drawn and runs `ui` too");
+        drawn_pass(window, info)
+    }
+
+    /// The same on X11 once the window has been mapped: not minimised and not covered
+    /// (`VisibilityNotify`). Unmapping it sends no new one, so a hidden window still reads so.
+    fn x11_pass(window: &mut Window<'_>) -> (Vec<egui::ViewportCommand>, usize) {
+        let info = ViewportInfo { minimized: Some(false), occluded: Some(false), ..ViewportInfo::default() };
+        assert_eq!(info.visible(), Some(true), "eframe draws this window");
+        drawn_pass(window, info)
+    }
+
+    /// A pass that runs `logic` and `ui`, as eframe does for a window it takes as drawn.
+    fn drawn_pass(window: &mut Window<'_>, info: ViewportInfo) -> (Vec<egui::ViewportCommand>, usize) {
         let mut input = egui::RawInput::default();
-        input.viewports.insert(ViewportId::ROOT, ViewportInfo { minimized: Some(false), ..ViewportInfo::default() });
-        assert_eq!(input.viewports[&ViewportId::ROOT].visible(), None, "eframe reads this as drawn and runs `ui` too");
+        input.viewports.insert(ViewportId::ROOT, info);
         let mut frame = eframe::Frame::_new_kittest();
         let out = egui::Context::default().run_ui(input, |ui| {
             eframe::App::logic(window, ui.ctx(), &mut frame);
@@ -889,6 +909,7 @@ mod tests {
     fn a_hidden_start_keeps_the_window_hidden_and_draws_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let (mut client, show) = client(dir.path());
+        client.tray = Some(crate::tray::TrayHandle::up_for_tests());
         let mut window = Window::new(&mut client, None, false, None);
         let (commands, shapes) = windows_pass(&mut window);
         assert_eq!(commands, [egui::ViewportCommand::Visible(false)], "hidden again, after eframe's own show");
@@ -908,6 +929,36 @@ mod tests {
         let (commands, shapes) = windows_pass(&mut window);
         assert!(commands.is_empty(), "{commands:?}");
         assert!(shapes > 0);
+    }
+
+    /// A start at login on X11 (seen under Xfce) opened the window: eframe shows it after its
+    /// first frame (as on Windows, #9), and X11 then says the window is shown. The same rule hides
+    /// it again, but only where there is a tray to come back from: with no tray host (stock GNOME
+    /// on Xorg) a hidden window would be a client nobody can reach, so the window opens.
+    #[test]
+    fn a_hidden_start_stays_hidden_where_there_is_a_tray() {
+        let hide = egui::ViewportCommand::Visible(false);
+        let dir = tempfile::tempdir().unwrap();
+        let (mut client, show) = client(dir.path());
+        client.tray = Some(crate::tray::TrayHandle::up_for_tests());
+        let mut window = Window::new(&mut client, None, false, None);
+        assert_eq!(x11_pass(&mut window), (vec![hide.clone()], 0), "hidden again on the first pass, and nothing drawn");
+        assert_eq!(x11_pass(&mut window), (vec![hide.clone()], 0), "unmapped, X11 still says shown: hidden again");
+        show.send(ToWindow::Show).unwrap();
+        assert_eq!(x11_pass(&mut window).0, SHOW, "the tray's Show still brings it back");
+        assert!(x11_pass(&mut window).0.is_empty());
+
+        // Started normally: left alone.
+        let mut window = Window::new(&mut client, None, true, None);
+        assert!(x11_pass(&mut window).0.is_empty());
+
+        // No tray host: the window is the client, and opens.
+        client.tray = None;
+        let mut window = Window::new(&mut client, None, false, None);
+        let (commands, shapes) = x11_pass(&mut window);
+        assert!(commands.is_empty(), "{commands:?}");
+        assert!(shapes > 0, "drawn as a shown window");
+        assert!(window.shown, "counted as shown, so it ticks and closes as a shown window");
     }
 
     #[test]
