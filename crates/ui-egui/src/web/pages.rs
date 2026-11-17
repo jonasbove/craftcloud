@@ -17,7 +17,7 @@ impl<B: Backend> WebApp<B> {
     }
 
     fn version(&self) -> String {
-        self.config.as_ref().map_or_else(|| "0.1.0".to_owned(), |c| c.version.clone())
+        shown_version(self.config.as_ref().map(|c| c.version.as_str()))
     }
 
     pub(super) fn home_ui(&mut self, ui: &mut Ui, area: egui::Rect) {
@@ -273,4 +273,21 @@ fn lower_day(when: &str) -> String {
         }
     }
     when.to_owned()
+}
+
+/// The version a page shows: the server's, or this build's own while the server's config hasn't come in (never a
+/// fixed number, which went stale with every release).
+fn shown_version(server: Option<&str>) -> String {
+    server.map_or_else(|| env!("CARGO_PKG_VERSION").to_owned(), str::to_owned)
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::shown_version;
+
+    #[test]
+    fn without_the_servers_config_a_page_shows_this_builds_version() {
+        assert_eq!(shown_version(None), env!("CARGO_PKG_VERSION"));
+        assert_eq!(shown_version(Some("9.9.9")), "9.9.9");
+    }
 }

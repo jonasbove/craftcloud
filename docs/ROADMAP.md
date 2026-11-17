@@ -103,6 +103,9 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-17: Web: the version a page shows before the server's config arrives is this build's own, not a fixed
+  "0.1.0"; the README's screenshots (`docs/screenshots/`) are rendered again by `web_shots`, which now takes the
+  version from the build too, so they say 0.2.0.
 - 2026-11-16: Version 0.2.0: share links, the public share page and version history on the web, single sign-on
   setup in plain words, Linux notifications, the Windows fixes found testing 0.1.1, the server hardening, a Home
   Manager module, the sync fixes the property tests and the engine tests found (upgrade all devices together), and

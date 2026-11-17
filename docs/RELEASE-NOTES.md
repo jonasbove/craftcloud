@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Web: the right version before the server answers.** A page drawn before the server's settings arrived showed
+  version 0.1.0; it now shows the version it was built as.
+
 ## 0.2.0
 
 **Update the server and every desktop client, all of them together:** three sync fixes change how a client decides
