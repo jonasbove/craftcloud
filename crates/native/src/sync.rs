@@ -19,8 +19,9 @@ use std::time::{Duration, Instant, SystemTime};
 use craftcloud_core::ServerUrl;
 use craftcloud_core::api::auth::Tokens;
 use craftcloud_core::api::dav::{self, Write};
-use craftcloud_core::names::{self, Platform};
+use craftcloud_core::names::{self, NameRules, Platform};
 use craftcloud_core::reconcile::{self, Action, Known, LocalFile, RemoteFile, State, Tree};
+use craftcloud_core::storage::{Mode, mode_for};
 use craftcloud_core::sync::{
     ActivityEvent, ActivityKind, ConflictCopy, FileStatus, Keep, LeftOut, SyncPlan, SyncProgress, SyncState, folder_stats, in_plan, local_relative,
 };
@@ -438,6 +439,12 @@ impl<S: RemoteStorage> Engine<S> {
     fn try_cycle(&mut self, confirm: Deletes) -> Result<(), Stop> {
         let root = self.root();
         let state_path = self.state_path();
+        // What this server allows (docs/WEBDAV-STORAGE.md § 7.3): every plan below is cut to it.
+        // OxiCloud's capabilities give two-way sync, which cuts nothing.
+        let mode = mode_for(self.storage.capabilities());
+        if mode == Mode::Refused {
+            return Err(Stop::Error("this server can't show when a file changed, so nothing is synced with it".into()));
+        }
         // Never made here: a folder that's gone was moved, deleted, or is on a drive that isn't
         // plugged in, and making it again would download everything into the wrong place. (Setup
         // makes it, and so does the person's "Download everything again".)
@@ -461,7 +468,7 @@ impl<S: RemoteStorage> Engine<S> {
         self.report_unsynced(&root);
         let refused_names = self.screen_names(&mut state, &mut local, &mut remote);
         // Whatever the sync leaves alone is left alone on both sides and in the state (T-063).
-        drop_skipped(&mut state, &mut local, &mut remote, self.platform);
+        drop_skipped(&mut state, &mut local, &mut remote, self.platform, &self.storage.capabilities().names);
         if same_bytes_again(&root, &mut state, &local) {
             save_saved(&state_path, &Saved { server: self.plan.server.clone(), state: state.clone(), kept_conflicts: kept_conflicts.clone() })?;
         }
@@ -487,8 +494,8 @@ impl<S: RemoteStorage> Engine<S> {
                 if confirm == Deletes::Discard {
                     // What was deleted in the cloud comes back from its trash, keeping its id (and
                     // with it links, stars and versions); only what isn't there any more is
-                    // uploaded again (T-038).
-                    let restored = self.restore_trashed(&all)?;
+                    // uploaded again (T-038). Only both ways: a restore writes to the cloud.
+                    let restored = if mode == Mode::TwoWay { self.restore_trashed(&all)? } else { BTreeSet::new() };
                     if !restored.is_empty() {
                         let again = self.scan_remote()?;
                         for path in &restored {
@@ -522,6 +529,8 @@ impl<S: RemoteStorage> Engine<S> {
                 }
             }
         };
+        // Cut to the mode before the holds below, which only take actions out.
+        let actions = reconcile::restrict(actions, mode);
         let actions = self.hold_moved_out(&root, &state, actions);
         let actions = self.hold_no_room(&local, actions);
         let actions = hold_unreadable(actions, &unreadable);
@@ -621,7 +630,9 @@ impl<S: RemoteStorage> Engine<S> {
         kept_conflicts: &BTreeSet<String>,
         unreadable: &[Unreadable],
     ) -> Result<(), Stop> {
-        for m in reconcile::folder_moves(state, local, remote) {
+        // Download only: a folder moved here is never moved in the cloud.
+        let mode = mode_for(self.storage.capabilities());
+        for m in reconcile::restrict_folder_moves(reconcile::folder_moves(state, local, remote), mode) {
             if self.no_folder_move.contains(&(m.from.clone(), m.to.clone())) {
                 continue;
             }
@@ -773,7 +784,8 @@ impl<S: RemoteStorage> Engine<S> {
     /// Leaves out the names the cloud or this computer can't have, and the cloud names this
     /// computer can't keep apart (see the free [`screen_names`]), and says so once.
     fn screen_names(&mut self, state: &mut State, local: &mut Tree<LocalFile>, remote: &mut Tree<RemoteFile>) -> Vec<String> {
-        let (notes, left_out) = screen_names(state, local, remote, self.platform, &mut self.reported);
+        let rules = self.storage.capabilities().names;
+        let (notes, left_out) = screen_names(state, local, remote, self.platform, &rules, &mut self.reported);
         if !notes.is_empty() {
             self.update(|p| notes.into_iter().for_each(|e| p.record(e)));
         }
@@ -967,6 +979,22 @@ impl<S: RemoteStorage> Engine<S> {
                 }
                 Ok(None)
             }
+            Action::TrashLocal(p) => {
+                let src = local_path(p)?;
+                // Only the version last synced: a change made here meanwhile stays where it is
+                // (the next pass sees it as a file of this computer's).
+                if !replaceable(&src, state.files.get(p)) {
+                    return Ok(None);
+                }
+                if std::fs::symlink_metadata(&src).is_ok() {
+                    let rel = local_relative(p).ok_or_else(|| format!("{p}: name not allowed here"))?;
+                    let dest = local_trash_place(root, &rel, &self.device)?;
+                    std::fs::rename(&src, &dest).map_err(|e| e.to_string())?;
+                }
+                state.files.remove(p);
+                Ok(Some((ActivityKind::Deleted, format!("deleted in the cloud; kept here in {}/trash", dav::CRAFTCLOUD_DIR))))
+            }
+            Action::LocalConflict(p) => self.conflict_with(root, p, state, false),
         }
     }
 
@@ -1157,6 +1185,11 @@ impl<S: RemoteStorage> Engine<S> {
 
     /// Both sides have the file and it isn't known to be the same: compare, and keep both if not.
     fn conflict(&mut self, root: &Path, path: &str, state: &mut State) -> Result<Option<Done>, String> {
+        self.conflict_with(root, path, state, true)
+    }
+
+    /// [`Self::conflict`]; with `upload` false (download only), the conflict copy stays here.
+    fn conflict_with(&mut self, root: &Path, path: &str, state: &mut State, upload: bool) -> Result<Option<Done>, String> {
         let local = local_relative(path).map(|rel| root.join(rel)).ok_or("name not allowed")?;
         let (part, etag, _) = self.fetch(path, &local, None)?;
         if same_bytes(&part.0, &local) {
@@ -1174,9 +1207,12 @@ impl<S: RemoteStorage> Engine<S> {
         std::fs::rename(&part.0, &local).map_err(|e| e.to_string())?;
         let meta = local_meta(&local).ok_or("the file disappeared")?;
         state.files.insert(path.to_owned(), Known { etag, size: meta.size, mtime: meta.mtime, hash: None });
+        let name = copy.rsplit('/').next().unwrap_or(&copy).to_owned();
+        if !upload {
+            return Ok(Some((ActivityKind::Conflict, format!("yours kept here as {name}, not uploaded"))));
+        }
         // The local edit goes up under its new name; a failure here is retried as a new file.
         let _ = self.put(root, &copy, &Write::Create, state);
-        let name = copy.rsplit('/').next().unwrap_or(&copy).to_owned();
         Ok(Some((ActivityKind::Conflict, format!("yours kept as {name}"))))
     }
 }
@@ -1400,6 +1436,7 @@ fn is_delete(action: &Action) -> bool {
         action,
         Action::DeleteRemote { .. }
             | Action::DeleteLocal(_)
+            | Action::TrashLocal(_)
             | Action::DeleteRemoteFolder { .. }
             | Action::RemoveRemoteFolder(_)
             | Action::RemoveLocalFolder(_)
@@ -1415,7 +1452,7 @@ fn split_deletes(actions: Vec<Action>) -> (Vec<Action>, Vec<String>) {
     let mut rest = Vec::new();
     for action in actions {
         match action {
-            Action::DeleteRemote { path, .. } | Action::DeleteLocal(path) => held.push(path),
+            Action::DeleteRemote { path, .. } | Action::DeleteLocal(path) | Action::TrashLocal(path) => held.push(path),
             Action::DeleteRemoteFolder { files, .. } => held.extend(files.into_iter().map(|(p, _)| p)),
             a if is_delete(&a) => {}
             a if action_paths(&a).iter().any(|p| removed.iter().any(|r| within(r, p))) => {}
@@ -1492,7 +1529,9 @@ fn action_path(action: &Action) -> &str {
         | Action::LocalClash(p)
         | Action::Forget(p)
         | Action::RemoveRemoteFolder(p)
-        | Action::RemoveLocalFolder(p) => p,
+        | Action::RemoveLocalFolder(p)
+        | Action::TrashLocal(p)
+        | Action::LocalConflict(p) => p,
     }
 }
 
@@ -1501,9 +1540,10 @@ fn describe(action: &Action) -> String {
         Action::MakeRemoteFolder(f) | Action::MakeLocalFolder(f) => format!("create folder {f}"),
         Action::UploadNew(p) | Action::UploadChange { path: p, .. } => format!("upload {p}"),
         Action::Download(p) => format!("download {p}"),
-        Action::Conflict(p) => format!("compare {p}"),
+        Action::Conflict(p) | Action::LocalConflict(p) => format!("compare {p}"),
         Action::DeleteRemote { path, .. } => format!("delete {path} in the cloud"),
         Action::DeleteLocal(p) => format!("remove {p}"),
+        Action::TrashLocal(p) => format!("move {p} to the trash here"),
         Action::DeleteRemoteFolder { path, .. } => format!("delete folder {path} in the cloud"),
         Action::MoveRemote { from, to, .. } => format!("move {from} to {to} in the cloud"),
         Action::MoveLocal { from, to } => format!("move {from} to {to}"),
@@ -1538,10 +1578,11 @@ fn screen_names(
     local: &mut Tree<LocalFile>,
     remote: &mut Tree<RemoteFile>,
     platform: Platform,
+    server: &NameRules,
     reported: &mut BTreeSet<String>,
 ) -> (Vec<ActivityEvent>, Vec<String>) {
     let mut notes = Vec::new();
-    let left_out = leave_out_names(state, local, remote, platform);
+    let left_out = leave_out_names(state, local, remote, platform, server);
     for (place, (why, file)) in &left_out {
         let key = match file {
             Some(f) => format!("refused:{place}:{}:{}", f.size, f.mtime),
@@ -1565,11 +1606,11 @@ fn screen_names(
 }
 
 /// The top-most place in a path the cloud can't take or this computer can't have, with why.
-fn name_trouble(path: &str, platform: Platform) -> Option<(&str, String)> {
+fn name_trouble<'a>(path: &'a str, platform: Platform, server: &NameRules) -> Option<(&'a str, String)> {
     let mut end = 0;
     for segment in path.split('/') {
         end += segment.len();
-        if let Some(why) = names::server_refuses(segment) {
+        if let Some(why) = server.refuses(segment) {
             return Some((&path[..end], why.to_owned()));
         }
         if let Some(why) = names::local_refuses(segment, platform) {
@@ -1588,10 +1629,11 @@ fn leave_out_names(
     local: &mut Tree<LocalFile>,
     remote: &mut Tree<RemoteFile>,
     platform: Platform,
+    server: &NameRules,
 ) -> BTreeMap<String, (String, Option<LocalFile>)> {
     let mut out: BTreeMap<String, (String, Option<LocalFile>)> = BTreeMap::new();
     for path in local.files.keys().chain(&local.folders).chain(remote.files.keys()).chain(&remote.folders) {
-        if let Some((place, why)) = name_trouble(path, platform) {
+        if let Some((place, why)) = name_trouble(path, platform, server) {
             out.entry(place.to_owned()).or_insert((why, local.files.get(place).copied()));
         }
     }
@@ -1633,13 +1675,13 @@ fn mid_save(unreadable: &[Unreadable]) -> Vec<String> {
 /// Takes every path the sync leaves alone (`names::skipped`) out of the state and both sides, so
 /// nothing is planned for it: no download, no upload, no delete either way (T-063). A file that
 /// another device uploads under such a name stays in the cloud; one here stays here.
-fn drop_skipped(state: &mut State, local: &mut Tree<LocalFile>, remote: &mut Tree<RemoteFile>, platform: Platform) {
-    state.files.retain(|p, _| !names::skipped(p, true, platform));
-    state.folders.retain(|p| !names::skipped(p, false, platform));
-    local.files.retain(|p, _| !names::skipped(p, true, platform));
-    local.folders.retain(|p| !names::skipped(p, false, platform));
-    remote.files.retain(|p, _| !names::skipped(p, true, platform));
-    remote.folders.retain(|p| !names::skipped(p, false, platform));
+fn drop_skipped(state: &mut State, local: &mut Tree<LocalFile>, remote: &mut Tree<RemoteFile>, platform: Platform, server: &NameRules) {
+    state.files.retain(|p, _| !names::skipped(p, true, platform, server));
+    state.folders.retain(|p| !names::skipped(p, false, platform, server));
+    local.files.retain(|p, _| !names::skipped(p, true, platform, server));
+    local.folders.retain(|p| !names::skipped(p, false, platform, server));
+    remote.files.retain(|p, _| !names::skipped(p, true, platform, server));
+    remote.folders.retain(|p| !names::skipped(p, false, platform, server));
 }
 
 /// The local side. Symlinks are not followed. A file written in the last two seconds counts as
@@ -1767,6 +1809,28 @@ fn hold_unreadable(actions: Vec<Action>, unreadable: &[Unreadable]) -> Vec<Actio
     actions.into_iter().filter(|a| !action_paths(a).iter().any(|p| unreadable.iter().any(|u| within(&u.path, p)))).collect()
 }
 
+/// A free place for a file deleted in the cloud, in the local folder's own trash (download only,
+/// docs/WEBDAV-STORAGE.md § 9): `.craftcloud/trash/<time>-<device>/<path>`, the client trash's
+/// layout (§ 8), with the time in UTC (`20261117T143205Z`); its folders made. The sync never looks
+/// inside `.craftcloud/`, so the file is never uploaded, downloaded over or taken as deleted from
+/// there.
+fn local_trash_place(root: &Path, rel: &Path, device: &str) -> Result<PathBuf, String> {
+    let trash = root.join(dav::CRAFTCLOUD_DIR).join("trash");
+    let device: String = device.chars().map(|c| if matches!(c, '/' | '\\') { '-' } else { c }).collect();
+    let stamp = format!("{}-{device}", jiff::Timestamp::now().strftime("%Y%m%dT%H%M%SZ"));
+    for n in 1..1000 {
+        let dir = if n == 1 { trash.join(&stamp) } else { trash.join(format!("{stamp}-{n}")) };
+        let dest = dir.join(rel);
+        if std::fs::symlink_metadata(&dest).is_err() {
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            return Ok(dest);
+        }
+    }
+    Err("no free place in the trash here".into())
+}
+
 /// Whether a download may replace the local file at `dest`: it isn't there, or it is still the
 /// version last synced (same size and time). Anything else is a change made here (#36).
 fn replaceable(dest: &Path, known: Option<&Known>) -> bool {
@@ -1886,7 +1950,7 @@ fn save_saved(path: &Path, saved: &Saved) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{bring_back, leave_out_names, part_name, range_continues, resume_from, same_bytes_again, split_deletes};
-    use craftcloud_core::names::Platform;
+    use craftcloud_core::names::{NameRules, Platform};
 
     #[test]
     fn a_name_the_cloud_cant_take_is_never_deleted_from_it() {
@@ -1902,7 +1966,7 @@ mod tests {
         let mut remote: Tree<RemoteFile> = Tree::default();
         remote.files.insert(path.clone(), RemoteFile { etag: "e".into(), size: 1 });
         remote.folders.insert("Docs".into());
-        let out = leave_out_names(&mut state, &mut local, &mut remote, Platform::current());
+        let out = leave_out_names(&mut state, &mut local, &mut remote, Platform::current(), &NameRules::oxicloud());
         assert_eq!(out.keys().collect::<Vec<_>>(), [&path]);
         let plan = reconcile::reconcile(&state, &local, &remote, false).unwrap();
         assert!(!plan.iter().any(super::is_delete), "{plan:?}");
@@ -2294,7 +2358,7 @@ mod tests {
         for folder in ["t37", ".craftcloud", ".craftcloud/versions", ".craftcloud/versions/a"] {
             remote.folders.insert(folder.into());
         }
-        drop_skipped(&mut state, &mut local, &mut remote, Platform::current());
+        drop_skipped(&mut state, &mut local, &mut remote, Platform::current(), &NameRules::oxicloud());
         let actions = reconcile::reconcile(&state, &local, &remote, false).unwrap();
         for a in &actions {
             for p in super::action_paths(a) {
@@ -2340,7 +2404,7 @@ mod tests {
                 remote.folders.extend(["smoke-2".to_owned(), "smoke-2/projekt.tmp".to_owned()]);
                 remote.files.insert("smoke-2/projekt.tmp/inside.txt".into(), RemoteFile { etag: "\"e1\"".into(), size: meta.size });
                 let (mut local, unreadable) = scan_local(root, &plan, &state, &BTreeSet::new());
-                drop_skipped(&mut state, &mut local, &mut remote, Platform::current());
+                drop_skipped(&mut state, &mut local, &mut remote, Platform::current(), &NameRules::oxicloud());
                 let actions = hold_unreadable(reconcile::reconcile(&state, &local, &remote, false).unwrap(), &unreadable);
                 assert!(actions.is_empty(), "{side}, pass {pass}: {actions:?}");
                 assert!(local.folders.contains("smoke-2/projekt.tmp"), "{side}, pass {pass}: the folder is seen here");
@@ -2428,8 +2492,8 @@ mod tests {
         platform: Platform,
         reported: &mut BTreeSet<String>,
     ) -> (Vec<Action>, Vec<craftcloud_core::sync::ActivityEvent>) {
-        let (notes, _) = super::screen_names(state, local, remote, platform, reported);
-        drop_skipped(state, local, remote, platform);
+        let (notes, _) = super::screen_names(state, local, remote, platform, &NameRules::oxicloud(), reported);
+        drop_skipped(state, local, remote, platform, &NameRules::oxicloud());
         (reconcile::reconcile(state, local, remote, false).unwrap(), notes)
     }
 

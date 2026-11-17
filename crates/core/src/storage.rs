@@ -5,9 +5,12 @@
 //! existing name, ETags that change with every write, a trash and earlier versions. Which of them
 //! a server has is a [`Capabilities`]. For OxiCloud they are filled in by hand
 //! ([`Capabilities::oxicloud`]) from what the engine relies on today; the check on connect that
-//! measures them on other servers, and the sync modes that follow from them, come later (§ 14).
+//! measures them on other servers comes later (§ 14). What the sync may do with a server follows
+//! from them: [`mode_for`] gives its [`Mode`], and `reconcile::restrict` cuts every plan to it.
 //!
 //! No I/O here: the drivers that talk to a server are in `craftcloud-native` (`storage`).
+
+use crate::names::NameRules;
 
 /// Whether a server keeps a write guard it was sent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -117,6 +120,8 @@ pub struct Capabilities {
     pub trash: Trash,
     pub versions: Versions,
     pub quota: Quota,
+    /// The names it can't take (left alone by the one skip rule, `names::skipped`).
+    pub names: NameRules,
 }
 
 impl Capabilities {
@@ -154,13 +159,62 @@ impl Capabilities {
             // `.craftcloud/versions/<path>/<time>`, newest 5.
             versions: Versions::Client,
             quota: Quota::OxiCloudRest,
+            // A backslash, a control character, more than 255 bytes: never sent.
+            names: NameRules::oxicloud(),
         }
     }
 }
 
+/// What the sync may do with a server (docs/WEBDAV-STORAGE.md § 7.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Mode {
+    /// Both ways: every write guarded, every delete into a trash, the old bytes kept before an
+    /// overwrite.
+    TwoWay,
+    /// Cloud to this computer only: nothing is written, moved or deleted on the server; a change
+    /// made here stays here, and a file deleted in the cloud goes into `.craftcloud/trash/` in the
+    /// local folder, never away for good (§ 9).
+    DownloadOnly,
+    /// Nothing at all: the server can't show that a file changed.
+    Refused,
+}
+
+/// The mode a server's capabilities allow (docs/WEBDAV-STORAGE.md § 7.3). Never two-way unless
+/// every guard two-way sync relies on holds: a server that ignores a guard gets download only,
+/// never a weaker two-way sync.
+///
+/// - Two-way needs a create that refuses to overwrite and an overwrite that refuses a stale ETag
+///   (`If-None-Match: *`, `If-Match`), a move that never lands on an existing name, ETags that
+///   change on every write, a trash (the server's, or the client's through `MOVE`), and somewhere
+///   to keep the bytes an overwrite replaces (the server's versions, or the client's through
+///   `COPY`; Q2: without either, download only).
+/// - Download only needs listings with ETags and `GET`; refused when an ETag doesn't change with
+///   the bytes, since then no change in the cloud could be seen.
+/// - A guarded delete the server ignores doesn't lower the mode: deletes are checked by a fresh
+///   listing, then moved into a trash (§ 8).
+///
+/// Listings that fail, files without ETags or a check on connect that didn't finish are refused
+/// too, but they leave no capabilities to decide from: the check on connect refuses them itself
+/// (§ 7.5).
+pub const fn mode_for(c: &Capabilities) -> Mode {
+    if !c.etag_changes_on_write {
+        return Mode::Refused;
+    }
+    let guarded = matches!(c.create_if_absent, Guard::Honoured) && matches!(c.replace_if_match, Guard::Honoured) && c.move_no_overwrite;
+    // Every server has a trash: its own, or the client's, a `MOVE` into `.craftcloud/trash/`
+    // with `Overwrite: F`, which the guarded move above makes safe. So `c.trash` gates nothing.
+    let versions = match c.versions {
+        Versions::Server => true,
+        Versions::Client => c.copy,
+        Versions::None => false,
+    };
+    if guarded && versions { Mode::TwoWay } else { Mode::DownloadOnly }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Capabilities, DeleteGuard, FolderEtags, Guard, MissingParent, Quota, Trash, Versions};
+    use super::{Capabilities, DeleteGuard, FolderEtags, Guard, MissingParent, Mode, Quota, Trash, Versions, mode_for};
+    use crate::names::NameRules;
 
     #[test]
     fn oxicloud_is_what_the_engine_relies_on() {
@@ -172,5 +226,57 @@ mod tests {
         assert_eq!(c.missing_parent, MissingParent::Conflict);
         assert!(!c.depth_infinity && !c.file_ids && !c.case_insensitive && c.checksums.is_none());
         assert_eq!((c.trash, c.versions, c.quota), (Trash::Server, Versions::Client, Quota::OxiCloudRest));
+        assert_eq!(c.names, NameRules::oxicloud());
+    }
+
+    /// OxiCloud syncs both ways, exactly as before the modes.
+    #[test]
+    fn oxicloud_syncs_both_ways() {
+        assert_eq!(mode_for(&Capabilities::oxicloud()), Mode::TwoWay);
+    }
+
+    /// Each thing two-way sync relies on, taken away alone, leaves download only; an ETag that
+    /// doesn't change with the bytes leaves nothing.
+    #[test]
+    fn a_missing_guard_leaves_download_only() {
+        let base = Capabilities::oxicloud;
+        let lowered: [(&str, Capabilities); 6] = [
+            ("create ignores If-None-Match", Capabilities { create_if_absent: Guard::Ignored, ..base() }),
+            ("overwrite ignores If-Match", Capabilities { replace_if_match: Guard::Ignored, ..base() }),
+            ("move overwrites", Capabilities { move_no_overwrite: false, ..base() }),
+            ("no versions at all (Q2)", Capabilities { versions: Versions::None, ..base() }),
+            ("client versions without COPY (Q2)", Capabilities { copy: false, ..base() }),
+            (
+                "everything ignored",
+                Capabilities { create_if_absent: Guard::Ignored, replace_if_match: Guard::Ignored, move_no_overwrite: false, ..base() },
+            ),
+        ];
+        for (why, c) in lowered {
+            assert_eq!(mode_for(&c), Mode::DownloadOnly, "{why}");
+        }
+        assert_eq!(mode_for(&Capabilities { etag_changes_on_write: false, ..base() }), Mode::Refused);
+        let none = Capabilities { etag_changes_on_write: false, create_if_absent: Guard::Ignored, versions: Versions::None, ..base() };
+        assert_eq!(mode_for(&none), Mode::Refused, "refused wins over download only");
+    }
+
+    /// What doesn't gate the mode: a delete guard (deletes are checked, then trashed), the
+    /// server's own versions without `COPY`, a client trash, ids, checksums, folder ETags.
+    #[test]
+    fn what_two_way_doesnt_need() {
+        let base = Capabilities::oxicloud;
+        let still: [(&str, Capabilities); 9] = [
+            ("delete ignores If-Match", Capabilities { delete_if_match: DeleteGuard::Ignored, ..base() }),
+            ("delete honours If-Match", Capabilities { delete_if_match: DeleteGuard::Honoured, ..base() }),
+            ("server versions, no COPY", Capabilities { versions: Versions::Server, copy: false, ..base() }),
+            ("client trash", Capabilities { trash: Trash::Client, ..base() }),
+            ("file ids", Capabilities { file_ids: true, ..base() }),
+            ("a move changes the ETag", Capabilities { etag_kept_by_move: false, ..base() }),
+            ("a PUT's ETag isn't listed", Capabilities { put_etag_is_listed: false, ..base() }),
+            ("folder ETags follow", Capabilities { folder_etags: FolderEtags::Follow, ..base() }),
+            ("case-insensitive", Capabilities { case_insensitive: true, ..base() }),
+        ];
+        for (why, c) in still {
+            assert_eq!(mode_for(&c), Mode::TwoWay, "{why}");
+        }
     }
 }

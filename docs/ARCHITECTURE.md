@@ -55,7 +55,10 @@ The desktop client keeps chosen server folders in a local folder, two ways.
   the server's `/device` page, and the client stores the tokens in the system keychain.
 - **Each cycle** lists every server folder over WebDAV (one level at a time, four at once; folder ETags are not
   reliable, so none are skipped) and the local folder, and `core::reconcile` decides per file: upload, download,
-  delete, or conflict.
+  delete, or conflict. `core::reconcile::restrict` then cuts that plan to the mode the server's capabilities allow
+  (`core::storage::mode_for`): two-way (OxiCloud; nothing is cut), download only (nothing is written, moved or
+  deleted in the cloud; a file deleted there goes into `.craftcloud/trash/` in the local folder), or refused
+  (nothing). See [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 7.3 and § 9.
 - **Writes are guarded:** a new file is created with `If-None-Match: *`, an overwrite carries `If-Match: <etag>`, so a
   change made elsewhere in between is never lost.
 - **Before an overwrite**, the old version is copied to `.craftcloud/versions/<path>/<time>`; the last 5 are kept, and

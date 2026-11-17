@@ -61,14 +61,16 @@ pub fn ignored_always(name: &str) -> bool {
 ///
 /// On Windows it also leaves alone every path with a name Windows can't have
 /// ([`local_refuses`]), file or folder: such a name can't be made here, so it is never
-/// downloaded, and must never read as "deleted here" either.
-pub fn skipped(path: &str, is_file: bool, platform: Platform) -> bool {
+/// downloaded, and must never read as "deleted here" either. And on every computer it leaves
+/// alone a path with a name the server can't take (`server`, that server's [`NameRules`]): such
+/// a name never reaches the server, and one another client put there is never taken as deleted.
+pub fn skipped(path: &str, is_file: bool, platform: Platform, server: &NameRules) -> bool {
     let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let Some((last, parents)) = parts.split_last() else { return false };
     parents.iter().any(|s| ignored_always(s))
         || ignored_always(last)
         || (is_file && temporary(last))
-        || parts.iter().any(|s| local_refuses(s, platform).is_some())
+        || parts.iter().any(|s| local_refuses(s, platform).is_some() || server.refuses(s).is_some())
 }
 
 /// Why this computer can't have this name (one path segment), if it can't: on Windows, whatever
@@ -160,23 +162,54 @@ pub fn temporary(name: &str) -> bool {
         || name.ends_with('~')
 }
 
-/// Why the server can't take this name (one path segment), if it can't. OxiCloud 0.10.0 answers
-/// a backslash in a name badly: such a name must never reach it.
-pub fn server_refuses(name: &str) -> Option<&'static str> {
-    if name.contains('\\') {
-        Some("the cloud can't take a backslash (\\) in a name; rename it to sync it")
-    } else if name.chars().any(char::is_control) {
-        Some("the cloud can't take a control character in a name; rename it to sync it")
-    } else if name.len() > 255 {
-        Some("the name is longer than the cloud allows (255 bytes); shorten it to sync it")
-    } else {
-        None
+/// The names a server can't take, as data (docs/WEBDAV-STORAGE.md § 7.3): part of what a server
+/// guarantees the sync (`storage::Capabilities::names`), so that what the sync leaves alone for a
+/// server goes through the one rule, [`skipped`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NameRules {
+    /// A backslash in a name is refused (or mishandled, which is worse).
+    pub no_backslash: bool,
+    /// A control character in a name is refused.
+    pub no_control: bool,
+    /// Names (one path segment) longer than 255 bytes of UTF-8 are refused.
+    pub max_255_bytes: bool,
+}
+
+impl NameRules {
+    /// OxiCloud 0.10.0: it answers a backslash in a name badly, so such a name must never reach
+    /// it; control characters and names longer than 255 bytes are refused.
+    pub const fn oxicloud() -> Self {
+        Self { no_backslash: true, no_control: true, max_255_bytes: true }
+    }
+
+    /// Why this server can't take this name (one path segment), if it can't.
+    pub fn refuses(&self, name: &str) -> Option<&'static str> {
+        if self.no_backslash && name.contains('\\') {
+            Some("the cloud can't take a backslash (\\) in a name; rename it to sync it")
+        } else if self.no_control && name.chars().any(char::is_control) {
+            Some("the cloud can't take a control character in a name; rename it to sync it")
+        } else if self.max_255_bytes && name.len() > 255 {
+            Some("the name is longer than the cloud allows (255 bytes); shorten it to sync it")
+        } else {
+            None
+        }
+    }
+
+    /// The first segment of a cloud path this server can't take, with why.
+    pub fn refused_in<'a>(&self, path: &'a str) -> Option<(&'a str, &'static str)> {
+        path.split('/').find_map(|segment| self.refuses(segment).map(|why| (segment, why)))
     }
 }
 
-/// The first segment of a cloud path the server can't take, with why.
+/// Why OxiCloud, CraftCloud's own server, can't take this name (one path segment), if it can't
+/// ([`NameRules::oxicloud`]).
+pub fn server_refuses(name: &str) -> Option<&'static str> {
+    NameRules::oxicloud().refuses(name)
+}
+
+/// The first segment of a cloud path OxiCloud can't take, with why.
 pub fn refused_in(path: &str) -> Option<(&str, &'static str)> {
-    path.split('/').find_map(|segment| server_refuses(segment).map(|why| (segment, why)))
+    NameRules::oxicloud().refused_in(path)
 }
 
 /// Why Windows can't have this name (one path segment), if it can't. A Windows client leaves it
@@ -229,7 +262,27 @@ mod tests {
         assert_eq!(restored_name("Photos/2026.11", true, 1), "Photos/2026.11 (restored)");
     }
 
-    use super::{ignored, refused_in, server_refuses, windows_trouble};
+    use super::{NameRules, Platform, ignored, refused_in, server_refuses, skipped, windows_trouble};
+
+    const OXI: NameRules = NameRules::oxicloud();
+
+    /// A name the server can't take is left alone by the one skip rule, file or folder, with
+    /// everything in it; a server whose rules allow it syncs it.
+    #[test]
+    fn names_the_server_cant_take_are_skipped() {
+        for platform in [Platform::Other, Platform::Windows] {
+            for path in ["Docs/back\\slash.txt", "Docs/a\\b/c.txt", "bell\u{7}.txt"] {
+                assert!(skipped(path, true, platform, &OXI), "{path}");
+            }
+            let long = format!("Docs/{}", "x".repeat(256));
+            assert!(skipped(&long, true, platform, &OXI) && skipped(&long, false, platform, &OXI));
+            assert!(!skipped("Docs/notes.md", true, platform, &OXI));
+        }
+        let anything = NameRules { no_backslash: false, no_control: false, max_255_bytes: false };
+        assert!(!skipped("Docs/back\\slash.txt", true, Platform::Other, &anything));
+        assert_eq!(anything.refused_in("Docs/a\\b/c.txt"), None);
+        assert_eq!(OXI.refused_in("Docs/a\\b/c.txt"), refused_in("Docs/a\\b/c.txt"));
+    }
 
     #[test]
     fn lock_swap_and_temporary_files_never_sync() {
@@ -296,18 +349,18 @@ mod tests {
             let name = path.rsplit('/').next().unwrap_or(path);
             assert!(windows_trouble(name).is_some(), "{path}: warned about");
             assert_eq!(local_refuses(name, Platform::Windows), windows_trouble(name), "{path}: the same rule on Windows");
-            assert!(skipped(path, true, Platform::Windows), "{path}: left alone on Windows");
-            assert!(!skipped(path, true, Platform::Other), "{path}: synced elsewhere");
+            assert!(skipped(path, true, Platform::Windows, &OXI), "{path}: left alone on Windows");
+            assert!(!skipped(path, true, Platform::Other, &OXI), "{path}: synced elsewhere");
             assert_eq!(local_refuses(name, Platform::Other), None, "{path}");
         }
         // A folder Windows can't have holds everything in it, on Windows only.
-        assert!(skipped("Weird/trailing./inside.txt", true, Platform::Windows));
-        assert!(skipped("Weird/what?", false, Platform::Windows));
-        assert!(!skipped("Weird/trailing./inside.txt", true, Platform::Other));
+        assert!(skipped("Weird/trailing./inside.txt", true, Platform::Windows, &OXI));
+        assert!(skipped("Weird/what?", false, Platform::Windows, &OXI));
+        assert!(!skipped("Weird/trailing./inside.txt", true, Platform::Other, &OXI));
         assert_eq!(local_refused_in("Weird/trailing./inside.txt", Platform::Windows).map(|(p, _)| p), Some("Weird/trailing."));
         assert_eq!(local_refused_in("Weird/trailing./inside.txt", Platform::Other), None);
         for fine in ["Weird/trailing", "Weird/CONFIG.sys", "Weird/notes.md"] {
-            assert!(!skipped(fine, true, Platform::Windows), "{fine}");
+            assert!(!skipped(fine, true, Platform::Windows, &OXI), "{fine}");
         }
     }
 

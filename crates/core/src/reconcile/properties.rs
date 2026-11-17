@@ -21,9 +21,16 @@ use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 
 use super::{
-    Action, Known, LocalFile, RemoteFile, State, Tree, folder_moves, free_conflict_name, local_changed, move_state, move_tree, reconcile, same_etag,
+    Action, Known, LocalFile, RemoteFile, State, Tree, folder_moves, free_conflict_name, local_changed, move_state, move_tree, reconcile, restrict,
+    restrict_folder_moves, same_etag,
 };
-use crate::names::{Platform, skipped};
+use crate::names::{NameRules, Platform};
+use crate::storage::Mode;
+
+/// The one skip rule, with OxiCloud's name rules.
+fn skipped(path: &str, is_file: bool, platform: Platform) -> bool {
+    crate::names::skipped(path, is_file, platform, &NameRules::oxicloud())
+}
 
 fn config() -> ProptestConfig {
     let cases = std::env::var("PROPTEST_CASES").ok().and_then(|c| c.parse().ok()).unwrap_or(256);
@@ -37,9 +44,10 @@ const DIRS: &[&str] = &["", "A", "B", "A/S"];
 const NAMES: &[&str] = &["a.txt", "b.md", "S"];
 
 /// The same, with names the sync leaves alone: its own folder, temporary and system files, a
-/// folder whose name only looks temporary (it syncs), and names Windows can't have.
-const SKIP_DIRS: &[&str] = &["", "A", ".craftcloud", "T.tmp", "trail.", "A/q?"];
-const SKIP_NAMES: &[&str] = &["a.txt", "x.tmp", "~$y.docx", ".DS_Store", "con.txt", "w:z.md", "notes~"];
+/// folder whose name only looks temporary (it syncs), names Windows can't have, and names the
+/// server can't take.
+const SKIP_DIRS: &[&str] = &["", "A", ".craftcloud", "T.tmp", "trail.", "A/q?", "b\\s"];
+const SKIP_NAMES: &[&str] = &["a.txt", "x.tmp", "~$y.docx", ".DS_Store", "con.txt", "w:z.md", "notes~", "b\\s.txt"];
 
 fn join(dir: &str, name: &str) -> String {
     if dir.is_empty() { name.to_owned() } else { format!("{dir}/{name}") }
@@ -212,7 +220,7 @@ fn case(unique: bool) -> impl Strategy<Value = Case> {
 fn deletes(plan: &[Action]) -> usize {
     plan.iter()
         .map(|a| match a {
-            Action::DeleteLocal(_) | Action::DeleteRemote { .. } => 1,
+            Action::DeleteLocal(_) | Action::DeleteRemote { .. } | Action::TrashLocal(_) => 1,
             Action::DeleteRemoteFolder { files, .. } => files.len(),
             _ => 0,
         })
@@ -229,7 +237,9 @@ fn file_paths(action: &Action) -> Vec<&str> {
         | Action::DeleteRemote { path: p, .. }
         | Action::DeleteLocal(p)
         | Action::LocalClash(p)
-        | Action::Forget(p) => vec![p],
+        | Action::Forget(p)
+        | Action::TrashLocal(p)
+        | Action::LocalConflict(p) => vec![p],
         Action::MoveRemote { from, to, .. } | Action::MoveLocal { from, to } => vec![from, to],
         Action::DeleteRemoteFolder { files, .. } => files.iter().map(|(p, _)| p.as_str()).collect(),
         Action::MakeRemoteFolder(_) | Action::MakeLocalFolder(_) | Action::RemoveRemoteFolder(_) | Action::RemoveLocalFolder(_) => vec![],
@@ -589,6 +599,10 @@ struct Sim {
     local_folders: BTreeSet<String>,
     remote: BTreeMap<String, (RemoteFile, u32)>,
     remote_folders: BTreeSet<String>,
+    /// What download only moved into the local `.craftcloud/trash/`, by path.
+    trash: BTreeMap<String, u32>,
+    /// What the server allows: each cycle's plan is cut to it.
+    mode: Mode,
     tick: i64,
     /// Actions that ran but did nothing they were planned for (a folder removal that found it not
     /// empty, a guarded delete or move that found something else there, a conflict copy that
@@ -605,6 +619,8 @@ impl Sim {
             local_folders: c.local.folders.clone(),
             remote: c.remote.files.iter().map(|(p, r)| (p.clone(), (r.clone(), c.remote_bytes.get(p).copied().unwrap_or_default()))).collect(),
             remote_folders: c.remote.folders.clone(),
+            trash: BTreeMap::new(),
+            mode: Mode::TwoWay,
             tick: 1000,
             noops: Vec::new(),
         }
@@ -662,7 +678,13 @@ impl Sim {
         Ok(())
     }
 
+    /// A conflict: compared, the local file set aside as a copy, the cloud's version brought
+    /// down. Two-way, the copy is uploaded; download only (`upload` false), it stays here.
     fn conflict(&mut self, path: &str) -> Result<(), String> {
+        self.conflict_with(path, true)
+    }
+
+    fn conflict_with(&mut self, path: &str, upload: bool) -> Result<(), String> {
         let (Some((_, mine)), Some((r, theirs))) = (self.local.get(path).copied(), self.remote.get(path).cloned()) else {
             return Err(format!("conflict {path}: not on both sides"));
         };
@@ -679,7 +701,7 @@ impl Sim {
         self.local.insert(path.to_owned(), (LocalFile { size: r.size, mtime }, theirs));
         self.state.files.insert(path.to_owned(), Known { etag: r.etag, size: r.size, mtime, hash: None });
         // A failed upload of the copy is retried as a new file next cycle.
-        if !matches!(self.put(&copy, None), Ok(true)) {
+        if upload && !matches!(self.put(&copy, None), Ok(true)) {
             self.noops.push(format!("conflict {path}: the copy {copy} didn't go up"));
         }
         Ok(())
@@ -807,6 +829,12 @@ impl Sim {
                     self.noops.push(format!("remove folder {f} here: not empty"));
                 }
             }
+            Action::TrashLocal(p) => {
+                let Some((_, bytes)) = self.local.remove(p) else { return Err(format!("trash {p} here: not here")) };
+                self.trash.insert(p.clone(), bytes);
+                self.state.files.remove(p);
+            }
+            Action::LocalConflict(p) => self.conflict_with(p, false)?,
         }
         Ok(())
     }
@@ -816,6 +844,7 @@ impl Sim {
     fn cycle(&mut self, errors: &mut Vec<String>) -> Result<Vec<Action>, TestCaseError> {
         let (local, remote) = self.trees();
         let plan = reconcile(&self.state, &local, &remote, true).map_err(|e| TestCaseError::fail(format!("{e:?}")))?;
+        let plan = restrict(plan, self.mode);
         for a in &plan {
             if let Err(e) = self.apply(a) {
                 errors.push(e);
@@ -986,5 +1015,144 @@ proptest! {
         if let Some(rel) = crate::sync::local_relative_on(&p, Platform::current()) {
             prop_assert!(rel.components().all(|c| matches!(c, std::path::Component::Normal(_))), "{p} → {rel:?}");
         }
+    }
+}
+
+/// What a download-only plan must never hold: anything that writes, moves or deletes on the
+/// server (a conflict uploads its copy), or that deletes a file here for good.
+fn writes_to_the_cloud_or_deletes_here(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::MakeRemoteFolder(_)
+            | Action::UploadNew(_)
+            | Action::UploadChange { .. }
+            | Action::Conflict(_)
+            | Action::DeleteRemote { .. }
+            | Action::DeleteRemoteFolder { .. }
+            | Action::MoveRemote { .. }
+            | Action::RemoveRemoteFolder(_)
+            | Action::DeleteLocal(_)
+    )
+}
+
+proptest! {
+    #![proptest_config(config())]
+
+    /// Two-way, the plan is cut by nothing (OxiCloud's plans are exactly what they were); refused,
+    /// nothing is left, folder moves included.
+    #[test]
+    fn two_way_is_the_plan_and_refused_is_nothing(c in case(false)) {
+        let plan = reconcile(&c.state, &c.local, &c.remote, true).map_err(|e| TestCaseError::fail(format!("{e:?}")))?;
+        prop_assert_eq!(&restrict(plan.clone(), Mode::TwoWay), &plan);
+        prop_assert!(restrict(plan, Mode::Refused).is_empty());
+        let moves = folder_moves(&c.state, &c.local, &c.remote);
+        prop_assert_eq!(&restrict_folder_moves(moves.clone(), Mode::TwoWay), &moves);
+        prop_assert!(restrict_folder_moves(moves, Mode::Refused).is_empty());
+    }
+
+    /// Download only (docs/WEBDAV-STORAGE.md § 9): nothing is uploaded, moved, made, removed or
+    /// trashed in the cloud, and nothing is deleted here for good. A file deleted in the cloud and
+    /// unchanged here is moved into the local trash, exactly where the two-way plan would delete
+    /// it; a file changed or new here is never trashed, downloaded over or moved onto. A folder
+    /// moved here is never moved in the cloud.
+    #[test]
+    fn download_only_never_writes_to_the_cloud(c in case(false)) {
+        let two_way = reconcile(&c.state, &c.local, &c.remote, true).map_err(|e| TestCaseError::fail(format!("{e:?}")))?;
+        let plan = restrict(two_way.clone(), Mode::DownloadOnly);
+        for a in &plan {
+            prop_assert!(!writes_to_the_cloud_or_deletes_here(a), "{a:?} in a download-only plan: {plan:?}");
+            prop_assert!(remote_writes(a).is_none(), "{a:?} writes to the cloud");
+        }
+        let trashed: BTreeSet<&str> = plan.iter().filter_map(|a| if let Action::TrashLocal(p) = a { Some(p.as_str()) } else { None }).collect();
+        let deleted: BTreeSet<&str> = two_way.iter().filter_map(|a| if let Action::DeleteLocal(p) = a { Some(p.as_str()) } else { None }).collect();
+        prop_assert_eq!(&trashed, &deleted);
+        for (p, l) in &c.local.files {
+            let changed_here = c.state.files.get(p).is_none_or(|k| local_changed(k, l));
+            if !changed_here {
+                continue;
+            }
+            for a in &plan {
+                let over = match a {
+                    Action::TrashLocal(x) | Action::Download(x) | Action::MoveLocal { to: x, .. } => x == p,
+                    _ => false,
+                };
+                prop_assert!(!over, "{a:?} over {p}, changed here: {plan:?}");
+            }
+        }
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for a in &plan {
+            for p in file_paths(a) {
+                prop_assert!(seen.insert(p), "{p} twice in the plan: {plan:?}");
+            }
+        }
+        for m in restrict_folder_moves(folder_moves(&c.state, &c.local, &c.remote), Mode::DownloadOnly) {
+            prop_assert!(m.side == super::Side::Remote, "{m:?} would move a folder in the cloud");
+        }
+    }
+
+    /// A file deleted in the cloud goes into the local trash only once the mass-delete hold has
+    /// let it: a plan past the limit is refused (nothing happens until the person says), and one
+    /// within it trashes no more than the limit.
+    #[test]
+    fn download_only_trashes_only_after_the_hold(c in case(false)) {
+        let limit = (c.state.files.len() / 2).max(5);
+        let all = reconcile(&c.state, &c.local, &c.remote, true).map_err(|e| TestCaseError::fail(format!("{e:?}")))?;
+        let trashes = |plan: &[Action]| plan.iter().filter(|a| matches!(a, Action::TrashLocal(_))).count();
+        match reconcile(&c.state, &c.local, &c.remote, false) {
+            Ok(plan) => {
+                let plan = restrict(plan, Mode::DownloadOnly);
+                prop_assert!(trashes(&plan) <= limit, "{} trashed, limit {}", trashes(&plan), limit);
+            }
+            Err(super::Refusal::TooManyDeletes { deletes: n, .. }) => {
+                prop_assert!(n >= trashes(&restrict(all, Mode::DownloadOnly)), "the hold counted {} deletes", n);
+            }
+        }
+    }
+
+    /// Download only, carried out cycle by cycle: the cloud never changes; the plans settle; every
+    /// change made here is still here (not in the trash); every cloud file is here; and a file
+    /// that was here is never gone (it is here, in the local trash, or was replaced by the cloud's
+    /// newer version of the file synced).
+    #[test]
+    fn download_only_cycles_keep_the_cloud_and_every_change_here(c in case(true)) {
+        let mut sim = Sim::new(&c);
+        sim.mode = Mode::DownloadOnly;
+        let cloud = (sim.remote.clone(), sim.remote_folders.clone());
+        let (mut plans, mut errors) = (Vec::new(), Vec::new());
+        let mut settled = false;
+        for _ in 0..5 {
+            let plan = sim.cycle(&mut errors)?;
+            prop_assert!(sim.remote == cloud.0 && sim.remote_folders == cloud.1, "the cloud changed: {plan:#?}");
+            if plan.is_empty() {
+                settled = true;
+                break;
+            }
+            plans.push(plan);
+        }
+        prop_assert!(settled, "still busy after 5 cycles: {plans:#?}\nerrors: {errors:#?}\n{sim:#?}");
+        prop_assert!(errors.is_empty(), "{errors:#?}\n{plans:#?}");
+        let here: BTreeSet<u32> = sim.local.values().map(|(_, b)| *b).collect();
+        let trash: BTreeSet<u32> = sim.trash.values().copied().collect();
+        for (p, b) in &c.local_bytes {
+            if *b >= 100 {
+                prop_assert!(here.contains(b), "a change made here ({p}, {b}) is gone: {plans:#?}");
+            }
+            let replaced = c.remote.files.get(p).is_some_and(|r| c.state.files.get(p).is_some_and(|k| r.etag != k.etag));
+            prop_assert!(replaced || here.contains(b) || trash.contains(b), "{p} ({b}) is gone: {plans:#?}");
+        }
+        for p in sim.remote.keys() {
+            prop_assert!(sim.local.contains_key(p), "{p} never came down: {plans:#?}");
+        }
+    }
+
+    /// A download-only plan works in one pass too: carried out once, nothing fails or finds it
+    /// can't do what it was planned for.
+    #[test]
+    fn a_download_only_plan_works_in_one_pass(c in any::<bool>().prop_flat_map(case)) {
+        let mut sim = Sim::new(&c);
+        sim.mode = Mode::DownloadOnly;
+        let mut errors = Vec::new();
+        let plan = sim.cycle(&mut errors)?;
+        prop_assert!(errors.is_empty() && sim.noops.is_empty(), "{plan:#?}\nerrors: {errors:#?}\nno-ops: {:#?}", sim.noops);
     }
 }

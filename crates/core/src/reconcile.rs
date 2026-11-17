@@ -17,10 +17,16 @@
 //!   The one exception: a file moved to where its own folder was, or into a folder in its own
 //!   place, which no single move can do.
 //! - Folders are created on whichever side lacks them, and removed only once empty.
+//!
+//! That plan is two-way. [`restrict`] then cuts it to what the server allows
+//! ([`crate::storage::Mode`]): unchanged for two-way sync, nothing written to the server for
+//! download only, nothing at all when the server is refused.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+
+use crate::storage::Mode;
 
 /// What was true for a file right after it was last synced.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,6 +126,14 @@ pub enum Action {
     RemoveRemoteFolder(String),
     /// Remove an empty local folder (deepest first).
     RemoveLocalFolder(String),
+    /// Download only ([`restrict`]): deleted in the cloud, unchanged here. The local file is
+    /// moved into `.craftcloud/trash/` in the local folder (never deleted for good: the server
+    /// may have no trash, and this may be the last copy) and the state forgets it.
+    TrashLocal(String),
+    /// Download only ([`restrict`]): changed on both sides, or new on both. Compared first; when
+    /// they differ, the local file is set aside as a conflict copy that stays here (it isn't
+    /// uploaded) and the cloud version comes down in its place.
+    LocalConflict(String),
 }
 
 /// Why a plan was not made.
@@ -467,6 +481,64 @@ fn group_folder_deletes(state: &State, local: &Tree<LocalFile>, remote: &Tree<Re
     out
 }
 
+/// The plan cut to what the server allows (docs/WEBDAV-STORAGE.md § 9).
+///
+/// - Two-way ([`Mode::TwoWay`]): the plan as it is.
+/// - Refused ([`Mode::Refused`]): nothing.
+/// - Download only ([`Mode::DownloadOnly`]): nothing that writes, moves or deletes on the server, and nothing
+///   that deletes a file here for good:
+///   - made, changed or new here (a folder to make, an upload, a removal there): left out; the
+///     change stays here as it is;
+///   - deleted in the cloud, unchanged here ([`Action::DeleteLocal`]): moved into the local
+///     `.craftcloud/trash/` ([`Action::TrashLocal`]); a plan past the mass-delete limit is
+///     refused before it gets here, so this comes only after the person's say;
+///   - changed on both sides ([`Action::Conflict`]): the local file is set aside here, never
+///     uploaded ([`Action::LocalConflict`]);
+///   - deleted, renamed or moved here (a cloud delete, a cloud folder to trash, a cloud move):
+///     the state forgets the synced file ([`Action::Forget`]), so the next plan downloads it
+///     again (the local folder mirrors the cloud), and a renamed file stays here under its new
+///     name as a file new here.
+///
+/// Downloads, local folders made or removed once empty, local renames that follow the cloud and
+/// files forgotten stay as they are.
+pub fn restrict(plan: Vec<Action>, mode: Mode) -> Vec<Action> {
+    match mode {
+        Mode::TwoWay => plan,
+        Mode::Refused => Vec::new(),
+        Mode::DownloadOnly => plan.into_iter().flat_map(download_only).collect(),
+    }
+}
+
+/// The folder moves ([`folder_moves`]) the server allows: all of them both ways; under download
+/// only the ones made in the cloud (a local rename to match), never one made here (a cloud
+/// `MOVE`); none when refused.
+pub fn restrict_folder_moves(moves: Vec<FolderMove>, mode: Mode) -> Vec<FolderMove> {
+    match mode {
+        Mode::TwoWay => moves,
+        Mode::DownloadOnly => moves.into_iter().filter(|m| m.side == Side::Remote).collect(),
+        Mode::Refused => Vec::new(),
+    }
+}
+
+/// One two-way action, cut to download only (see [`restrict`]).
+fn download_only(action: Action) -> Vec<Action> {
+    match action {
+        Action::MakeRemoteFolder(_) | Action::UploadNew(_) | Action::UploadChange { .. } | Action::RemoveRemoteFolder(_) => vec![],
+        Action::Conflict(p) => vec![Action::LocalConflict(p)],
+        Action::DeleteLocal(p) => vec![Action::TrashLocal(p)],
+        Action::DeleteRemote { path, .. } | Action::MoveRemote { from: path, .. } => vec![Action::Forget(path)],
+        Action::DeleteRemoteFolder { files, .. } => files.into_iter().map(|(p, _)| Action::Forget(p)).collect(),
+        keep @ (Action::MakeLocalFolder(_)
+        | Action::Download(_)
+        | Action::MoveLocal { .. }
+        | Action::LocalClash(_)
+        | Action::Forget(_)
+        | Action::RemoveLocalFolder(_)
+        | Action::TrashLocal(_)
+        | Action::LocalConflict(_)) => vec![keep],
+    }
+}
+
 /// Where a folder was renamed or moved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
@@ -597,7 +669,9 @@ fn action_path(action: &Action) -> &str {
         | Action::LocalClash(p)
         | Action::Forget(p)
         | Action::RemoveRemoteFolder(p)
-        | Action::RemoveLocalFolder(p) => p,
+        | Action::RemoveLocalFolder(p)
+        | Action::TrashLocal(p)
+        | Action::LocalConflict(p) => p,
     }
 }
 
