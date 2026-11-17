@@ -11,6 +11,7 @@ The layers, from the fastest to the slowest:
 | `apps/craftcloud/tests/cli_live.rs` | every command of the command line against a real server; in CI's `live` job too, before `live.rs` | a throwaway server (CI starts one) |
 | `cargo xtask e2e-sync` | two separate clients, the built `craftcloud` program, syncing through a server pass by pass: the smoke test before a release or after a sync change | any server, and an account to test with |
 | `cargo xtask e2e-web` | the web frontend the server serves, in headless Chromium: setup, sign-out and sign-in, an upload, a share link opened signed out, a device approval, the admin CSRF check | a fresh throwaway server, chromedriver and Chromium |
+| The Linux desktops, by hand | the desktop client under KDE Plasma, GNOME and Xfce in headless containers: the tray's registration, notifications, the keychain, `craftcloud://`, the autostart entry and the window; what ran, the results, and what needs a real login are in [LINUX-DESKTOPS.md](LINUX-DESKTOPS.md) | Docker, a throwaway server |
 
 How to start a throwaway server and run the live tests is in [CONTRIBUTING.md](../CONTRIBUTING.md). This page is
 about the last two, and about [measuring coverage](#coverage).
