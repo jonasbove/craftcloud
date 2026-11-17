@@ -132,7 +132,7 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   from the servers' answers measured on 2026-11-16 and a throwaway spike against Nextcloud, ownCloud and
   OpenCloud. The maintainer took its recommendations after a research pass; the work lands on `main` behind
   `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` until the 0.3.0 release. AGENTS.md's sign-in rule now reads "never the
-  account password"; the new wording of its delete rule waits for a decision.
+  account password", and its delete rule "a delete never removes a file for good", with how each server meets it.
 - 2026-11-17: Web: the version a page shows before the server's config arrives is this build's own, not a fixed
   "0.1.0"; the README's screenshots (`docs/screenshots/`) are rendered again by `web_shots`, which now takes the
   version from the build too, so they say 0.2.0.

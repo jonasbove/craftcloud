@@ -1,8 +1,8 @@
 # Any WebDAV server as the storage: design
 
 Status: **design, decisions taken** (milestone M9, planned for 0.3.0, on `main` behind an opt-in until the
-release); one decision pending, the wording of AGENTS.md's delete rule (section 16, Q12). Today the desktop client
-and the `craftcloud` command line sync only with CraftCloud's own server (OxiCloud).
+release; section 16). Today the desktop client and the `craftcloud` command line sync only with CraftCloud's own
+server (OxiCloud).
 This document says how they can sync with other WebDAV servers (Nextcloud, ownCloud, OpenCloud, a NAS …) without
 ever making the sync less safe. Which mode each server gets is measured, not promised: OpenCloud and
 `rclone serve webdav`, for example, get download only (section 16).
@@ -436,10 +436,9 @@ local side:
   skips gets its own "upgrade all devices together" line, as for OxiCloud.
 - **RELEASE-NOTES for 0.3.0** say: new server types (desktop and command line only); OxiCloud unchanged; on a new
   server type, every device syncing that account must run 0.3.0 or later.
-- **AGENTS.md's wording.** The sign-in line is amended in this change (Q11). The delete line ("WebDAV `DELETE` is
-  permanent; deletes go to the cloud's trash over REST") is written for OxiCloud; its rule stays (never a
-  permanent delete of the person's files). Its new wording is a decision pending (Q12); AGENTS.md is not changed
-  until it is taken.
+- **AGENTS.md's wording.** Both lines written for OxiCloud are amended in this change: the sign-in line (Q11) and
+  the delete line (Q12), which now says how each server meets the rule (never a permanent delete of the person's
+  files; a folder as one item).
 - **A folder another client syncs.** If the chosen local folder holds another sync client's database
   (`.sync_*.db`, `.owncloudsync.log`, `.csync_journal.db`), the client refuses it: two engines on one folder fight.
 
@@ -543,8 +542,8 @@ on.
 
 ## 16. Decisions
 
-The maintainer took the recommendations below after a research pass confirmed them, and answered Q10. One
-decision is pending: Q12, the wording of AGENTS.md's delete rule.
+The maintainer took the recommendations below after a research pass confirmed them, and answered Q10 and Q12. No
+decision is pending.
 
 | # | Question | Decision | Why, and the evidence |
 |---|---|---|---|
@@ -559,7 +558,7 @@ decision is pending: Q12, the wording of AGENTS.md's delete rule.
 | Q9 | **SHA1 besides SHA-256** in the sync state | **Not now** | Not needed without the OpenCloud workaround (Q1). For later: ocdav accepts an `OC-Checksum` header on upload, a check by the server that the bytes arrived whole |
 | Q10 | **Where the work lands** | **On `main`**, one shippable pull request at a time, the new server kinds hidden and refused without an explicit opt-in until the 0.3.0 release pull request turns them on (below) | Pull requests 1 to 3 rewrite `crates/native/src/sync.rs`; on a long-lived branch every 0.2.x sync fix landing meanwhile would have to be merged by hand into moved code. The opt-in keeps a 0.2.x hotfix tagged from `main` from shipping `--kind webdav` early |
 | Q11 | **AGENTS.md said the client never sees a password** | **Amended in this change** to: "The client never asks for or stores your account password: it signs in through the server's browser sign-in, or with an app password you make on the server." (modelled on Nextcloud's public Login Flow docs) | It is already true of today's client (device flow only), and it binds the pull requests that follow |
-| Q12 | **AGENTS.md's "WebDAV `DELETE` is permanent" rule** is written for OxiCloud only | **Pending the maintainer.** Proposed wording: "A delete never removes a file for good: it goes to the server's own trash (OxiCloud: over REST; Nextcloud and ownCloud: their WebDAV DELETE, which the check on connect confirms lands in the trash), or to `.craftcloud/trash/` where the server has none." | It changes a non-negotiable, so it is decided on its own, not folded into Q11. AGENTS.md keeps today's wording until then; the generic driver (pull request 4) needs it settled first |
+| Q12 | **AGENTS.md's "WebDAV `DELETE` is permanent" rule** was written for OxiCloud only | **Amended in this change** to: "A delete never removes a file for good: it goes to the server's own trash (OxiCloud: over REST; Nextcloud and ownCloud: their WebDAV `DELETE`, which the check on connect confirms lands in the trash), or to `.craftcloud/trash/` where the server has none. A folder goes as one item, so a restore brings it back whole." | It changes a non-negotiable, so it was decided on its own, not folded into Q11. The rule's meaning stays (never a permanent delete of the person's files; a folder as one item); the wording now says how each server meets it |
 
 ### The opt-in until 0.3.0 (Q10)
 

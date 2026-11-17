@@ -131,8 +131,9 @@ has the map.
   - **One rule for what the sync skips** (`core::names::ignored`, CraftCloud's own `.craftcloud/`, names the cloud
     can't take), applied to the local scan, the cloud listing and the saved state alike. A name the sync leaves
     alone is never downloaded, uploaded or taken as deleted.
-  - **WebDAV `DELETE` is permanent** (and recursive on a folder). Deletes go to the cloud's trash over REST, a folder
-    as one item, so a restore brings it back whole.
+  - **A delete never removes a file for good:** it goes to the server's own trash (OxiCloud: over REST; Nextcloud
+    and ownCloud: their WebDAV `DELETE`, which the check on connect confirms lands in the trash), or to
+    `.craftcloud/trash/` where the server has none. A folder goes as one item, so a restore brings it back whole.
   - **Never trash a cloud folder** unless a fresh listing of it says it is empty (or everything in it is unchanged).
     A folder whose listing failed is unknown.
   - **Writes are guarded:** create with `If-None-Match: *`, overwrite with `If-Match: <etag>`; a 412 is a change made
