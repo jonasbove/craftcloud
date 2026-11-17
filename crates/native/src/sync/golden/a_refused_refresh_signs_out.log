@@ -1,0 +1,7 @@
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+POST /api/auth/refresh | content-type: application/json | body: "{\"refresh_token\":\"r1\"}"
+state: SignedOut
+saved folders: {}
+== end
+cloud folders: []

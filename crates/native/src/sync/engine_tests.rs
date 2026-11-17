@@ -16,6 +16,7 @@ use craftcloud_core::sync::{ActivityEvent, ActivityKind, SyncPlan, SyncState};
 use super::{Deletes, Engine, Saved, local_meta, save_saved, synced_state};
 use crate::fake_server::{FakeServer, Reply, Seen, listing};
 use crate::session::Session;
+use crate::storage::oxicloud::OxiCloud;
 
 fn plan(server: &str, root: &Path, excluded: &[&str]) -> SyncPlan {
     SyncPlan {
@@ -28,20 +29,19 @@ fn plan(server: &str, root: &Path, excluded: &[&str]) -> SyncPlan {
 }
 
 /// An engine on `server` syncing `root`, as `sync::start_with` builds it but on this thread.
-fn engine(server: ServerUrl, root: &Path, excluded: &[&str]) -> Engine {
+pub(super) fn engine(server: ServerUrl, root: &Path, excluded: &[&str]) -> Engine {
     let session = Session::new(server.clone(), Tokens { access_token: "a1".into(), refresh_token: "r1".into() }, Box::new(|_| {}));
     Engine {
         plan: plan(server.as_str(), root, excluded),
-        session,
+        cancel: Arc::clone(&session.cancel),
+        storage: OxiCloud::new(session),
         device: "Laptop".into(),
         progress: Arc::default(),
         waker: Arc::new(|| {}),
         paused: false,
         settled: BTreeSet::new(),
-        ids: BTreeMap::new(),
         reported: BTreeSet::new(),
         no_room: BTreeMap::new(),
-        recounted: None,
         refused: BTreeMap::new(),
         no_folder_move: BTreeSet::new(),
         platform: Platform::current(),
@@ -153,7 +153,7 @@ fn rest(r: &Seen) -> Option<Reply> {
 /// An engine on `server` that knows the `Docs` folder's REST id.
 fn docs_engine(server: &FakeServer, root: &Path) -> Engine {
     let mut engine = engine(server.server(), root, &[]);
-    engine.ids.insert("Docs".into(), "docs1".into());
+    engine.storage.ids.insert("Docs".into(), "docs1".into());
     engine
 }
 
@@ -402,6 +402,6 @@ fn a_token_that_runs_out_mid_scan_is_refreshed_once() {
     let tree = engine.scan_remote().unwrap();
     assert_eq!(tree.files.keys().collect::<Vec<_>>(), ["F1/x.txt", "F2/x.txt", "F3/x.txt", "F4/x.txt", "F5/x.txt"]);
     assert_eq!(server.count("POST", "/api/auth/refresh"), 1, "{:?}", server.seen());
-    assert_eq!(engine.session.tokens.access_token, "a2");
-    assert!(!engine.session.signed_out);
+    assert_eq!(engine.storage.session.tokens.access_token, "a2");
+    assert!(!engine.storage.session.signed_out);
 }

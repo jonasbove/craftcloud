@@ -1,0 +1,56 @@
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Docs/Sub/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Empty/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+MKCOL /webdav/Local/ | authorization: Bearer a1
+MKCOL /webdav/Local/Deep/ | authorization: Bearer a1
+GET /webdav/Docs/Sub/b.txt | authorization: Bearer a1
+GET /webdav/Docs/a.txt | authorization: Bearer a1
+PUT /webdav/Local/Deep/c.txt | authorization: Bearer a1 | if-none-match: * | body: "sea"
+PUT /webdav/mine.txt | authorization: Bearer a1 | if-none-match: * | body: "mine"
+GET /webdav/top.txt | authorization: Bearer a1
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+activity: Down "Docs/Sub/b.txt" Some(3) 
+activity: Down "Docs/a.txt" Some(3) 
+activity: Up "Local/Deep/c.txt" Some(3) 
+activity: Up "mine.txt" Some(4) 
+activity: Down "top.txt" Some(3) 
+state: UpToDate
+saved: Docs/Sub/b.txt "e3" 3
+saved: Docs/a.txt "e2" 3
+saved: Local/Deep/c.txt "n1" 3
+saved: mine.txt "n2" 4
+saved: top.txt "e1" 3
+saved folders: {"Docs", "Docs/Sub", "Empty", "Local", "Local/Deep"}
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Docs/Sub/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Empty/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Local/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Local/Deep/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+state: UpToDate
+saved: Docs/Sub/b.txt "e3" 3
+saved: Docs/a.txt "e2" 3
+saved: Local/Deep/c.txt "n1" 3
+saved: mine.txt "n2" 4
+saved: top.txt "e1" 3
+saved folders: {"Docs", "Docs/Sub", "Empty", "Local", "Local/Deep"}
+== end
+local: Docs/ ""
+local: Docs/Sub/ ""
+local: Docs/Sub/b.txt "bee"
+local: Docs/a.txt "abc"
+local: Empty/ ""
+local: Local/ ""
+local: Local/Deep/ ""
+local: Local/Deep/c.txt "sea"
+local: mine.txt "mine"
+local: top.txt "top"
+cloud: Docs/Sub/b.txt e3 "bee"
+cloud: Docs/a.txt e2 "abc"
+cloud: Local/Deep/c.txt n1 "sea"
+cloud: mine.txt n2 "mine"
+cloud: top.txt e1 "top"
+cloud folders: ["Docs", "Docs/Sub", "Empty", "Local", "Local/Deep"]

@@ -1,0 +1,13 @@
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+GET /webdav/Docs/big.bin | authorization: Bearer a1 | range: bytes=4-
+activity: Down "Docs/big.bin" Some(10) resumed at 4 bytes
+state: UpToDate
+saved: Docs/big.bin "e1" 10
+saved folders: {"Docs"}
+== end
+local: Docs/ ""
+local: Docs/big.bin "0123456789"
+cloud: Docs/big.bin e1 "0123456789"
+cloud folders: ["Docs"]

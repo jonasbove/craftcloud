@@ -1,0 +1,47 @@
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Pics/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+MKCOL /webdav/New/ | authorization: Bearer a1
+MOVE /webdav/Old/ | authorization: Bearer a1 | destination: http://SERVER/webdav/New/Inner/ | overwrite: F
+MKCOL /webdav/.craftcloud/ | authorization: Bearer a1
+MKCOL /webdav/.craftcloud/versions/ | authorization: Bearer a1
+MKCOL /webdav/.craftcloud/versions/New/ | authorization: Bearer a1
+MOVE /webdav/.craftcloud/versions/Old/ | authorization: Bearer a1 | destination: http://SERVER/webdav/.craftcloud/versions/New/Inner/ | overwrite: F
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+MOVE /webdav/Docs/a.txt | authorization: Bearer a1 | destination: http://SERVER/webdav/Docs/b.txt | overwrite: F
+MKCOL /webdav/.craftcloud/ | authorization: Bearer a1
+MKCOL /webdav/.craftcloud/versions/ | authorization: Bearer a1
+MKCOL /webdav/.craftcloud/versions/Docs/ | authorization: Bearer a1
+MOVE /webdav/.craftcloud/versions/Docs/a.txt/ | authorization: Bearer a1 | destination: http://SERVER/webdav/.craftcloud/versions/Docs/b.txt/ | overwrite: F
+activity: Moved "New/Inner" None folder, from Old
+activity: Moved "Docs/b.txt" Some(3) from Docs/a.txt
+activity: Moved "Pics/renamed there.png" Some(3) moved in the cloud, from Pics/photo.png
+state: UpToDate
+saved: Docs/b.txt "e1" 3
+saved: New/Inner/x.txt "e2" 1
+saved: Pics/renamed there.png "e3" 3
+saved: keep1.txt "k1" 1
+saved: keep2.txt "k2" 1
+saved: keep3.txt "k3" 1
+saved folders: {"Docs", "New", "New/Inner", "Pics"}
+== end
+local: Docs/ ""
+local: Docs/b.txt "abc"
+local: New/ ""
+local: New/Inner/ ""
+local: New/Inner/x.txt "x"
+local: Pics/ ""
+local: Pics/renamed there.png "png"
+local: keep1.txt "1"
+local: keep2.txt "2"
+local: keep3.txt "3"
+cloud: .craftcloud/versions/Docs/b.txt/<STAMP> v1 "ab"
+cloud: Docs/b.txt e1 "abc"
+cloud: New/Inner/x.txt e2 "x"
+cloud: Pics/renamed there.png e3 "png"
+cloud: keep1.txt k1 "1"
+cloud: keep2.txt k2 "2"
+cloud: keep3.txt k3 "3"
+cloud folders: [".craftcloud", ".craftcloud/versions", ".craftcloud/versions/Docs", ".craftcloud/versions/Docs/b.txt", ".craftcloud/versions/New", "Docs", "New", "New/Inner", "Pics"]

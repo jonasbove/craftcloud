@@ -1,0 +1,13 @@
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PUT /webdav/odd.txt | authorization: Bearer a1 | if-none-match: * | body: "odd"
+activity: Skipped "odd.txt" None couldn't upload odd.txt: the cloud refused it: Invalid file name. Not tried again until it changes.
+state: UpToDate
+saved folders: {}
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+state: UpToDate
+saved folders: {}
+== end
+local: odd.txt "odd"
+cloud folders: []

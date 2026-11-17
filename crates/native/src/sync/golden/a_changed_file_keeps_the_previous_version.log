@@ -1,0 +1,28 @@
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Docs/a.txt | authorization: Bearer a1 | depth: 0 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/.craftcloud/versions/Docs/a.txt/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+MKCOL /webdav/.craftcloud/ | authorization: Bearer a1
+MKCOL /webdav/.craftcloud/versions/ | authorization: Bearer a1
+MKCOL /webdav/.craftcloud/versions/Docs/ | authorization: Bearer a1
+MKCOL /webdav/.craftcloud/versions/Docs/a.txt/ | authorization: Bearer a1
+COPY /webdav/Docs/a.txt | authorization: Bearer a1 | destination: http://SERVER/webdav/.craftcloud/versions/Docs/a.txt/<STAMP>_<STAMP> | overwrite: F
+PROPFIND /webdav/.craftcloud/versions/Docs/a.txt/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+DELETE /webdav/.craftcloud/versions/Docs/a.txt/<STAMP> | authorization: Bearer a1
+DELETE /webdav/.craftcloud/versions/Docs/a.txt/<STAMP> | authorization: Bearer a1
+PUT /webdav/Docs/a.txt | authorization: Bearer a1 | if-match: "e1" | body: "abcd, changed here"
+activity: Up "Docs/a.txt" Some(18) previous version kept
+state: UpToDate
+saved: Docs/a.txt "n1" 18
+saved folders: {"Docs"}
+== end
+local: Docs/ ""
+local: Docs/a.txt "abcd, changed here"
+cloud: .craftcloud/versions/Docs/a.txt/<STAMP> v3 "old"
+cloud: .craftcloud/versions/Docs/a.txt/<STAMP> v4 "old"
+cloud: .craftcloud/versions/Docs/a.txt/<STAMP> v5 "old"
+cloud: .craftcloud/versions/Docs/a.txt/<STAMP> v6 "old"
+cloud: .craftcloud/versions/Docs/a.txt/<STAMP>_<STAMP> e1 "abc"
+cloud: Docs/a.txt n1 "abcd, changed here"
+cloud folders: [".craftcloud", ".craftcloud/versions", ".craftcloud/versions/Docs", ".craftcloud/versions/Docs/a.txt", "Docs"]

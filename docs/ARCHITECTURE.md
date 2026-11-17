@@ -39,7 +39,7 @@ Laid out like the ArtCraft Launcher:
 | Path | What it is |
 |---|---|
 | `crates/core` | Platform-free logic: the OxiCloud API (auth, device sign-in, WebDAV, user admin), server URLs, the sync decision table (`reconcile`), the app catalog. Tested against recorded server answers in `tests/fixtures/` |
-| `crates/native` | Desktop-only parts: HTTP, the keychain, settings, start at login, and the sync engine |
+| `crates/native` | Desktop-only parts: HTTP, the keychain, settings, start at login, the sync engine and its storage layer (`storage`) |
 | `crates/ui-egui` | Every screen, for both the desktop client and the web frontend, drawn with egui in the launcher's look |
 | `apps/craftcloud` | The desktop client (window, tray) and the command line ([CLI.md](CLI.md)) |
 | `apps/craftcloud-cli` | `craftcloud.com` on Windows: a console program that runs `craftcloud.exe` (a GUI program) for a terminal and passes its output through ([CLI.md › Windows](CLI.md#windows)) |
@@ -84,6 +84,14 @@ The desktop client keeps chosen server folders in a local folder, two ways.
 - **Mass deletes wait** for a decision (delete them, or bring the files back) while everything else syncs.
 - **A missing sync folder** (moved, deleted, an unplugged drive) holds the sync; it is never made again on its own,
   only when the person chooses "Download everything again" (or sets the client up again).
+- **The storage layer** ([WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 7): the engine (`crates/native/src/sync.rs`)
+  talks to the server only through the `RemoteStorage` trait (`crates/native/src/storage.rs`), which has no
+  unguarded write: a create, an overwrite, a move and a trash each take the guard they must hold, and a permanent
+  delete exists only for an `OwnPath` inside `.craftcloud/`. OxiCloud is its one driver
+  (`storage/oxicloud.rs`: WebDAV for bytes and listings, REST for the trash, its ids and the quota). What a server
+  guarantees is a `Capabilities` (`crates/core/src/storage.rs`, pure data), OxiCloud's filled in by hand. The
+  requests the engine sends are recorded per scenario (`crates/native/src/sync/golden/`) and checked on every test
+  run, along with the rule that every write carries its guard.
 
 ## Apps in the browser
 

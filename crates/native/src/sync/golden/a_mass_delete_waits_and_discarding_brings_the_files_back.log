@@ -1,0 +1,57 @@
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+state: MassDelete { deletes: 7 }
+pending deletes: ["Docs/a.txt", "Docs/b.txt", "Docs/c.txt", "Docs/d.txt", "Docs/e.txt", "Docs/f.txt", "Docs/g.txt"]
+saved: Docs/a.txt "e1" 1
+saved: Docs/b.txt "e2" 1
+saved: Docs/c.txt "e3" 1
+saved: Docs/d.txt "e4" 1
+saved: Docs/e.txt "e5" 1
+saved: Docs/f.txt "e6" 1
+saved: Docs/g.txt "e7" 1
+saved: Docs/keep.txt "k1" 1
+saved folders: {"Docs"}
+== cycle (discard deletes)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+GET /api/trash/resources?limit=200 | authorization: Bearer a1
+POST /api/trash/t1/restore | authorization: Bearer a1
+POST /api/trash/t2/restore | authorization: Bearer a1
+POST /api/trash/t3/restore | authorization: Bearer a1
+POST /api/trash/t4/restore | authorization: Bearer a1
+POST /api/trash/t5/restore | authorization: Bearer a1
+POST /api/trash/t6/restore | authorization: Bearer a1
+POST /api/trash/t7/restore | authorization: Bearer a1
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+activity: Skipped "" None kept 7 files instead of deleting them (7 put back from the cloud's trash)
+state: UpToDate
+saved: Docs/a.txt "e1" 1
+saved: Docs/b.txt "e2" 1
+saved: Docs/c.txt "e3" 1
+saved: Docs/d.txt "e4" 1
+saved: Docs/e.txt "e5" 1
+saved: Docs/f.txt "e6" 1
+saved: Docs/g.txt "e7" 1
+saved: Docs/keep.txt "k1" 1
+saved folders: {"Docs"}
+== end
+local: Docs/ ""
+local: Docs/a.txt "a"
+local: Docs/b.txt "b"
+local: Docs/c.txt "c"
+local: Docs/d.txt "d"
+local: Docs/e.txt "e"
+local: Docs/f.txt "f"
+local: Docs/g.txt "g"
+local: Docs/keep.txt "k"
+cloud: Docs/a.txt e1 "a"
+cloud: Docs/b.txt e2 "b"
+cloud: Docs/c.txt e3 "c"
+cloud: Docs/d.txt e4 "d"
+cloud: Docs/e.txt e5 "e"
+cloud: Docs/f.txt e6 "f"
+cloud: Docs/g.txt e7 "g"
+cloud: Docs/keep.txt k1 "k"
+cloud folders: ["Docs"]

@@ -3,7 +3,7 @@
 **Stage: early alpha** · version 0.2.0 (share links and version history on the web, the Windows fixes, server hardening)
 
 > **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-17 · **Change:** minor (version 0.2.0; M9 moves to
-> 0.3.0); on Linux the tray counts as up only while a tray
+> 0.3.0; M9 pull request 1, the sync engine behind a storage trait); on Linux the tray counts as up only while a tray
 > host is on the bus, so closing the window on stock GNOME quits instead of leaving an invisible client; a start at
 > login stays in the tray on Windows and X11, and opens the window where there is no tray; an offline desktop window waits before asking who is signed in again; the
 > release checklist and the Release workflow check the Craft web app pins; an idle window uses next to no CPU; trace
@@ -56,7 +56,7 @@ backup of anything you sync with it.
 | M6 Files on demand | Placeholders that download when opened (Windows, Linux, macOS) | Design only |
 | M7 Signed desktop builds | Signed and notarized macOS builds, signed Windows builds | Not started; v1 is unsigned |
 | M8 Native NixOS deployment | OxiCloud, Caddy and craftcloud-admin as NixOS services without Docker, with the Craft web apps built by Nix from `apps.toml` | Not started; the NixOS module runs the Docker image today |
-| M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Planned for 0.3.0, on `main` behind an opt-in until the release |
+| M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Planned for 0.3.0, on `main` behind an opt-in until the release; the storage trait with OxiCloud as its first driver is in (no change for a person) |
 | M10 No Python in the tree | The operator scripts without Python (sh and curl) and the packaging icons in Rust (0.3.0), then the design build (`design/tools`, FigCraft) as `cargo xtask design` | 0.3.0: scripts and icons in progress; the design build later |
 
 ## Current focus
@@ -119,6 +119,13 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 - 2026-11-17: Agents: the guarded-writes rule says where old bytes are kept per server (the server's own versions
   where the check on connect confirms them, else `.craftcloud/versions/`) and that a server ignoring a guard never
   syncs both ways, as the WebDAV design decided.
+- 2026-11-17: Sync (M9, pull request 1 of [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14): the engine talks to the
+  server only through a storage trait (`RemoteStorage`, `crates/native/src/storage.rs`) with no unguarded write, and
+  OxiCloud is its first driver (`storage/oxicloud.rs`, today's requests moved behind it); what a server guarantees
+  is `core::storage::Capabilities`, OxiCloud's filled in by hand. Nothing changes for a person: 15 scenarios'
+  requests, activity lines and saved state were recorded against the old engine (`crates/native/src/sync/golden/`)
+  and the new one sends exactly the same; every recorded write carries its guard.
+
 - 2026-11-17: Server scripts: `scripts/create-owner`, `add-user`, `app-password` and `smoke-test` need only sh and
   curl, no Python. A JSON string is escaped with sed (`\`, `"`, control characters as `\u00XX`; other characters
   pass through as they are), and the answers' few fields are read with sed. Passwords now reach curl on its stdin,
@@ -473,3 +480,4 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 | 2026-11-16 | minor | Version 0.2.0; M4 done; M9 planned for 0.3.0. |
 | 2026-11-17 | minor | M10, no Python in the tree. |
 | 2026-11-17 | minor | M9's design, with the decisions; on `main` behind an opt-in until 0.3.0. |
+| 2026-11-17 | minor | M9 pull request 1: the sync engine behind a storage trait, OxiCloud its first driver; no change for a person. |

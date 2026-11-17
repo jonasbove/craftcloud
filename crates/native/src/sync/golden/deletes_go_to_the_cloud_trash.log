@@ -1,0 +1,48 @@
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Empty/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/Sub/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+GET /api/folders | authorization: Bearer a1
+GET /api/folders/root/resources?limit=200 | authorization: Bearer a1
+GET /api/folders/d446f6373/resources?limit=200 | authorization: Bearer a1
+DELETE /api/files/f446f63732f612e747874 | authorization: Bearer a1
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+GET /api/folders/d446f6373/resources?limit=200 | authorization: Bearer a1
+DELETE /api/files/f446f63732f622e747874 | authorization: Bearer a1
+PROPFIND /webdav/Old/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/Sub/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+GET /api/folders/root/resources?limit=200 | authorization: Bearer a1
+DELETE /api/folders/d4f6c64 | authorization: Bearer a1
+PROPFIND /webdav/Empty/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+GET /api/folders/root/resources?limit=200 | authorization: Bearer a1
+DELETE /api/folders/d456d707479 | authorization: Bearer a1
+activity: Deleted "Docs/a.txt" None to the cloud trash
+activity: Deleted "Docs/b.txt" None to the cloud trash
+activity: Deleted "Old" None folder with 2 files, to the cloud trash
+state: UpToDate
+saved: Docs/keep1.txt "k1" 1
+saved: Docs/keep2.txt "k2" 1
+saved: Docs/keep3.txt "k3" 1
+saved: Docs/keep4.txt "k4" 1
+saved: Docs/keep5.txt "k5" 1
+saved folders: {"Docs"}
+== end
+local: Docs/ ""
+local: Docs/keep1.txt "1"
+local: Docs/keep2.txt "2"
+local: Docs/keep3.txt "3"
+local: Docs/keep4.txt "4"
+local: Docs/keep5.txt "5"
+cloud: Docs/keep1.txt k1 "1"
+cloud: Docs/keep2.txt k2 "2"
+cloud: Docs/keep3.txt k3 "3"
+cloud: Docs/keep4.txt k4 "4"
+cloud: Docs/keep5.txt k5 "5"
+cloud folders: ["Docs"]
+cloud trash: t1 Docs/a.txt
+cloud trash: t2 Docs/b.txt
+cloud trash: t3 Old
+cloud trash: t4 Empty
