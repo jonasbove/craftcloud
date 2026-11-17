@@ -273,6 +273,8 @@ fn the_operator_scripts() {
     };
     let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts");
     let fake = tempfile::tempdir().unwrap();
+    // The scripts' own temporary files (mktemp, under TMPDIR) are all gone when they exit.
+    let tmp = tempfile::tempdir().unwrap();
     let called = fake.path().join("python-called");
     for name in ["python3", "python"] {
         let stub = fake.path().join(name);
@@ -284,7 +286,7 @@ fn the_operator_scripts() {
     let run = |script: &str, args: &[&str], vars: &[(&str, &str)]| -> (Option<i32>, String, String) {
         let once = || {
             let mut cmd = Command::new(scripts.join(script));
-            cmd.args(args).env("PATH", &path).stdin(Stdio::null());
+            cmd.args(args).env("PATH", &path).env("TMPDIR", tmp.path()).stdin(Stdio::null());
             for var in
                 ["CRAFTCLOUD_USER", "CRAFTCLOUD_PASSWORD", "NEW_USER", "NEW_EMAIL", "NEW_PASSWORD", "OWNER_USER", "OWNER_EMAIL", "OWNER_PASSWORD"]
             {
@@ -358,4 +360,6 @@ fn the_operator_scripts() {
     assert!(err.contains("Sign-in failed"), "{err}");
 
     assert!(!called.exists(), "a script ran python");
+    let left: Vec<_> = std::fs::read_dir(tmp.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert!(left.is_empty(), "temporary files left behind: {left:?}");
 }

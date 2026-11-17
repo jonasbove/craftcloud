@@ -62,9 +62,17 @@ while :; do
 done
 
 body="{\"username\": $(json "$NEW_USER"), \"email\": $(json "$NEW_EMAIL"), \"password\": $(json "$NEW_PASSWORD"), \"role\": \"user\"}"
-status="$(printf '%s' "$body" | curl -sS -o /tmp/craftcloud-add-user.$$ -w '%{http_code}' -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data-binary @- "$SERVER/api/admin/users")"
-answer="$(cat /tmp/craftcloud-add-user.$$)"
-rm -f /tmp/craftcloud-add-user.$$
+# The server's answer goes to a file of mktemp's (a fixed name in /tmp could be made or linked beforehand by
+# another user), removed on every way out.
+out=""
+trap 'rm -f "$out"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+out="$(mktemp)"
+status="$(printf '%s' "$body" | curl -sS -o "$out" -w '%{http_code}' -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data-binary @- "$SERVER/api/admin/users")"
+answer="$(cat "$out")"
+rm -f "$out"
 if [ "$status" = 201 ]; then
     echo "Created user '$NEW_USER'. They sign in at $SERVER (or in the desktop client) with that username and password."
 else
