@@ -1,7 +1,7 @@
 # Any WebDAV server as the storage: design
 
-Status: **design, decisions taken** (milestone M9, planned for 0.3.0); one question is still open (section 16,
-Q10). Today the desktop client and the `craftcloud` command line sync only with CraftCloud's own server (OxiCloud).
+Status: **design, decisions taken** (milestone M9, planned for 0.3.0, on `main` behind an opt-in until the
+release; section 16). Today the desktop client and the `craftcloud` command line sync only with CraftCloud's own server (OxiCloud).
 This document says how they can sync with other WebDAV servers (Nextcloud, ownCloud, OpenCloud, a NAS …) without
 ever making the sync less safe. Which mode each server gets is measured, not promised: OpenCloud and
 `rclone serve webdav`, for example, get download only (section 16).
@@ -494,15 +494,16 @@ by hand. The OxiCloud `live` job keeps running on every pull request, unchanged.
 
 ## 14. Order of work
 
-Small pull requests, each shippable, each leaving OxiCloud exactly as it was (its engine tests and the live job
-green). Sizes are rough lines changed.
+Small pull requests into `main`, each shippable, each leaving OxiCloud exactly as it was (its engine tests and the
+live job green). From pull request 4 on, everything new is behind `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` (section 16)
+until the 0.3.0 release pull request. Sizes are rough lines changed.
 
 | # | Pull request | What | Size |
 |---|---|---|---|
 | 1 | `♻️ Sync: the engine talks to a storage trait; OxiCloud is its first driver` | `RemoteStorage`, `Capabilities` (OxiCloud's filled in by hand), today's code moved into `storage::oxicloud`. No behaviour change: golden-plan test, engine tests, live job | L, ~1,200 mostly moved |
 | 2 | `✨ Sync: modes, and the plan cut to download only` | `Mode`, `mode_for`, `reconcile::restrict`, `NameRules` in `names::skipped` (OxiCloud's rules unchanged); property tests | M, ~500 |
 | 3 | `✨ Sync: the server check` | The probe in core (steps, verdict) and its runner; `craftcloud server check` (OxiCloud reports its known capabilities, no probe there) | M, ~700 |
-| 4 | `✨ Sync: any WebDAV server, with the client's own trash and versions` | The generic driver, `Credential`, `storage`/`dav_url` settings, `craftcloud login --kind webdav`, `.craftcloud/trash/` with retention, the `unsupported` exit code; engine tests per driver | L, ~1,200 |
+| 4 | `✨ Sync: any WebDAV server, with the client's own trash and versions` | The opt-in (`CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`) and its refusal tests, the generic driver, `Credential`, `storage`/`dav_url` settings, `craftcloud login --kind webdav`, `.craftcloud/trash/` with retention, the `unsupported` exit code; engine tests per driver | L, ~1,200 |
 | 5 | `✅ Tests: the live suite against other servers` | `CRAFTCLOUD_TEST_KIND`, the compose file, the plain WebDAV server, download-only live tests | M, ~600 |
 | 6 | `✨ Sync: Nextcloud` | Profile: Login Flow v2, current-user-principal, trashbin, versions by id, OCS quota, 404 for a missing parent | M, ~600 |
 | 7 | `✨ Sync: ownCloud` | Profile: app passwords, trashbin, meta versions | S, ~300 |
@@ -511,8 +512,9 @@ green). Sizes are rough lines changed.
 | 10 | `✨ Desktop: choosing a server, and what the check found` | Connect sheet detection and choice, the mode panel and status, Settings › Server; kittest shots compared with `design/` | M, ~800 |
 | 11 | `📝 Docs: other servers` | ARCHITECTURE, CLI, STATUS, README, RELEASE-NOTES (0.3.0), ROADMAP M9 | S |
 
-Pull requests 1 to 3 change nothing a person sees; 4 to 9 add server types reachable from the command line;
-10 makes them reachable from the desktop.
+Pull requests 1 to 3 change nothing a person sees; 4 to 9 add server types reachable from the command line, and
+10 from the desktop, both only with the opt-in. The 0.3.0 release pull request removes the opt-in and turns them
+on.
 
 ## 15. Risks
 
@@ -529,7 +531,8 @@ Pull requests 1 to 3 change nothing a person sees; 4 to 9 add server types reach
 
 ## 16. Decisions
 
-The maintainer took the recommendations below after a research pass confirmed them. Only Q10 is still open.
+The maintainer took the recommendations below after a research pass confirmed them, and answered Q10. No question
+is left open.
 
 | # | Question | Decision | Why, and the evidence |
 |---|---|---|---|
@@ -542,18 +545,27 @@ The maintainer took the recommendations below after a research pass confirmed th
 | Q7 | **Nextcloud's speed** (about 4 uploads a second) | **Accepted for 0.3.0** | The faster upload paths, bulk upload (`/remote.php/dav/bulk`) and chunked upload v2, carry no preconditions, so the trait rules them out for good. The only safe speed-up is guarded `PUT`s in parallel (Nextcloud's own desktop client runs 6, `OWNCLOUD_MAX_PARALLEL`): a later change with its own tests |
 | Q8 | **Probe leftovers in the server trash** | **Accepted**: one folder per probe, never purged | Purging a person's trash is a permanent delete outside `.craftcloud/`. The leftovers expire from Nextcloud's and ownCloud's trash with their 30-day default |
 | Q9 | **SHA1 besides SHA-256** in the sync state | **Not now** | Not needed without the OpenCloud workaround (Q1). For later: ocdav accepts an `OC-Checksum` header on upload, a check by the server that the bytes arrived whole |
-| Q11 | **AGENTS.md said the client never sees a password** | **Amended in this change** to: "The client never asks for or stores your account password: it signs in through the server's browser sign-in, or with an app password you make on the server." (modelled on Nextcloud's public Login Flow docs) | This pull request targets `feature/webdav-support`, so the new wording reaches `main` together with the servers it is for |
+| Q10 | **Where the work lands** | **On `main`**, one shippable pull request at a time, the new server kinds hidden and refused without an explicit opt-in until the 0.3.0 release pull request turns them on (below) | Pull requests 1 to 3 rewrite `crates/native/src/sync.rs`; on a long-lived branch every 0.2.x sync fix landing meanwhile would have to be merged by hand into moved code. The opt-in keeps a 0.2.x hotfix tagged from `main` from shipping `--kind webdav` early |
+| Q11 | **AGENTS.md said the client never sees a password** | **Amended in this change** to: "The client never asks for or stores your account password: it signs in through the server's browser sign-in, or with an app password you make on the server." (modelled on Nextcloud's public Login Flow docs) | It is already true of today's client (device flow only), and it binds the pull requests that follow |
 
-### Still open: Q10, where the work lands
+### The opt-in until 0.3.0 (Q10)
 
-The maintainer decides. The points:
+The work lands on `main`, and a 0.2.x hotfix may be tagged from `main` at any time. So until the 0.3.0 release the
+new server kinds are switched off in every build unless the person running it switches them on:
 
-- **On `main`:** pull requests 1 to 3 rewrite `crates/native/src/sync.rs`. On a long-lived branch every 0.2.x sync fix
-  landing on `main` meanwhile has to be merged by hand into moved code.
-- **But `main` needs a guard.** From pull request 4 on, a 0.2.x hotfix tagged from `main` would ship
-  `--kind webdav` early. So on `main` the new server kinds must be hidden, and refused without an explicit opt-in,
-  until the 0.3.0 release pull request (or hotfixes come from a `release/0.2` branch instead).
-- **Middle ground:** pull requests 1 to 3 (no change a person sees) to `main`; 4 to 11 on `feature/webdav-support`.
+- **The switch** is the environment variable `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, read in one place
+  (`crates/native`) and used by the command line, the daemon and the desktop client alike. Only the exact value `1`
+  counts. Nothing in a released build, its packaging or its settings sets it, so a hotfix can't switch it on by
+  accident, and a person can't do so by a stray flag or a click.
+- **Without it:** `--kind` accepts only `oxicloud` and is not in `--help`; `server check` reports OxiCloud only;
+  detection never suggests another server kind; the Connect sheet offers no "Another kind of server". A settings
+  file that names another kind (left from a test with the switch on) is **refused** with "This build syncs only
+  with a CraftCloud server; set CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1 to try other servers": it never falls back to
+  treating that server as OxiCloud, and nothing is synced.
+- **Added by** pull request 4 (the first that adds a server kind), with a test that a build without the variable
+  refuses `--kind webdav` and a settings file naming it. Pull requests 5 to 11 put everything new behind it.
+- **Removed by** the 0.3.0 release pull request: the variable is gone, the kinds are offered, and its tests turn
+  into tests that they are.
 
 ## 17. Sources
 
