@@ -4,6 +4,9 @@
 
 - **Web: the right version before the server answers.** A page drawn before the server's settings arrived showed
   version 0.1.0; it now shows the version it was built as.
+- **Server scripts no longer need Python.** `scripts/create-owner`, `scripts/add-user` and `scripts/app-password`
+  (and `scripts/smoke-test`) run with only sh and curl. They ask, print and exit as before; passwords no longer
+  show in a command line while they run.
 
 ## 0.2.0
 

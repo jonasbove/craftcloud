@@ -85,9 +85,10 @@ redirect() { curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$1"; }
 check "SSO: a provider's error= lands on the sign-in page" expect "$(redirect "$BASE/api/auth/oidc/callback?error=access_denied&state=x")" "302 $BASE/login?login_error=provider_denied"
 check "SSO: a failed callback lands on the sign-in page" expect "$(redirect "$BASE/api/auth/oidc/callback")" "302 $BASE/login?login_error=callback_failed"
 check "SSO: a failed authorize lands on the sign-in page" expect "$(redirect "$BASE/api/auth/oidc/authorize")" "302 $BASE/login?login_error=provider_unreachable"
-check "config.json served" sh -c "curl -fsS '$BASE/craftcloud/config.json' | python3 -I -c 'import json,sys; json.load(sys.stdin)'"
-
-web_apps_json="$(curl -fsS "$BASE/craftcloud/config.json" | python3 -I -c 'import json,sys; print(str(json.load(sys.stdin)["web_apps"]).lower())')"
+check "config.json served as JSON" expect "$(header "$BASE/craftcloud/config.json" content-type)" application/json
+# `web_apps` (true or false) from config.json; the web apps checks below compare it.
+web_apps_json="$(curl -fsS "$BASE/craftcloud/config.json" | tr '\n' ' ' | sed -n -E 's/^[[:space:]]*\{.*"web_apps"[[:space:]]*:[[:space:]]*(true|false)([^[:alnum:]_].*)?\}[[:space:]]*$/\1/p')"
+check "config.json is an object with web_apps" sh -c "[ -n '$web_apps_json' ]"
 
 check "settings API needs sign-in" expect "$(status "$BASE/craftcloud/api/settings")" 401
 check "the admin gate is not reachable from outside" expect "$(status "$BASE/internal/apps-gate")" 200

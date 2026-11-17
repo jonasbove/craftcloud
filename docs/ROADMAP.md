@@ -7,7 +7,8 @@
 > host is on the bus, so closing the window on stock GNOME quits instead of leaving an invisible client; a start at
 > login stays in the tray on Windows and X11, and opens the window where there is no tray; an offline desktop window waits before asking who is signed in again; the
 > release checklist and the Release workflow check the Craft web app pins; an idle window uses next to no CPU; trace
-> logs leave out HTTP bodies and headers; a cloud file listed without an ETag is never trashed)
+> logs leave out HTTP bodies and headers; a cloud file listed without an ETag is never trashed; the server scripts
+> need only sh and curl, no Python)
 
 CraftCloud is a self-hosted cloud for the Craft apps: the unmodified OxiCloud server in a Docker image, CraftCloud's
 own web frontend (Rust, egui, WebAssembly), a desktop sync client with a command line, and a small admin service.
@@ -56,7 +57,7 @@ backup of anything you sync with it.
 | M7 Signed desktop builds | Signed and notarized macOS builds, signed Windows builds | Not started; v1 is unsigned |
 | M8 Native NixOS deployment | OxiCloud, Caddy and craftcloud-admin as NixOS services without Docker, with the Craft web apps built by Nix from `apps.toml` | Not started; the NixOS module runs the Docker image today |
 | M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Planned for 0.3.0 |
-| M10 No Python in the tree | The operator scripts and packaging icons in Rust (0.3.0), then the design build (`design/tools`, FigCraft) as `cargo xtask design` | 0.3.0: scripts and icons in progress; the design build later |
+| M10 No Python in the tree | The operator scripts without Python (sh and curl) and the packaging icons in Rust (0.3.0), then the design build (`design/tools`, FigCraft) as `cargo xtask design` | 0.3.0: scripts and icons in progress; the design build later |
 
 ## Current focus
 
@@ -102,8 +103,8 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
    - Desktop and command line only; the web frontend stays with OxiCloud. It changes how the sync decides, so it
      comes with an "upgrade all devices together" entry in [RELEASE-NOTES.md](RELEASE-NOTES.md).
 9. **No Python in the tree (M10), part 1, for 0.3.0:** `scripts/create-owner`, `add-user`, `app-password` and
-   `smoke-test` read and write JSON through `python3 -c` one-liners; they move onto the `craftcloud` command line (or
-   a `cargo xtask` command), so they need only `sh` and `curl`. `packaging/icons.sh` (Pillow) becomes
+   `smoke-test` read and write JSON through `python3 -c` one-liners; they read and write it with sed instead, so they
+   run without Python (sh and curl). `packaging/icons.sh` (Pillow) becomes
    `cargo xtask icons`.
 10. **No Python in the tree (M10), part 2:** the design build, about 7,000 lines in `design/tools/*.py` that drive
    `figcraft-cli` over MCP to make `design/craftcloud.figcraft` and its exports, becomes `cargo xtask design`,
@@ -111,6 +112,12 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-17: Server scripts: `scripts/create-owner`, `add-user`, `app-password` and `smoke-test` need only sh and
+  curl, no Python. A JSON string is escaped with sed (`\`, `"`, control characters as `\u00XX`; other characters
+  pass through as they are), and the answers' few fields are read with sed. Passwords now reach curl on its stdin,
+  not in a command line. `the_operator_scripts` in `cli_live.rs` (CI's `live` job) drives the three against the
+  server with a failing `python3` first in `PATH` and a password with `"`, `\`, `$` and letters outside ASCII; it
+  fails with the old scripts.
 - 2026-11-17: Roadmap: M10, no Python in the tree: the operator scripts and the packaging icons in Rust for
   0.3.0, the design build later; AGENTS.md names `design/tools` as the one Python until then.
 - 2026-11-17: Build: the packaging icons (the Linux hicolor PNGs, the Windows .ico, the macOS .icns) are rendered
