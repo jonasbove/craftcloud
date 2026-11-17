@@ -116,6 +116,9 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-17: Agents: the guarded-writes rule says where old bytes are kept per server (the server's own versions
+  where the check on connect confirms them, else `.craftcloud/versions/`) and that a server ignoring a guard never
+  syncs both ways, as the WebDAV design decided.
 - 2026-11-17: Server scripts: `scripts/create-owner`, `add-user`, `app-password` and `smoke-test` need only sh and
   curl, no Python. A JSON string is escaped with sed (`\`, `"`, control characters as `\u00XX`; other characters
   pass through as they are), and the answers' few fields are read with sed. Passwords now reach curl on its stdin,
