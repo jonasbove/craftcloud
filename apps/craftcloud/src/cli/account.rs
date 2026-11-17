@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use craftcloud_core::ServerUrl;
 use craftcloud_core::api::auth::{self, DevicePoll};
 use craftcloud_core::http::HttpResponse;
+use craftcloud_core::names::{self, Platform};
 use craftcloud_core::sync::SyncPlan;
 use craftcloud_native::control::{self, LinkHandoff, Request, SendError, Status};
 use craftcloud_native::http::execute;
@@ -179,14 +180,18 @@ fn show_status(ctx: &Ctx, s: &Status) -> Result<()> {
 
 /// `not synced t13/locked.txt  (can't be read)`.
 pub(super) fn not_synced_line(n: &control::NotSynced) -> String {
-    format!("not synced {}  ({})", n.path, reason_words(&n.reason))
+    format!("not synced {}  ({})", n.path, reason_words(&n.path, &n.reason, Platform::current()))
 }
 
-fn reason_words(reason: &str) -> &str {
+/// The reason in words. `--json` says `name` for every name the sync leaves out; the words tell
+/// a name the cloud can't take from one this computer (Windows) can't have, by the path.
+pub(super) fn reason_words<'a>(path: &str, reason: &'a str, platform: Platform) -> &'a str {
     match reason {
         "unreadable" => "can't be read",
         "symlink" => "a symbolic link, never followed",
-        "name" => "a name the cloud can't take",
+        "name" if names::refused_in(path).is_some() => "a name the cloud can't take",
+        "name" if names::local_refused_in(path, platform).is_some() => "a name this computer (Windows) can't have",
+        "name" => "a name this computer can't keep apart from another (they differ only in upper and lower case)",
         "temporary" => "looks like a temporary file",
         other => other,
     }
@@ -245,7 +250,7 @@ pub fn status(ctx: &Ctx) -> Result<()> {
 }
 
 /// Code 9 while the sync waits for the person: a mass delete, a missing sync folder, or a place
-/// in a synced folder that can't be read. Symbolic links and names the cloud can't take are left
+/// in a synced folder that can't be read. Symbolic links and names the cloud or this computer can't have are left
 /// out for good (until renamed), so they don't count.
 pub(super) fn held(s: &Status) -> Result<()> {
     match s.state.as_str() {

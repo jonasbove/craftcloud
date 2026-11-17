@@ -2,10 +2,10 @@
 
 **Stage: early alpha** · version 0.1.1 (fixes for 0.1.0, the first release: a published image and desktop builds)
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (an offline desktop window waits
-> before asking who is signed in again; the release checklist and the Release workflow check the Craft web app pins;
-> an idle window uses next to no CPU; trace logs leave out HTTP bodies and headers; a cloud file listed without an
-> ETag is never trashed)
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-16 · **Change:** minor (a start at login stays in the tray
+> on Windows; an offline desktop window waits before asking who is signed in again; the release checklist and the
+> Release workflow check the Craft web app pins; an idle window uses next to no CPU; trace logs leave out HTTP bodies
+> and headers; a cloud file listed without an ETag is never trashed)
 
 CraftCloud is a self-hosted cloud for the Craft apps: the unmodified OxiCloud server in a Docker image, CraftCloud's
 own web frontend (Rust, egui, WebAssembly), a desktop sync client with a command line, and a small admin service.
@@ -102,6 +102,17 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
      comes with an "upgrade all devices together" entry in [RELEASE-NOTES.md](RELEASE-NOTES.md).
 
 ## Progress log
+
+- 2026-11-16: Desktop, Windows: a start at login stays in the tray (#9), and a window hidden in the tray draws
+  nothing. eframe creates every window hidden and calls `set_visible(true)` itself after the first frame it paints
+  (`post_rendering`), whatever `with_visible(false)` asked; and winit's Windows backend never reports occlusion, so
+  `ViewportInfo::visible()` is `None` for a hidden, unminimised window and eframe runs `ui` and paints it at every
+  tick (at least every 100 ms while a repaint is pending). Now `logic` sends `Visible(false)` in every pass where
+  the window isn't shown but eframe takes it as drawn (the pass's commands run after `post_rendering`, so the
+  window is hidden again in the same step), and `ui` draws nothing while the window isn't shown; Show still
+  brings it back in the same pass. `a_hidden_start_keeps_the_window_hidden_and_draws_nothing` fails without the
+  fix. `craftcloud status` now tells a name Windows can't have, and a case clash, from a name the cloud can't
+  take. Not yet checked on the Windows VM.
 
 - 2026-11-16: CI: the live sync tests run on every pull request and push to `main`. A `live` job in `ci.yml`,
   beside the gate, builds the server image from the tree, starts it with `scripts/smoke-test` and runs

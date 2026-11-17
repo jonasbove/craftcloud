@@ -238,8 +238,34 @@ fn held_deletes_say_what_happens() {
     assert_eq!(deletes_words(Deletes::Confirm, 0, false), "Deleting the held files…");
 }
 
+/// `craftcloud status` says why a name is left out: the cloud can't take it, this computer
+/// (Windows) can't have it, or this computer can't keep it apart from another. `--json` says
+/// `name` for all three, so the words go by the path.
+#[test]
+fn a_left_out_name_says_who_cant_have_it() {
+    use craftcloud_core::names::Platform;
+    use craftcloud_native::control::NotSynced;
+
+    use super::account::{not_synced_line, reason_words};
+    let cloud = NotSynced { path: "t13/a\\b".into(), reason: "name".into() };
+    assert_eq!(not_synced_line(&cloud), "not synced t13/a\\b  (a name the cloud can't take)");
+    assert_eq!(reason_words("t13/a\\b", "name", Platform::Windows), "a name the cloud can't take");
+    assert_eq!(reason_words("t13/report:final.txt", "name", Platform::Windows), "a name this computer (Windows) can't have");
+    assert_eq!(reason_words("t13/trailing./a.txt", "name", Platform::Windows), "a name this computer (Windows) can't have");
+    assert_eq!(reason_words("t13/CON.txt", "name", Platform::Windows), "a name this computer (Windows) can't have");
+    assert_eq!(
+        reason_words("t13/Report.txt", "name", Platform::Windows),
+        "a name this computer can't keep apart from another (they differ only in upper and lower case)",
+        "two cloud names that are one file on Windows"
+    );
+    assert_eq!(reason_words("t13/locked", "unreadable", Platform::Other), "can't be read");
+    assert_eq!(reason_words("t13/link", "symlink", Platform::Other), "a symbolic link, never followed");
+    assert_eq!(reason_words("t13/a.tmp", "temporary", Platform::Other), "looks like a temporary file");
+    assert_eq!(reason_words("t13/x", "new_reason", Platform::Other), "new_reason", "a reason this build doesn't know is shown as is");
+}
+
 /// T-033: a place that can't be read holds the sync (code 9, and the headline says so); a
-/// symbolic link or a name the cloud can't take is left out for good and doesn't.
+/// symbolic link or a name the cloud or this computer can't have is left out for good and doesn't.
 #[test]
 fn an_unreadable_place_is_held_and_a_symlink_is_not() {
     use craftcloud_native::control::{NotSynced, Status};
