@@ -13,6 +13,11 @@ workspace = true
 # pins, unpacking the release zips, and the .gz/.br siblings Caddy serves.
 brotli = { version = "8", default-features = false, features = ["std"] }
 flate2 = "1"
+# icons: decode the logo, resample (Lanczos), and encode the packaging PNGs and the Windows .ico.
+# Not craft-libs' craft-image-codecs: it is a full flat-raster codec set (EXR, JPEG 2000, TIFF …) whose
+# PNG and ICO paths are this crate underneath, with no resampler and no .icns writer. The macOS .icns
+# is a plain container of length-prefixed PNGs, written by hand (src/icons.rs), with no extra crate.
+image = { version = "0.25", default-features = false, features = ["png", "ico"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"

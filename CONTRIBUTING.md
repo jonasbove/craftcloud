@@ -33,6 +33,10 @@ The Craft web builds in the `-apps` image are pinned in `apps.toml`. `cargo xtas
 pins are behind the apps' latest releases and `cargo xtask bump-apps` updates them; `cargo xtask fetch-apps
 apps.toml <out-dir>` builds the tree the image serves (the Dockerfile's `apps` stage runs it).
 
+A new logo: replace `design/assets/logo/craftcloud-logo-1024.png` and run `cargo xtask icons`, which renders
+the packaging icons from it (the Linux hicolor PNGs, `apps/craftcloud/assets/craftcloud.ico`,
+`packaging/macos/craftcloud.icns`); commit what it writes.
+
 Working in several checkouts at once (git worktrees): give each its own `CARGO_TARGET_DIR`, so two
 builds never share or lock one target directory.
 

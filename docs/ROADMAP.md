@@ -113,6 +113,10 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 - 2026-11-17: Roadmap: M10, no Python in the tree: the operator scripts and the packaging icons in Rust for
   0.3.0, the design build later; AGENTS.md names `design/tools` as the one Python until then.
+- 2026-11-17: Build: the packaging icons (the Linux hicolor PNGs, the Windows .ico, the macOS .icns) are rendered
+  from the logo by `cargo xtask icons`, in Rust; `packaging/icons.sh` and its Python/Pillow need are gone. The
+  committed icons were rendered again with it: the same files, sizes and entries, Lanczos on premultiplied alpha
+  as before, within a few levels of the old ones (mostly smaller files).
 - 2026-11-17: Web: the version a page shows before the server's config arrives is this build's own, not a fixed
   "0.1.0"; the README's screenshots (`docs/screenshots/`) are rendered again by `web_shots`, which now takes the
   version from the build too, so they say 0.2.0.
