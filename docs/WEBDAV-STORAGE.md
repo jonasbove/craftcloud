@@ -173,32 +173,46 @@ in `crates/core`, so they get unit and property tests and build for wasm. Everyt
 Every method that changes the server takes the precondition it must hold. There is no method that writes, moves
 or deletes without one, so "forgot the guard" is a type error, not a review comment.
 
+As built (pull request 1, `crates/native/src/storage.rs`):
+
 ```rust
 pub trait RemoteStorage: Send {
     fn capabilities(&self) -> &Capabilities;
 
+    /// A new sync pass: forget what the last one learnt (REST ids, an offline error).
+    fn begin_pass(&mut self);
+    /// The server didn't answer at all during this pass (taken).
+    fn take_offline(&mut self) -> Option<String>;
+    /// The sign-in is over: only a new sign-in helps.
+    fn signed_out(&self) -> bool;
+
     /// One folder, one level. An error is "unknown": the caller holds that place, never takes it as empty.
     fn list(&mut self, folder: &str) -> Result<Vec<Entry>, StorageError>;
-    fn stat(&mut self, path: &str) -> Result<Option<Entry>, StorageError>;
-    fn download(&mut self, path: &str, resume: Option<Resume>, out: &mut dyn Write) -> Result<Fetched, StorageError>;
+    /// Several folders, one level each (a sequential default; OxiCloud lists four at once).
+    fn list_many(&mut self, folders: &[String]) -> Result<Vec<(String, Vec<Entry>)>, StorageError>;
+    /// The ETag the listing gives a file (a write or download whose answer carried none).
+    fn listed_etag(&mut self, path: &str) -> Result<String, StorageError>;
+    /// Opens a download, from byte `from` on when given; the body follows with `Download::stream_to`.
+    fn download(&mut self, path: &str, from: Option<u64>) -> Result<Download, StorageError>;
 
     /// Only if nothing is there. `Written::Conflict` when something is.
     fn create(&mut self, path: &str, file: &Path) -> Result<Written, StorageError>;
     /// Only if the server still has `if_match`. `Written::Conflict` otherwise.
-    fn replace(&mut self, path: &str, if_match: &Etag, file: &Path) -> Result<Written, StorageError>;
+    fn replace(&mut self, path: &str, if_match: &str, file: &Path) -> Result<Written, StorageError>;
     fn make_folder(&mut self, path: &str) -> Result<(), StorageError>;
-    /// Never onto an existing name; only if the source is still `guard`.
+    /// Never onto an existing name; a file only while it is still at its ETag.
     fn move_to(&mut self, from: &str, to: &str, guard: MoveGuard) -> Result<Moved, StorageError>;
     /// Into a trash, never for good. A file only if still at its ETag; a folder only if a fresh
-    /// listing holds exactly the files given.
+    /// listing holds exactly the files given, or nothing at all.
     fn trash(&mut self, path: &str, guard: TrashGuard) -> Result<Trashed, StorageError>;
     fn trash_list(&mut self) -> Result<Vec<TrashItem>, StorageError>;
     fn restore(&mut self, item: &TrashItem) -> Result<(), StorageError>;
 
     /// Keep the version about to be replaced (no-op where the server keeps it itself).
-    fn keep_version(&mut self, path: &str, current: &Etag) -> Result<(), StorageError>;
+    fn keep_version(&mut self, path: &str) -> Result<(), StorageError>;
     fn move_versions(&mut self, from: &str, to: &str) -> Result<(), StorageError>;
-    fn free_space(&mut self) -> Result<Option<u64>, StorageError>;
+    /// Free bytes; `needed` is the least a waiting upload needs.
+    fn free_space(&mut self, needed: u64) -> Result<Option<u64>, StorageError>;
 
     /// Permanent removal, only inside CraftCloud's own `.craftcloud/` (probe files, old client
     /// trash, pruned versions). `OwnPath` can only be made for paths under `.craftcloud/`.
@@ -206,11 +220,35 @@ pub trait RemoteStorage: Send {
 }
 ```
 
+Where it differs from the first sketch, and why:
+
+- **`download` returns a handle** (`Download`: `status()`, `header()`, `stream_to(out)`) instead of writing into an
+  `out` it is given: the engine must see the status, `ETag` and `Content-Range` before it opens the part file (to
+  append to it for a resume, or start over), and part files stay in the engine.
+- **`free_space(needed)`** takes the smallest size a waiting upload needs: OxiCloud counts storage use late, so its
+  driver asks an admin's server to count again when the free space is below that (at most once a minute).
+- **`keep_version(path)`** has no `current` ETag: the OxiCloud driver reads the current version itself (to skip
+  keeping the same bytes twice), as it always did, so a passed-in ETag would go unused.
+- **`list_many`**: a cycle lists every folder every cycle; OxiCloud's driver keeps listing four at once, so the
+  refactor doesn't make a cycle slower (a sequential default serves other drivers).
+- **`listed_etag`**: a write or a download whose answer carries no `ETag` reads it from the parent's listing; one
+  provided method serves the engine and the drivers.
+- **`begin_pass`**: what a driver learns during a pass (OxiCloud's REST ids) is forgotten at the start of the next.
+- **`take_offline` and `signed_out`**: the engine tells "offline" from "signed out" from the connection's state when
+  a pass ends, not from the error that stopped it, so a failure it shrugs off (the free-space lookup) still counts,
+  as before. `StorageError` (`Status`, `NotFound`, `NoRoom`, `Refused`, `Failed`) carries the rest, in the engine's
+  wording.
+- An ETag is a plain `&str`; `Entry`, `Written`, `Moved`, `Trashed`, the guards and `StorageError` are in
+  `crates/native::storage`.
+
+The types:
+
 - `Entry` is today's `dav::Entry` plus an optional `file_id` and an optional `checksum`.
-- `Written` is `Saved { etag, file_id }` or `Conflict`. A 412 is a `Conflict`; the engine makes a conflict copy, as
-  today.
-- `StorageError` keeps today's distinctions: offline, signed out, no room (507), refused for what it is (4xx, waits
-  until the file changes), and other.
+- `Written` is `Saved { etag }` or `Conflict` (a `file_id` comes with the first driver that has ids). A 412 is a
+  `Conflict`; the engine makes a conflict copy, as today.
+- `StorageError` keeps today's distinctions: no room (507), refused for what it is (4xx, waits until the file
+  changes), a status the call can't take, not found, and other; offline and signed out come from `take_offline` and
+  `signed_out` (above).
 - The engine's existing rails (mass-delete hold, unreadable places held, the two-second settle, part files and
   resume) stay in the engine and don't move into drivers.
 
@@ -428,7 +466,7 @@ local side:
 - **OxiCloud users: no change.** Missing `storage` reads as `oxicloud`; keychain entries, `state.json` and the
   plans are unchanged. The refactor's pull request proves this with today's engine tests, the live suite against
   OxiCloud (21/21), the mixed-version two-client test (`cargo xtask e2e-sync` with the previous release on one
-  side) and a golden test: the same scripted cloud gives the same plan before and after.
+  side) and golden request logs (section 13): the same scripted cloud gets the same requests before and after.
 - **state.json.** New fields (`id` on a file) are optional with a default, so 0.2.0 still reads a 0.3.0 state file
   (it ignores what it doesn't know), and a downgrade doesn't lose the sync state.
 - **New servers.** No 0.2.0 client can sync with Nextcloud, ownCloud, OpenCloud or other WebDAV servers, so no
@@ -451,6 +489,7 @@ local side:
 | `crates/native` driver | Each driver against `fake_server`: every write carries its precondition (a request without `If-Match`/`If-None-Match`/`Overwrite: F` fails the test); hrefs outside the base fail the listing; `purge_own` refuses a path outside `.craftcloud/` | `cargo xtask ci` |
 | `crates/native` probe | Scripted servers that misbehave: answers 2xx to a stale `If-Match` → download only; ignores `If-None-Match` → download only; times out mid-probe → refused, and the probe folder is swept next time; no ETags → refused | `cargo xtask ci` |
 | `crates/native` engine | Today's engine tests run once per driver; a runtime guard failure stops two-way sync | `cargo xtask ci` |
+| `crates/native` golden logs | `crates/native/src/sync/golden_tests.rs` runs whole cycles of 15 scenarios against a small scripted OxiCloud (`fake_server`) and compares, line by line, every request (method, path, the guard headers, `Destination`, `Depth`, `Range`, the bearer token, the body or its hash), the activity lines, the sync state, the saved `state.json` and the final local folder and cloud with the logs in `crates/native/src/sync/golden/` (recorded before pull request 1; `CRAFTCLOUD_BLESS=1` records them again, only for a change meant to alter what goes over the wire). On every log it checks that every `PUT` carries `If-Match` or `If-None-Match: *`, every `MOVE` and `COPY` `Overwrite: F`, and a WebDAV `DELETE` only inside `.craftcloud/` | `cargo xtask ci` |
 | Live | `crates/native/tests/live.rs` with `CRAFTCLOUD_TEST_KIND` (`oxicloud` default, `nextcloud`, `owncloud`, `opencloud`, `webdav`): the same 21 tests, the server-specific helpers (trash, versions, ids) behind the trait; per-server timeouts (Nextcloud is slower); plus a download-only suite against a server that fails the probe | By hand, and in CI (below) |
 | CLI live | `apps/craftcloud/tests/cli_live.rs` for `login --kind webdav`, `server check`, and the `unsupported` answers | Same |
 | Windows | The 0.2.0 Windows checks once, against Nextcloud | By hand, before the release |
