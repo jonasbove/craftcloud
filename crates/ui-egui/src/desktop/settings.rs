@@ -134,7 +134,10 @@ impl<H: DesktopHost> DesktopApp<H> {
         let appearance = self.settings.appearance;
         chrome::panel(ui, "On this computer", |ui| {
             desk::setting_row(ui, "Start at login", |ui| picks.login = desk::off_on(ui, "Start at login", login, true));
-            desk::setting_row(ui, "Pause syncing", |ui| picks.pause = desk::off_on(ui, "Pause syncing", paused, true));
+            // Named for the state it is in, not as an on/off "Pause syncing" (whose "Off" read as a double negative).
+            desk::setting_row(ui, "Syncing", |ui| {
+                picks.pause = desk::cells(ui, "Syncing", &["Paused", "Active"], usize::from(!paused), true, None).map(|i| i == 0);
+            });
             desk::setting_row(ui, "Appearance", |ui| {
                 let all = [Appearance::System, Appearance::Dark, Appearance::Light];
                 let current = all.iter().position(|a| *a == appearance).unwrap_or(0);

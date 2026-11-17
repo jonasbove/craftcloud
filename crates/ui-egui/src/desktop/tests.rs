@@ -512,7 +512,7 @@ fn settings_switch_start_at_login_pause_and_appearance() {
     h.get_by_label("Start at login: ON").click();
     h.run();
     assert!(h.state().host.login);
-    h.get_by_label("Pause syncing: ON").click();
+    h.get_by_label("Syncing: PAUSED").click();
     h.run();
     assert_eq!(h.state().host.paused, Some(true));
     h.get_by_label("Appearance: LIGHT").click();
@@ -521,6 +521,16 @@ fn settings_switch_start_at_login_pause_and_appearance() {
     h.get_by_label("DONE").click();
     h.run();
     assert_eq!(h.state().overlay, None);
+}
+
+#[test]
+fn a_paused_sync_is_made_active_from_settings() {
+    let mut h = with_state(SyncState::Paused);
+    h.get_by_label("SETTINGS").click();
+    h.run();
+    h.get_by_label("Syncing: ACTIVE").click();
+    h.run();
+    assert_eq!(h.state().host.paused, Some(false));
 }
 
 #[test]
