@@ -3,7 +3,7 @@
 What works today and how it was checked, and the known limits. What comes next is in [ROADMAP.md](ROADMAP.md).
 
 > **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-14 · **Change:** major (first version, from `main` at
-> `1a37a72`; updated for 0.1.0, the first release)
+> `1a37a72`; updated for 0.2.0)
 
 Everything is checked against OxiCloud **0.10.0**, the pinned server. `cargo xtask ci` (fmt, clippy with warnings
 denied, the workspace tests and the wasm build) is the gate, and GitHub Actions runs it, plus the Trunk web build,
