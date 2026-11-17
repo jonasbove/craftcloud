@@ -1,9 +1,10 @@
 # Any WebDAV server as the storage: design
 
-Status: **design only, for approval before any code** (milestone M9, planned for 0.3.0). Today the desktop client
-and the `craftcloud` command line sync only with CraftCloud's own server (OxiCloud). This document says how they
-can sync with other WebDAV servers (Nextcloud, ownCloud, OpenCloud, a NAS, `rclone serve webdav` …) without ever
-making the sync less safe.
+Status: **design, decisions taken** (milestone M9, planned for 0.3.0); one question is still open (section 16,
+Q10). Today the desktop client and the `craftcloud` command line sync only with CraftCloud's own server (OxiCloud).
+This document says how they can sync with other WebDAV servers (Nextcloud, ownCloud, OpenCloud, a NAS …) without
+ever making the sync less safe. Which mode each server gets is measured, not promised: OpenCloud and
+`rclone serve webdav`, for example, get download only (section 16).
 
 It builds on the engine described in [ARCHITECTURE.md › Sync](ARCHITECTURE.md#sync) and on the sync
 non-negotiables in [AGENTS.md](../AGENTS.md), which bind every part of it. Code references are to
@@ -46,7 +47,9 @@ it on each server, and refuse what can't be met".
 - Server features beyond files: share links, users, admin, favourites, search, recent. On other servers the CLI
   says "not available on this server" for these.
 - Several accounts or servers at once in one client (still one server per client).
-- Files on demand (its own design, [FILES-ON-DEMAND.md](FILES-ON-DEMAND.md)), delta sync, chunked uploads.
+- Files on demand (its own design, [FILES-ON-DEMAND.md](FILES-ON-DEMAND.md)) and delta sync.
+- Nextcloud's bulk upload (`/remote.php/dav/bulk`) and chunked upload v2: they carry no preconditions, so the
+  "no unguarded write" rule rules them out for good, not only for 0.3.0 (Q7).
 - Requiring anything only an admin can switch on. Admin-only features (ownCloud's OAuth2 app, OpenCloud's basic
   auth) are a bonus where present, never a requirement.
 - Upload-only ("backup") mode. It needs the same guarded creates and overwrites as two-way sync, so a server that
@@ -75,10 +78,10 @@ it on each server, and refuse what can't be met".
 | Never a weaker two-way sync | Decision for M9 | A server that can't guard writes gets download only, never two-way |
 | `crates/core` builds for wasm | AGENTS.md, "Never break wasm" | Capabilities, modes, the probe's verdict and name rules are pure data and functions in `crates/core`; the trait, drivers, HTTP and the probe runner live in `crates/native` |
 | The upstream server runs unmodified | AGENTS.md | Nothing changes on the OxiCloud side; other servers are used as they come |
-| Upstream gaps go in UPSTREAM.md | AGENTS.md | OpenCloud's ignored `If-None-Match: *` and non-atomic `MOVE` get entries there, not issues filed without asking |
+| Upstream gaps go in UPSTREAM.md | AGENTS.md | OpenCloud's gaps are already reported upstream (reva#866, #959, #961); UPSTREAM.md links them and proposes nothing new to file |
 | No panics, no `unsafe` | Rust rule 1 | All server answers are hostile input: hrefs outside the base, missing ETags, odd status codes |
 | Shared libraries first | Core rule 16 | WebDAV requests and multistatus parsing go through `craft-dav` from `storytold/craft-libs`, as today; what it lacks (extra namespaces such as `oc:`, `nc:`, trash and version properties) is proposed there rather than parsed by hand here. Server profiles stay in CraftCloud |
-| Desktop sign-in through the browser; the client never sees a password | AGENTS.md | Kept for every server with a browser sign-in. An app password the person makes and pastes in (ownCloud, other WebDAV) is a password the client sees, so that line of AGENTS.md needs a maintainer's change in the pull request that adds it (Q11) |
+| The client never asks for or stores the account password | AGENTS.md (amended in this change, Q11) | The server's browser sign-in where there is one; otherwise an app password the person makes on the server |
 | Clean room | Rust rule 2 | Learn from public specifications (RFC 4918, RFC 8628, the servers' public API docs) and observed behaviour; never from another client's code |
 | Licence allowlist | AGENTS.md | New crates only from the allowlist (`sha1` from RustCrypto is MIT OR Apache-2.0). The test servers (AGPL and Apache) are test containers, never shipped or linked |
 | Rust only | Rust rule 4 | Nothing outside Rust is added |
@@ -102,7 +105,7 @@ What had to change, and what the design does instead:
 | Restore from the trash | XML split by string search | Trash listing and restore per profile, parsed with `craft_dav` |
 | Not snapshot versions | `snapshot` returns early | `keep_version` is a no-op only where the probe saw the server keep a version |
 | Read free space | WebDAV quota props, OCS on Nextcloud | `free_space`, per profile (Nextcloud reports `-3` over WebDAV even with a quota set) |
-| Create a file on OpenCloud | Upload under a temporary name, `MOVE` with `Overwrite: F`, then compare `oc:checksums` SHA1 | An open question (section 16, Q1); not two-way by default |
+| Create a file on OpenCloud | Upload under a temporary name, `MOVE` with `Overwrite: F`, then compare `oc:checksums` SHA1 | Not used: OpenCloud gets download only (Q1) |
 | Find a folder's id | `oc:fileid` | Entries carry an optional file id; moves pair by it where present |
 
 ## 5. What the servers do (measured on 2026-11-16)
@@ -110,7 +113,7 @@ What had to change, and what the design does instead:
 | Behaviour | OxiCloud 0.10.0 | Nextcloud 31 | ownCloud 10.15 | OpenCloud |
 |---|---|---|---|---|
 | `PUT` with `If-None-Match: *` over an existing file | 412 | 412 | 412 | **ignored: overwrites** |
-| `PUT` with a stale `If-Match` | 412 | 412 | 412 | 412 |
+| `PUT` with a stale `If-Match` | 412 | 412 | 412 | 412, **not shown to be atomic** (reva#959) |
 | `PUT`'s ETag equals `PROPFIND`'s | yes | yes | yes | yes |
 | ETag changes on every write | yes | yes | yes | yes |
 | ETag survives `MOVE` | yes | yes | yes | yes |
@@ -118,6 +121,7 @@ What had to change, and what the design does instead:
 | `oc:fileid`, stable across `MOVE` | no (404) | yes | yes | yes |
 | `COPY` and `MOVE` | yes | yes | yes | yes |
 | `MOVE`/`COPY` with `Overwrite: F` onto an existing name | 412 | 412 | 412 | 412, but **not atomic** under two creates at once (both won in 1 of 3 runs) |
+| `MOVE` with a stale `If-Match` | (checked before, see `still_at`) | 412 | 412 | **ignored** (reva#961) |
 | `DELETE` with a stale `If-Match` | (REST trash is used) | 412 | 412 | **ignored: deletes** |
 | Where WebDAV `DELETE` goes | gone for good | server trash | server trash | server trash |
 | Restore from the trash | REST | `MOVE` to `trashbin/<user>/restore/<name>` | `MOVE` to the original path | `MOVE`, only through its `spaces/<space>/` URL |
@@ -200,8 +204,8 @@ pub trait RemoteStorage: Send {
 ```
 
 - `Entry` is today's `dav::Entry` plus an optional `file_id` and an optional `checksum`.
-- `Written` is `Saved { etag, file_id }` or `Conflict`. A 412, or (where creates are emulated) a checksum that isn't
-  ours, is a `Conflict`; the engine makes a conflict copy, as today.
+- `Written` is `Saved { etag, file_id }` or `Conflict`. A 412 is a `Conflict`; the engine makes a conflict copy, as
+  today.
 - `StorageError` keeps today's distinctions: offline, signed out, no room (507), refused for what it is (4xx, waits
   until the file changes), and other.
 - The engine's existing rails (mass-delete hold, unreadable places held, the two-second settle, part files and
@@ -214,7 +218,7 @@ how sign-in works):
 
 | Field | Values | Measured by |
 |---|---|---|
-| `create_if_absent` | honoured · ignored · emulated (see Q1) | probe |
+| `create_if_absent` | honoured · ignored | probe |
 | `replace_if_match` | honoured · ignored | probe |
 | `delete_if_match` | honoured · ignored · n/a (REST trash) | probe |
 | `move_no_overwrite` | yes · no | probe |
@@ -313,10 +317,10 @@ probe, and says so in the activity list.
 
 | Non-negotiable | Server has it (honoured, measured) | Server lacks it | OpenCloud as measured |
 |---|---|---|---|
-| **Create only if absent** | `PUT` with `If-None-Match: *`; 412 → conflict copy | No two-way: download only | Ignored → download only, unless Q1 |
-| **Overwrite only if unchanged** | `PUT` with `If-Match`; 412 → conflict copy | No two-way | Honoured |
+| **Create only if absent** | `PUT` with `If-None-Match: *`; 412 → conflict copy | No two-way: download only | Ignored (reva#866) → download only (Q1) |
+| **Overwrite only if unchanged** | `PUT` with `If-Match`; 412 → conflict copy | No two-way | Honoured, not shown to be atomic (reva#959); moot in download only |
 | **Old bytes kept before an overwrite** | Server versions by file id (they follow renames; `move_versions` is a no-op) | Client versions: `COPY` into `.craftcloud/versions/<path>/<time>`, 5 kept, as today. Without `COPY` either: no two-way (Q2) | Server versions |
-| **Delete only if unchanged** | `DELETE` (or the trash `MOVE`) with `If-Match` | Check, then move to a trash: a one-request window, the same as OxiCloud's REST trash today, acceptable only because the file lands in a trash | `DELETE` ignores `If-Match`: check, then `DELETE` into its server trash |
+| **Delete only if unchanged** | `DELETE` (or the trash `MOVE`) with `If-Match` | Check, then move to a trash: a one-request window, the same as OxiCloud's REST trash today, acceptable only because the file lands in a trash | `DELETE` ignores `If-Match` (reva#961); moot in download only |
 | **Deletes go to a trash, never for good** | Server trash, confirmed by the probe's round trip | Client trash: `MOVE` with `Overwrite: F` to `.craftcloud/trash/<time>-<device>/<path>` (the original path is in the name, for a restore); permanent `DELETE` only through `purge_own`, after the retention (Q5) | Server trash |
 | **A folder trashed only if a fresh listing says it holds nothing new** | `cloud_holds` re-lists every level now, as today; any skipping of unchanged folders never applies to this listing | Same | Same |
 | **A folder trashed as one item** | `DELETE` of the folder into the server trash | One `MOVE` of the folder into the client trash | Server trash |
@@ -354,7 +358,7 @@ local side:
 | Nextcloud | Login Flow v2: the client opens the browser, the person signs in there, the client polls and receives an app password made for this device | The login name and that app password | `DELETE` the app password (`/ocs/v2.php/core/apppassword`), then forget it |
 | ownCloud | An app password the person makes in Settings › Security and pastes in. OAuth2 only where an admin has set it up for CraftCloud (later, a bonus) | Login name and app password | Forget it; the person revokes it on the server (the client says where) |
 | OpenCloud | OIDC with PKCE in the browser, through the server's own identity provider. **To verify in its profile pull request**: which client registration a third-party desktop app can use without an admin, and whether app tokens are available to a person. Basic auth works only when an admin turns on `PROXY_ENABLE_BASIC_AUTH`, so it is not relied on | Tokens, like OxiCloud | Ends the session where the server allows |
-| Other WebDAV | Address, user name and an app password (or a WebDAV-only password, Q6) | User name and password | Forget it |
+| Other WebDAV | Address, user name and an app or WebDAV password (Q6) | User name and password | Forget it |
 
 - **Storage.** The same `TokenStore` (system keychain, else the private file), keyed by server as today. What it
   stores becomes a `Credential`: `Bearer { access, refresh }` or `AppPassword { user, secret }`, serialised with a
@@ -362,8 +366,8 @@ local side:
   entries keep today's exact shape (an older client can still read them).
 - **Refresh.** `Session`'s refresh, lock file and take-over logic apply to `Bearer` only. An app password doesn't
   refresh; a 401 with one is "signed out" (it was revoked).
-- **Never the account password.** The Connect sheet and `craftcloud login` say "an app password, not your account
-  password", and where the server has a browser sign-in the client uses it instead of asking. The client can't
+- **Never the account password.** The Connect sheet and `craftcloud login` ask for "an app or WebDAV password, not
+  your account password", and where the server has a browser sign-in the client uses it instead of asking. The client can't
   verify which kind of password it was given; the wording and the flows are the guard.
 - **HTTPS.** A password is never sent over plain HTTP, except to a loopback address (tests, a local server).
 - **CLI.** The app password comes from a prompt or the `CRAFTCLOUD_APP_PASSWORD` environment variable, never from
@@ -383,7 +387,7 @@ local side:
 - **Connect sheet.** The person types an address, as today. The client detects the kind of server (section 7.4)
   and says what it found ("Nextcloud 31 at cloud.example.org"). A link "Another kind of server" lets them choose
   CraftCloud, Nextcloud, ownCloud, OpenCloud or "Other WebDAV server" (which asks for the WebDAV address, the user
-  name and an app password).
+  name and an app or WebDAV password).
 - **After the check.** Two-way: straight on to choosing folders, as today. Otherwise a panel before choosing
   folders, for example (wording for approval):
   - *Download only.* "This server overwrote a file it was asked to leave alone, so CraftCloud won't upload to it:
@@ -420,10 +424,10 @@ local side:
   skips gets its own "upgrade all devices together" line, as for OxiCloud.
 - **RELEASE-NOTES for 0.3.0** say: new server types (desktop and command line only); OxiCloud unchanged; on a new
   server type, every device syncing that account must run 0.3.0 or later.
-- **AGENTS.md's wording.** Two non-negotiables are written for OxiCloud: "WebDAV `DELETE` is permanent; deletes go to
-  the cloud's trash over REST" and "the client never sees a password". Their rule stays (never a permanent delete
-  of the person's files; never the account password); the pull requests that add other servers reword them to say
-  how each server meets it (Q11), with the maintainer's approval.
+- **AGENTS.md's wording.** The sign-in line is amended in this change (Q11). The delete line ("WebDAV `DELETE` is
+  permanent; deletes go to the cloud's trash over REST") is written for OxiCloud; its rule stays (never a
+  permanent delete of the person's files), and the pull request that adds the generic driver rewords it to say
+  how each server meets it.
 - **A folder another client syncs.** If the chosen local folder holds another sync client's database
   (`.sync_*.db`, `.owncloudsync.log`, `.csync_journal.db`), the client refuses it: two engines on one folder fight.
 
@@ -475,8 +479,9 @@ services:
       IDM_CREATE_DEMO_USERS: "false"
       IDM_ADMIN_PASSWORD: ${OPC_PASS:?}
   webdav:
-    # A plain WebDAV server with no trash and no versions, to test the client's own
-    # (rclone serve webdav or Apache mod_dav; which one passes the probe is measured then).
+    # Plain WebDAV servers with no trash and no versions: rclone serve webdav, which ignores
+    # If-Match and If-None-Match on PUT, for the download-only path; and one that keeps the
+    # guards, for the client's own trash and versions (Apache mod_dav, to measure then).
 ```
 
 The live tests make the app password the way a person would (Nextcloud's and ownCloud's app-password API for the
@@ -501,7 +506,7 @@ green). Sizes are rough lines changed.
 | 5 | `✅ Tests: the live suite against other servers` | `CRAFTCLOUD_TEST_KIND`, the compose file, the plain WebDAV server, download-only live tests | M, ~600 |
 | 6 | `✨ Sync: Nextcloud` | Profile: Login Flow v2, current-user-principal, trashbin, versions by id, OCS quota, 404 for a missing parent | M, ~600 |
 | 7 | `✨ Sync: ownCloud` | Profile: app passwords, trashbin, meta versions | S, ~300 |
-| 8 | `✨ Sync: OpenCloud` | Profile: its sign-in (verified then), spaces trash restore, the mode decided in Q1; UPSTREAM.md entries for `If-None-Match` and `MOVE` | M, ~500 |
+| 8 | `✨ Sync: OpenCloud` | Profile: its sign-in (verified then), spaces trash restore, download only (Q1); UPSTREAM.md links reva#866, #959 and #961 | M, ~500 |
 | 9 | `👷 CI: live tests against Nextcloud, ownCloud, OpenCloud and plain WebDAV` | The `other-servers` job | S, ~100 |
 | 10 | `✨ Desktop: choosing a server, and what the check found` | Connect sheet detection and choice, the mode panel and status, Settings › Server; kittest shots compared with `design/` | M, ~800 |
 | 11 | `📝 Docs: other servers` | ARCHITECTURE, CLI, STATUS, README, RELEASE-NOTES (0.3.0), ROADMAP M9 | S |
@@ -516,24 +521,71 @@ Pull requests 1 to 3 change nothing a person sees; 4 to 9 add server types reach
 | The refactor changes OxiCloud's behaviour by accident | PR 1 moves code without changing it, a golden-plan test, the live job, `e2e-sync` with the previous release |
 | A server passes the probe but misbehaves later (an upgrade, a proxy change) | Re-probe daily and on a version change; the runtime watch stops two-way sync at the first sign |
 | A guard that is honoured but not atomic (OpenCloud's `MOVE`) | Profiles may lower a mode from measurements; never raise it |
-| Nextcloud is slow (about 4 uploads a second) | Acceptable for 0.3.0; per-server live timeouts; parallel uploads later (Q7) |
+| Nextcloud is slow (about 4 uploads a second) | Acceptable for 0.3.0; per-server live timeouts; parallel guarded uploads later (Q7) |
 | Probe files in the person's server trash | One folder per probe, named clearly (`.craftcloud/probe/…`) |
-| Client trash fills the person's storage | Retention (Q5); `craftcloud trash empty` empties it; storage use counts it |
+| Client trash fills the person's storage | 30 days, flat (Q5); only the person empties it sooner; storage use counts it |
 | A person gives the account password anyway | The wording and the browser sign-ins; nothing more can be checked |
 | OpenCloud's sign-in for a third-party app needs an admin | Verified first in PR 8; if it needs an admin, OpenCloud waits, the rest ships |
 
-## 16. Open questions (for the maintainer)
+## 16. Decisions
 
-| # | Question | Options | Recommendation |
+The maintainer took the recommendations below after a research pass confirmed them. Only Q10 is still open.
+
+| # | Question | Decision | Why, and the evidence |
 |---|---|---|---|
-| Q1 | **OpenCloud: two-way or download only?** It ignores `If-None-Match: *`. The spike's workaround (upload under a temporary name, `MOVE` with `Overwrite: F`, then compare `oc:checksums` SHA1) passed 21/21, but its `MOVE` isn't atomic: two devices creating the same new name within the same moment can both "win", and the earlier one's bytes then survive only if OpenCloud kept them as a version, which wasn't measured. That's detection after the fact, not a guarded create. | (a) Download only until OpenCloud honours `If-None-Match: *`; (b) two-way through the workaround, marked experimental | **(a)**, and an UPSTREAM.md entry with the reproduction. (b) can follow if a version is shown to be kept on the losing `MOVE` |
-| Q2 | **A server with neither `COPY` nor its own versions:** old bytes can't be kept server-side before an overwrite. | (a) Download only; (b) two-way, uploading the snapshot from the last synced bytes (a download before every overwrite) | **(a)**. Rare (most WebDAV servers support `COPY`); (b) doubles the traffic for every save |
-| Q3 | **Probe OxiCloud too?** It would catch a proxy in front that strips the guards. | (a) Never; (b) once, silently, lowering the mode only on failure | **(a) for 0.3.0** (no change for OxiCloud users); revisit after 0.3.0 |
-| Q4 | **Skip folders whose ETag didn't change**, where the probe says folder ETags follow their contents? | (a) No, list every folder every cycle, everywhere; (b) yes, with a full listing every few minutes | **(a) for 0.3.0.** A single probe can't prove a fault that happens "not always"; trash decisions always re-list anyway |
-| Q5 | **How long the client trash keeps things** (servers without a trash) | 7, 30 days, or until emptied | **30 days**, emptied by `craftcloud trash empty` or "Empty trash" |
-| Q6 | **Plain WebDAV servers with no app passwords** (a NAS, `rclone serve webdav`): the only credential is a password. | (a) Accept a password for "Other WebDAV" only, worded "a WebDAV password (use a separate user if the server can make one)", HTTPS required; (b) refuse such servers | **(a)**: a dedicated WebDAV user is the NAS's app password. Nextcloud, ownCloud and OpenCloud never take this path |
-| Q7 | **Nextcloud's speed** (about 4 uploads a second) | (a) Accept for 0.3.0; (b) parallel uploads now | **(a)**; parallel uploads are their own change with their own tests |
-| Q8 | **Probe leftovers in the server trash** on known servers | (a) Accept one folder per probe; (b) also purge it from the server trash | **(a)**: purging from a person's trash is a permanent delete outside `.craftcloud/` |
-| Q9 | **SHA1 besides SHA-256** in the sync state, to compare against `oc:checksums` (ownCloud, OpenCloud) and tell "same bytes" without a download | (a) Not now; (b) store both | **(a)**, unless Q1 is (b), which needs it |
-| Q10 | **Where the work lands** | (a) `main`, new server types unreachable until PR 4/10; (b) a long-lived `feature/webdav-support` branch | **(a)** after this design: each pull request is shippable, and a long branch drifts from the sync fixes landing on `main` |
-| Q11 | **AGENTS.md says the desktop client never sees a password.** App passwords pasted in (ownCloud, other WebDAV, and Q6) break that sentence as written, though the M9 decision allows them. | (a) Amend it: "never the account password; an app password the person makes, or the server's browser sign-in"; (b) browser sign-in only, so ownCloud and plain WebDAV wait | **(a)**, worded in the pull request that adds the generic driver (PR 4) |
+| Q1 | **OpenCloud: two-way or download only?** | **Download only**, until OpenCloud honours `If-None-Match: *` and its guards hold under a race | Its WebDAV layer forwards only `If-Match` on upload and never sets the CS3 `if_not_exist` option the storage API has (`ocdav/put.go` on opencloud-eu/reva `main`; `provider_api.proto`; cs3org/reva#1786). `If-None-Match` ignored: reva#866 (open, reproduced on OpenCloud 8.1.0). Two uploads with the same `If-Match` both got 201 in 10 of 10 rounds on 9.0.0: reva#959 (open; TUS uploads, plain `PUT` not measured under a race). `MOVE` and `DELETE` ignore a stale `If-Match`: reva#961 (open; `DELETE` confirmed by a maintainer on 9.0.0, 14 November). The spike's workaround (temporary name, `MOVE` with `Overwrite: F`, `oc:checksums` SHA1) detects a lost race after the fact; it is not a guarded create. UPSTREAM.md links these issues; nothing new is filed |
+| Q2 | **A server with neither `COPY` nor its own versions** | **Download only** | Uploading a snapshot from the last synced bytes would add a download before every save. Note that `COPY` alone is not enough: `rclone serve webdav` (Go's `x/net/webdav`) has `COPY` but ignores `If-Match` and `If-None-Match` on `PUT` (golang/go#44492, open; the TODO in `webdav.go`), so it stops at the guard steps and gets download only. nginx's `dav` module appears not to check `If-*` either (read in its code, not tested). Nothing in this design promises two-way sync with either |
+| Q3 | **Probe OxiCloud too?** | **No, for 0.3.0** | No change for OxiCloud users; revisit after 0.3.0 |
+| Q4 | **Skip folders whose ETag didn't change?** | **No**: every folder is listed every cycle, on every server | Folder ETags miss changes in practice, not only in theory: Nextcloud documents that changes made directly on external storage update no ETag; OpenCloud's storage missed on-disk changes until reva PRs #808 and #809; OxiCloud's folder ETags didn't always change (UPSTREAM.md C8). A single probe can't prove such faults absent, and trash decisions re-list anyway |
+| Q5 | **How long the client trash keeps things** | **30 days, flat.** Only the person empties it sooner (`craftcloud trash empty`, "Empty trash") | Deliberately **not** Nextcloud's and ownCloud's default of deleting sooner when the quota runs low: that is an automatic permanent delete of the person's files |
+| Q6 | **Plain WebDAV servers with no app passwords** | **Accepted, for "Other WebDAV" only**, asked for as "an app or WebDAV password"; HTTPS required (loopback excepted) | Hosted WebDAV services make these separate passwords themselves: Koofr and Fastmail require an app password for WebDAV; Seafile has a separate WebDAV password, which its admin switches on. Synology has none (a dedicated WebDAV user is the way; sources disagree, unverified). Nextcloud, ownCloud and OpenCloud never take this path |
+| Q7 | **Nextcloud's speed** (about 4 uploads a second) | **Accepted for 0.3.0** | The faster upload paths, bulk upload (`/remote.php/dav/bulk`) and chunked upload v2, carry no preconditions, so the trait rules them out for good. The only safe speed-up is guarded `PUT`s in parallel (Nextcloud's own desktop client runs 6, `OWNCLOUD_MAX_PARALLEL`): a later change with its own tests |
+| Q8 | **Probe leftovers in the server trash** | **Accepted**: one folder per probe, never purged | Purging a person's trash is a permanent delete outside `.craftcloud/`. The leftovers expire from Nextcloud's and ownCloud's trash with their 30-day default |
+| Q9 | **SHA1 besides SHA-256** in the sync state | **Not now** | Not needed without the OpenCloud workaround (Q1). For later: ocdav accepts an `OC-Checksum` header on upload, a check by the server that the bytes arrived whole |
+| Q11 | **AGENTS.md said the client never sees a password** | **Amended in this change** to: "The client never asks for or stores your account password: it signs in through the server's browser sign-in, or with an app password you make on the server." (modelled on Nextcloud's public Login Flow docs) | This pull request targets `feature/webdav-support`, so the new wording reaches `main` together with the servers it is for |
+
+### Still open: Q10, where the work lands
+
+The maintainer decides. The points:
+
+- **On `main`:** pull requests 1 to 3 rewrite `crates/native/src/sync.rs`. On a long-lived branch every 0.2.x sync fix
+  landing on `main` meanwhile has to be merged by hand into moved code.
+- **But `main` needs a guard.** From pull request 4 on, a 0.2.x hotfix tagged from `main` would ship
+  `--kind webdav` early. So on `main` the new server kinds must be hidden, and refused without an explicit opt-in,
+  until the 0.3.0 release pull request (or hotfixes come from a `release/0.2` branch instead).
+- **Middle ground:** pull requests 1 to 3 (no change a person sees) to `main`; 4 to 11 on `feature/webdav-support`.
+
+## 17. Sources
+
+Measured by hand and with the spike on 2026-11-16 (section 5), and:
+
+- OpenCloud and reva:
+  - reva#866, `If-None-Match` ignored on uploads: https://github.com/opencloud-eu/reva/issues/866
+  - reva#959, concurrent conditional uploads both succeed: https://github.com/opencloud-eu/reva/issues/959
+  - reva#961, `MOVE` and `DELETE` ignore a stale `If-Match`: https://github.com/opencloud-eu/reva/issues/961
+  - reva#883, overlapping uploads and broken versions: https://github.com/opencloud-eu/reva/issues/883
+  - `ocdav/put.go`: https://github.com/opencloud-eu/reva/blob/main/internal/http/services/owncloud/ocdav/put.go
+  - CS3 `provider_api.proto`: https://github.com/cs3org/cs3apis/blob/main/cs3/storage/provider/v1beta1/provider_api.proto
+  - cs3org/reva#1786, exclusive uploads: https://github.com/cs3org/reva/issues/1786
+  - opencloud#3736, concurrent `MOVE`, `DELETE` and `PUT` races: https://github.com/opencloud-eu/opencloud/issues/3736
+  - OpenCloud releases 9.1.1 and 9.2.0: https://github.com/opencloud-eu/opencloud/releases/tag/v9.1.1,
+    https://github.com/opencloud-eu/opencloud/releases/tag/v9.2.0
+  - reva PRs #808 and #809, on-disk changes picked up: https://github.com/opencloud-eu/reva/pull/808,
+    https://github.com/opencloud-eu/reva/pull/809
+- Go and rclone, nginx:
+  - golang/go#44492: https://github.com/golang/go/issues/44492
+  - `x/net/webdav`, `webdav.go`: https://github.com/golang/net/blob/master/webdav/webdav.go
+  - `rclone serve webdav`: https://rclone.org/commands/rclone_serve_webdav/
+  - nginx `dav` module: https://nginx.org/en/docs/http/ngx_http_dav_module.html
+- Nextcloud:
+  - External storage, changes made outside Nextcloud: https://docs.nextcloud.com/server/latest/admin_manual/configuration_files/external_storage_configuration_gui.html
+  - Bulk upload: https://docs.nextcloud.com/server/latest/developer_manual/client_apis/WebDAV/bulkupload.html
+  - Chunked upload: https://docs.nextcloud.com/server/latest/developer_manual/client_apis/WebDAV/chunking.html
+  - Desktop client environment variables: https://docs.nextcloud.com/desktop/latest/envvars.html
+  - Login Flow: https://docs.nextcloud.com/server/latest/developer_manual/client_apis/LoginFlow/index.html
+  - Trash bin configuration: https://docs.nextcloud.com/server/latest/admin_manual/configuration_files/trashbin_configuration.html
+- ownCloud trash bin options: https://doc.owncloud.com/server/next/admin_manual/configuration/files/trashbin_options.html
+- App and WebDAV passwords elsewhere:
+  - Koofr: https://koofr.eu/help/koofr_with_webdav/how-do-i-connect-a-service-to-koofr-through-webdav/
+  - Fastmail: https://www.fastmail.help/hc/en-us/articles/1500000277882
+  - Seafile settings: https://manual.seafile.com/latest/config/seahub_settings_py/

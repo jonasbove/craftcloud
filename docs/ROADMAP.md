@@ -128,7 +128,8 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   as before, within a few levels of the old ones (mostly smaller files).
 - 2026-11-17: Docs: the design for M9, any WebDAV server as the storage ([WEBDAV-STORAGE.md](WEBDAV-STORAGE.md)),
   from the servers' answers measured on 2026-11-16 and a throwaway spike against Nextcloud, ownCloud and
-  OpenCloud. For approval before any code; eleven open questions at its end.
+  OpenCloud. The maintainer took its recommendations after a research pass; where the work lands (on `main`
+  or the feature branch) is still open. AGENTS.md's sign-in rule now reads "never the account password".
 - 2026-11-17: Web: the version a page shows before the server's config arrives is this build's own, not a fixed
   "0.1.0"; the README's screenshots (`docs/screenshots/`) are rendered again by `web_shots`, which now takes the
   version from the build too, so they say 0.2.0.
