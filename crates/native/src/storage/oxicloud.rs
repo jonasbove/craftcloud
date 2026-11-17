@@ -51,6 +51,8 @@ impl OxiCloud {
                 Ok(Some(now.map(|now| now == etag.trim_matches('"')).ok_or(())))
             }
             Ok(None) => Ok(None),
+            // By its words, exactly as the engine always matched it (a `StorageError::NotFound`,
+            // and nothing else that happens to end so), so this move changes nothing.
             Err(e) if e.to_string().ends_with(": 404") => Ok(None),
             Err(e) => Err(e),
         }

@@ -3,7 +3,7 @@
 **Stage: early alpha** · version 0.2.0 (share links and version history on the web, the Windows fixes, server hardening)
 
 > **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-17 · **Change:** minor (version 0.2.0; M9 moves to
-> 0.3.0); on Linux the tray counts as up only while a tray
+> 0.3.0; M9 pull request 1, the sync engine behind a storage trait); on Linux the tray counts as up only while a tray
 > host is on the bus, so closing the window on stock GNOME quits instead of leaving an invisible client; a start at
 > login stays in the tray on Windows and X11, and opens the window where there is no tray; an offline desktop window waits before asking who is signed in again; the
 > release checklist and the Release workflow check the Craft web app pins; an idle window uses next to no CPU; trace
@@ -480,3 +480,4 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 | 2026-11-16 | minor | Version 0.2.0; M4 done; M9 planned for 0.3.0. |
 | 2026-11-17 | minor | M10, no Python in the tree. |
 | 2026-11-17 | minor | M9's design, with the decisions; on `main` behind an opt-in until 0.3.0. |
+| 2026-11-17 | minor | M9 pull request 1: the sync engine behind a storage trait, OxiCloud its first driver; no change for a person. |

@@ -16,6 +16,18 @@
 //! - A permanent delete exists only as [`RemoteStorage::purge_own`], which takes an [`OwnPath`]:
 //!   a path inside CraftCloud's own `.craftcloud/` (an [`OwnPath`] can't be made for anything else).
 //!
+//! What does compile (so the examples below fail for the reason they name, not a wrong path):
+//!
+//! ```
+//! use craftcloud_native::storage::{OwnPath, RemoteStorage, TrashGuard};
+//! fn trash_unchanged(storage: &mut dyn RemoteStorage, file: &std::path::Path) {
+//!     let _ = storage.replace("Docs/a.txt", "\"e1\"", file);
+//!     let _ = storage.trash("Docs/a.txt", TrashGuard::File { etag: "\"e1\"".into() });
+//! }
+//! assert!(OwnPath::new(".craftcloud/probe/Laptop-1").is_some());
+//! assert!(OwnPath::new("Docs/a.txt").is_none());
+//! ```
+//!
 //! ```compile_fail
 //! // No such method: a delete goes to a trash, with its guard.
 //! fn delete_for_good(storage: &mut impl craftcloud_native::storage::RemoteStorage) {

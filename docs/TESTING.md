@@ -286,7 +286,10 @@ What the numbers mean:
 - **`crates/native/src/sync.rs` is 57%** (45% before). Most of the engine (`Engine::try_cycle`, `fetch`,
   `move_folders`, `hold_no_room`, `restore_trashed`) talks to a server; `sync/engine_tests.rs` builds an
   `Engine` against a scripted server (`crates/native/src/fake_server.rs`) for switching folders off, the guards
-  before a trash and the sign-in during a cycle. Its pure helpers (`scan_local`, `screen_names`, `split_deletes`, `bring_back`, the part files) are covered. The
+  before a trash and the sign-in during a cycle, and `sync/golden_tests.rs` runs whole cycles of 15 scenarios
+  against a small scripted OxiCloud and compares every request, activity line and saved state with the logs in
+  `sync/golden/` (`CRAFTCLOUD_BLESS=1` records them again, only for a change meant to alter what goes over the
+  wire), checking on the way that every write carries its guard. Its pure helpers (`scan_local`, `screen_names`, `split_deletes`, `bring_back`, the part files) are covered. The
   live tests cover the engine's main paths (two computers, renames, folder moves, deletes to the trash, quota,
   resumed downloads, held and discarded mass deletes); the table below lists what neither reaches.
 - **`session.rs` is 73%** (13% before): the token refresh, the take-over and the sign-out are tested against the
