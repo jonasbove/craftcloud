@@ -13,6 +13,7 @@ mod runtime_config;
 pub mod server_settings;
 mod server_url;
 pub mod size;
+pub mod storage;
 pub mod sync;
 
 pub use runtime_config::{RuntimeConfig, RuntimeConfigError};

@@ -17,11 +17,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
 use craftcloud_core::ServerUrl;
-use craftcloud_core::api::auth::{self, Tokens};
-use craftcloud_core::api::dav::{self, Uploaded, Write};
-use craftcloud_core::api::resources::Kind;
-use craftcloud_core::api::{admin, files, folders, trash};
-use craftcloud_core::http::HttpResponse;
+use craftcloud_core::api::auth::Tokens;
+use craftcloud_core::api::dav::{self, Write};
 use craftcloud_core::names::{self, Platform};
 use craftcloud_core::reconcile::{self, Action, Known, LocalFile, RemoteFile, State, Tree};
 use craftcloud_core::sync::{
@@ -29,8 +26,10 @@ use craftcloud_core::sync::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::http::{self, Waker};
+use crate::http::Waker;
 pub use crate::session::Session;
+use crate::storage::oxicloud::OxiCloud;
+use crate::storage::{MoveGuard, Moved, RemoteStorage, StorageError, TrashGuard, TrashItem, Trashed, Written};
 
 /// What the sync says while the server can't be reached (the error itself goes to the log).
 pub const OFFLINE: &str = "Can't reach the server. Trying again…";
@@ -40,13 +39,9 @@ pub const INTERVAL: Duration = Duration::from_secs(15);
 /// The wait after a cycle that moved something: changes come in bursts (an app saving several
 /// files, another computer still uploading), so look again soon.
 const BUSY_INTERVAL: Duration = Duration::from_secs(4);
-/// Folders listed at the same time during a scan.
-const LISTERS: usize = 4;
 /// How long an upload refused for the quota waits before it's tried again anyway (the cloud's
 /// count of the storage use lags behind, e.g. after emptying the trash).
 const NO_ROOM_RETRY: Duration = Duration::from_secs(5 * 60);
-/// How often an admin's client asks the cloud to count the storage use again.
-const RECOUNT_EVERY: Duration = Duration::from_secs(60);
 /// Files written more recently than this wait for the next cycle (an app may still be saving).
 pub const SETTLE_MS: i64 = 2_000;
 /// How long the folder watcher waits after the last change (a bit over `SETTLE_MS`, so the
@@ -148,23 +143,23 @@ pub fn start(plan: SyncPlan, tokens: Tokens, device: String, on_tokens: TokenSin
 pub fn start_with(plan: SyncPlan, session: Session, device: String, waker: Waker) -> Handle {
     let progress: Progress = Arc::default();
     let (to_engine, inbox) = channel();
-    let commands = Commands::new(to_engine.clone(), Arc::clone(&session.cancel));
+    let cancel = Arc::clone(&session.cancel);
+    let commands = Commands::new(to_engine.clone(), Arc::clone(&cancel));
     let shared = Arc::clone(&progress);
     let to_self = to_engine;
     let spawned = std::thread::Builder::new().name("craftcloud-sync".into()).spawn(move || {
         let watcher = watch(Path::new(&plan.local_folder), to_self);
         let mut engine = Engine {
             plan,
-            session,
+            storage: OxiCloud::new(session),
+            cancel,
             device,
             progress: shared,
             waker,
             paused: false,
             settled: BTreeSet::new(),
-            ids: BTreeMap::new(),
             reported: BTreeSet::new(),
             no_room: BTreeMap::new(),
-            recounted: None,
             refused: BTreeMap::new(),
             no_folder_move: BTreeSet::new(),
             platform: Platform::current(),
@@ -212,18 +207,19 @@ struct Saved {
     kept_conflicts: BTreeSet<String>,
 }
 
-struct Engine {
+/// The sync engine, over a server it reaches only through [`RemoteStorage`] (OxiCloud's driver
+/// unless a test gives it another).
+struct Engine<S: RemoteStorage = OxiCloud> {
     plan: SyncPlan,
-    session: Session,
+    storage: S,
+    /// Set to stop a transfer under way (Pause, Quit); shared with the storage's transfers.
+    cancel: Arc<AtomicBool>,
     device: String,
     progress: Progress,
     waker: Waker,
     paused: bool,
     /// Local files this client itself just changed (a settled conflict): no 2-second wait for them.
     settled: BTreeSet<String>,
-    /// REST folder ids by cloud path (`""` is the drive's root), learnt this cycle: WebDAV has no
-    /// ids, and moving to the trash goes by id.
-    ids: BTreeMap<String, String>,
     /// Local things outside the plan already reported in the activity list (once per run).
     reported: BTreeSet<String>,
     /// Uploads the cloud refused for its quota, with the file's size and time then: not tried
@@ -232,8 +228,6 @@ struct Engine {
     /// Uploads the cloud refused outright (a 4xx for the name or the file), with the file's size
     /// and time then: not tried again until the file changes.
     refused: BTreeMap<String, LocalFile>,
-    /// When the cloud was last asked to count the storage use again (admins only).
-    recounted: Option<Instant>,
     /// Folder moves (from, to) that failed: their files are synced one by one instead.
     no_folder_move: BTreeSet<(String, String)>,
     /// The name rules of this computer's file system (`names::Platform`).
@@ -270,7 +264,7 @@ fn watch(root: &Path, to_engine: Sender<Command>) -> Option<notify::RecommendedW
     Some(watcher)
 }
 
-impl Engine {
+impl<S: RemoteStorage> Engine<S> {
     fn run(&mut self, inbox: &Receiver<Command>) {
         let mut confirm = Deletes::Hold;
         let mut ticket = 0;
@@ -280,7 +274,7 @@ impl Engine {
             } else {
                 // A pause asked for before this cycle has been read already (it would have stopped
                 // the last cycle's transfer, not this one's).
-                self.session.cancel.store(false, Ordering::Relaxed);
+                self.cancel.store(false, Ordering::Relaxed);
                 self.cycle(confirm);
             }
             // Commands are read between cycles, so a ticket taken before this cycle is served by it.
@@ -410,7 +404,8 @@ impl Engine {
     }
 
     fn cycle(&mut self, confirm: Deletes) {
-        self.session.offline = None;
+        // Forgets the last pass's offline error and what it learnt (REST ids).
+        self.storage.begin_pass();
         self.update(|p| {
             p.files_done = 0;
             p.files_total = 0;
@@ -419,8 +414,8 @@ impl Engine {
         let state = match result {
             Ok(()) => SyncState::UpToDate,
             Err(Stop::Hold(state)) => state,
-            Err(Stop::Error(_)) if self.session.signed_out => SyncState::SignedOut,
-            Err(Stop::Error(e)) => match self.session.offline.take() {
+            Err(Stop::Error(_)) if self.storage.signed_out() => SyncState::SignedOut,
+            Err(Stop::Error(e)) => match self.storage.take_offline() {
                 Some(why) => {
                     log::warn!("offline: {why}");
                     SyncState::Offline(OFFLINE.into())
@@ -441,7 +436,6 @@ impl Engine {
     }
 
     fn try_cycle(&mut self, confirm: Deletes) -> Result<(), Stop> {
-        self.ids.clear();
         let root = self.root();
         let state_path = self.state_path();
         // Never made here: a folder that's gone was moved, deleted, or is on a drive that isn't
@@ -547,7 +541,7 @@ impl Engine {
         folders.extend(held_folders(&state, &held));
         let mut saved = Saved { server: self.plan.server.clone(), state: State::default(), kept_conflicts };
         for action in actions {
-            if self.session.cancel.load(Ordering::Relaxed) {
+            if self.cancel.load(Ordering::Relaxed) {
                 // Paused or quitting: the rest waits (what was done so far is saved).
                 return Err(Stop::Hold(SyncState::Paused));
             }
@@ -568,7 +562,7 @@ impl Engine {
                 }),
                 // One failed file doesn't stop the others; it is tried again next cycle (or, when it
                 // doesn't fit in the cloud, once there's room).
-                Err(e) if self.session.cancel.load(Ordering::Relaxed) => {
+                Err(e) if self.cancel.load(Ordering::Relaxed) => {
                     log::info!("{label}: {e}");
                     self.update(|p| {
                         p.unsynced.remove(&path);
@@ -675,17 +669,16 @@ impl Engine {
             if remote.folders.contains(parent) {
                 continue;
             }
-            let resp = self.session.call(&dav::create_folder(&self.session.server, parent))?;
-            if !dav::folder_exists_after(&resp) {
-                return Err(format!("making {parent}: the server answered {}", resp.status));
+            match self.storage.make_folder(parent) {
+                Err(StorageError::Status(status)) => return Err(format!("making {parent}: the server answered {status}")),
+                made => made?,
             }
             remote.folders.insert(parent.to_owned());
         }
-        let resp = self.session.call(&dav::move_to(&self.session.server, from, to, true))?;
-        if !resp.is_success() {
-            return Err(format!("the server answered {}", resp.status));
+        if let Moved::Refused(status) = self.storage.move_to(from, to, MoveGuard::Folder)? {
+            return Err(format!("the server answered {status}"));
         }
-        if let Err(e) = self.session.move_versions(from, to) {
+        if let Err(e) = self.storage.move_versions(from, to) {
             log::warn!("{e}");
         }
         Ok(())
@@ -707,22 +700,9 @@ impl Engine {
         if self.no_room.is_empty() {
             return self.leave_out(actions);
         }
-        let me = |s: &mut Session| s.call(&auth::me(&s.server)).ok().and_then(|r| auth::parse_me(&r).ok().flatten());
-        let free = |me: &auth::Me| if me.storage_quota_bytes == 0 { u64::MAX } else { me.storage_quota_bytes.saturating_sub(me.storage_used_bytes) };
         let needed = self.no_room.values().map(|(f, _)| f.size).min().unwrap_or(0);
-        let mut now = me(&mut self.session);
-        if let Some(m) = &now
-            && free(m) < needed
-            && m.user.is_admin()
-            && self.recounted.is_none_or(|at| at.elapsed() >= RECOUNT_EVERY)
-        {
-            self.recounted = Some(Instant::now());
-            let recount = self.session.call(&admin::trigger_job(&self.session.server, admin::USAGE_RECONCILE));
-            if recount.is_ok_and(|r| r.is_success()) {
-                now = me(&mut self.session);
-            }
-        }
-        if let Some(free) = now.as_ref().map(free) {
+        // A failure here is shrugged off (the uploads just wait), as it always was.
+        if let Some(free) = self.storage.free_space(needed).ok().flatten() {
             self.no_room.retain(|_, (then, _)| then.size > free);
         }
         self.leave_out(actions)
@@ -831,7 +811,7 @@ impl Engine {
     fn scan_remote(&mut self) -> Result<Tree<RemoteFile>, String> {
         let mut tree = Tree::default();
         let mut level = Vec::new();
-        for e in self.list("")? {
+        for e in self.storage.list("")? {
             if e.is_folder {
                 if in_plan(&self.plan, &e.path, true) {
                     level.push(e.path);
@@ -842,7 +822,7 @@ impl Engine {
         }
         while !level.is_empty() {
             let mut next = Vec::new();
-            for (folder, entries) in self.list_many(&level)? {
+            for (folder, entries) in self.storage.list_many(&level)? {
                 tree.folders.insert(folder);
                 for e in entries {
                     if !in_plan(&self.plan, &e.path, e.is_folder) {
@@ -860,48 +840,6 @@ impl Engine {
         Ok(tree)
     }
 
-    /// Lists several folders at once. A folder gone meanwhile (404) is left out; an expired token
-    /// is refreshed once and those folders are listed again.
-    fn list_many(&mut self, folders: &[String]) -> Result<Vec<(String, Vec<dav::Entry>)>, String> {
-        let mut out = Vec::new();
-        for chunk in folders.chunks(LISTERS) {
-            let (server, tokens) = (&self.session.server, &self.session.tokens);
-            let answers: Vec<(String, Result<HttpResponse, String>)> = std::thread::scope(|scope| {
-                let jobs: Vec<_> = chunk
-                    .iter()
-                    .map(|folder| (folder.clone(), scope.spawn(move || http::execute(&tokens.authorize(dav::list(server, folder))))))
-                    .collect();
-                jobs.into_iter().map(|(f, job)| (f, job.join().unwrap_or_else(|_| Err("listing thread failed".into())))).collect()
-            });
-            for (folder, answer) in answers {
-                // No answer at all: offline (the pass ends here, and is tried again).
-                let answer = answer.inspect_err(|e| self.session.offline = Some(e.clone()));
-                let resp = match answer? {
-                    r if auth::is_expired(&r) => self.session.call(&dav::list(&self.session.server, &folder))?,
-                    r => r,
-                };
-                if resp.status == 404 {
-                    continue;
-                }
-                let mut entries = dav::parse_list(&resp).map_err(|e| format!("listing {folder:?}: {e}"))?;
-                entries.retain(|e| e.path != folder);
-                out.push((folder, entries));
-            }
-        }
-        Ok(out)
-    }
-
-    fn list(&mut self, folder: &str) -> Result<Vec<dav::Entry>, String> {
-        let resp = self.session.call(&dav::list(&self.session.server, folder))?;
-        if resp.status == 404 {
-            return Err(format!("listing {folder:?}: 404"));
-        }
-        let mut entries = dav::parse_list(&resp).map_err(|e| format!("listing {folder:?}: {e}"))?;
-        let me = folder.trim_matches('/');
-        entries.retain(|e| e.path != me);
-        Ok(entries)
-    }
-
     /// Does one action and records it. `Ok(Some(…))` is a line for the activity list.
     fn apply(
         &mut self,
@@ -914,10 +852,7 @@ impl Engine {
         let local_path = |p: &str| local_relative(p).map(|rel| root.join(rel)).ok_or_else(|| format!("{p}: name not allowed here"));
         match action {
             Action::MakeRemoteFolder(f) => {
-                let resp = self.session.call(&dav::create_folder(&self.session.server, f))?;
-                if !dav::folder_exists_after(&resp) {
-                    return Err(format!("the server answered {}", resp.status));
-                }
+                self.storage.make_folder(f)?;
                 if local_path(f)?.is_dir() {
                     folders.insert(f.clone());
                 }
@@ -956,12 +891,10 @@ impl Engine {
                 Ok(Some((ActivityKind::Deleted, "to the cloud trash".into())))
             }
             Action::DeleteRemoteFolder { path, files } => {
-                if !self.cloud_holds(path, files)? {
+                // Only when a fresh listing of every level holds exactly the files planned.
+                if self.storage.trash(path, TrashGuard::Folder { files: files.clone() })? != Trashed::Done {
                     // Changed in the cloud meanwhile: the next cycle sees what (and brings it back).
                     return Ok(None);
-                }
-                if !self.trash_folder(path)? {
-                    return Err("the folder is still in the cloud".into());
                 }
                 let prefix = format!("{path}/");
                 state.files.retain(|p, _| !p.starts_with(&prefix));
@@ -1021,13 +954,9 @@ impl Engine {
                 Ok(Some((ActivityKind::Conflict, format!("the cloud has a {cloud} of this name; your {yours} is kept as {name}"))))
             }
             Action::RemoveRemoteFolder(f) => {
-                // Only an empty folder: a DELETE on a folder is recursive, so the cloud must say it's
-                // empty right now. A listing that fails says nothing: keep the folder (T-064).
-                match self.list(f) {
-                    Ok(entries) if entries.is_empty() => {}
-                    _ => return Ok(None),
-                }
-                if self.trash_folder(f)? {
+                // Only an empty folder: the cloud must say it's empty right now. A listing that fails
+                // says nothing: keep the folder (T-064).
+                if self.storage.trash(f, TrashGuard::EmptyFolder)? == Trashed::Done {
                     folders.remove(f);
                 }
                 Ok(None)
@@ -1041,24 +970,12 @@ impl Engine {
         }
     }
 
-    /// Whether the cloud file at `path` is still at version `etag` (`None`: it's gone). Neither
-    /// REST's delete nor OxiCloud's MOVE takes If-Match, so this is checked first (the window is
-    /// one request). A file listed without an ETag can't be shown to be at `etag`, so it counts
-    /// as changed (never trashed or moved on that guess), and the activity list says so once.
-    fn still_at(&mut self, path: &str, etag: &str) -> Result<Option<bool>, String> {
-        let (parent, _) = path.rsplit_once('/').unwrap_or(("", path));
-        match self.list(parent).map(|entries| entries.into_iter().find(|e| e.path == path)) {
-            Ok(Some(e)) => {
-                let now = e.etag.as_deref().map(|now| now.trim_matches('"')).filter(|now| !now.is_empty());
-                if now.is_none() && self.reported.insert(format!("no-etag:{path}")) {
-                    let note = event(ActivityKind::Skipped, path, None, "the cloud lists no version for it, so it is left as it is there".into());
-                    self.update(|p| p.record(note));
-                }
-                Ok(Some(now.is_some_and(|now| now == etag.trim_matches('"'))))
-            }
-            Ok(None) => Ok(None),
-            Err(e) if e.ends_with(": 404") => Ok(None),
-            Err(e) => Err(e),
+    /// Says once that the cloud file at `path` is listed without an ETag: it can't be shown to be
+    /// the version planned, so it is never trashed or moved on that guess.
+    fn note_unversioned(&mut self, path: &str) {
+        if self.reported.insert(format!("no-etag:{path}")) {
+            let note = event(ActivityKind::Skipped, path, None, "the cloud lists no version for it, so it is left as it is there".into());
+            self.update(|p| p.record(note));
         }
     }
 
@@ -1068,21 +985,22 @@ impl Engine {
     fn move_remote(&mut self, root: &Path, from: &str, to: &str, etag: &str, state: &mut State) -> Result<Option<Done>, String> {
         let file = local_relative(to).map(|rel| root.join(rel)).ok_or("name not allowed")?;
         let meta = local_meta(&file).ok_or("the file disappeared")?;
-        if self.still_at(from, etag)? == Some(true) {
-            let resp = self.session.call(&dav::move_to(&self.session.server, from, to, false))?;
-            if resp.is_success() {
+        match self.storage.move_to(from, to, MoveGuard::File { etag: etag.to_owned() })? {
+            Moved::Done => {
                 // The version last synced (a change made in the cloud meanwhile then comes down
                 // under the new name next cycle).
                 let old = state.files.remove(from);
                 let hash = old.as_ref().and_then(|k| k.hash.clone());
                 let synced = old.map_or_else(|| etag.to_owned(), |k| k.etag);
                 state.files.insert(to.to_owned(), Known { etag: synced, size: meta.size, mtime: meta.mtime, hash });
-                if let Err(e) = self.session.move_versions(from, to) {
+                if let Err(e) = self.storage.move_versions(from, to) {
                     log::warn!("{e}");
                 }
                 return Ok(Some((ActivityKind::Moved, format!("from {from}"))));
             }
-            log::warn!("moving {from} to {to} in the cloud: the server answered {}; uploading instead", resp.status);
+            Moved::Refused(status) => log::warn!("moving {from} to {to} in the cloud: the server answered {status}; uploading instead"),
+            Moved::Unversioned => self.note_unversioned(from),
+            Moved::Changed => {}
         }
         state.files.remove(from);
         match self.put(root, to, &Write::Create, state)? {
@@ -1091,93 +1009,15 @@ impl Engine {
         }
     }
 
-    /// Whether the cloud folder `path` holds exactly `files` (path, ETag), nothing more or newer,
-    /// listed again now: a folder goes to the trash whole only then. A file listed without an
-    /// ETag can't be shown unchanged, so it keeps the folder.
-    fn cloud_holds(&mut self, path: &str, files: &[(String, String)]) -> Result<bool, String> {
-        let mut found: BTreeMap<String, Option<String>> = BTreeMap::new();
-        let mut level = vec![path.to_owned()];
-        while !level.is_empty() {
-            let mut next = Vec::new();
-            for (_, entries) in self.list_many(&level)? {
-                for e in entries {
-                    if e.is_folder {
-                        next.push(e.path);
-                    } else {
-                        found.insert(e.path, e.etag);
-                    }
-                }
-            }
-            level = next;
-        }
-        Ok(found.len() == files.len()
-            && files.iter().all(|(p, etag)| {
-                let now = found.get(p).and_then(Option::as_deref).map(|now| now.trim_matches('"')).filter(|now| !now.is_empty());
-                now.is_some_and(|now| now == etag.trim_matches('"'))
-            }))
-    }
-
     /// Moves a cloud file to the trash, unless it changed since `etag` (then `false`: it stays).
     /// One already gone counts as done.
     fn trash_file(&mut self, path: &str, etag: &str) -> Result<bool, String> {
-        let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
-        match self.still_at(path, etag)? {
-            None => return Ok(true),
-            Some(false) => return Ok(false),
-            Some(true) => {}
-        }
-        let Some(folder) = self.folder_id(parent)? else { return Ok(true) };
-        let Some(id) = self.child_id(&folder, name, Kind::File)? else { return Ok(true) };
-        let resp = self.session.call(&files::trash(&self.session.server, &id))?;
-        if resp.is_success() || resp.status == 404 { Ok(true) } else { Err(format!("moving it to the trash: the server answered {}", resp.status)) }
-    }
-
-    /// Moves an (empty) cloud folder to the trash; `true` when it's gone.
-    fn trash_folder(&mut self, path: &str) -> Result<bool, String> {
-        let Some(id) = self.folder_id(path)? else { return Ok(true) };
-        let resp = self.session.call(&folders::trash(&self.session.server, &id))?;
-        self.ids.retain(|p, _| p != path && !p.starts_with(&format!("{path}/")));
-        if resp.is_success() || resp.status == 404 { Ok(true) } else { Err(format!("moving it to the trash: the server answered {}", resp.status)) }
-    }
-
-    /// The REST id of the cloud folder at `path` (`""`: the drive's root), or `None` when there is
-    /// no such folder.
-    fn folder_id(&mut self, path: &str) -> Result<Option<String>, String> {
-        if let Some(id) = self.ids.get(path) {
-            return Ok(Some(id.clone()));
-        }
-        let id = if path.is_empty() {
-            let resp = self.session.call(&folders::roots(&self.session.server))?;
-            let roots = folders::parse_roots(&resp).map_err(|e| format!("the drive's root folder: {e}"))?;
-            roots.into_iter().find(|f| f.parent_id.is_none()).map(|f| f.id)
-        } else {
-            let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
-            match self.folder_id(parent)? {
-                Some(parent) => self.child_id(&parent, name, Kind::Folder)?,
-                None => None,
-            }
-        };
-        if let Some(id) = &id {
-            self.ids.insert(path.to_owned(), id.clone());
-        }
-        Ok(id)
-    }
-
-    /// The id of `name` (a file or a folder, as `kind` says) in the folder with id `folder`.
-    fn child_id(&mut self, folder: &str, name: &str, kind: Kind) -> Result<Option<String>, String> {
-        let mut cursor: Option<String> = None;
-        loop {
-            let resp = self.session.call(&folders::contents(&self.session.server, folder, Some(200), cursor.as_deref()))?;
-            if resp.status == 404 {
-                return Ok(None);
-            }
-            let page = folders::parse_contents_all(&resp).map_err(|e| format!("listing a folder: {e}"))?;
-            if let Some(found) = page.items.iter().find(|r| r.kind() == kind && r.name() == name) {
-                return Ok(Some(found.id().to_owned()));
-            }
-            match page.next_cursor {
-                Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
-                _ => return Ok(None),
+        match self.storage.trash(path, TrashGuard::File { etag: etag.to_owned() })? {
+            Trashed::Done => Ok(true),
+            Trashed::Changed => Ok(false),
+            Trashed::Unversioned => {
+                self.note_unversioned(path);
+                Ok(false)
             }
         }
     }
@@ -1187,41 +1027,31 @@ impl Engine {
         let file = local_relative(path).map(|rel| root.join(rel)).ok_or("name not allowed")?;
         let before = local_meta(&file).ok_or("the file disappeared")?;
         let hash = hash_of(&file, &before);
-        let req = dav::upload(&self.session.server, path, Vec::new(), write);
-        let resp = self.session.upload(&req, &file)?;
-        if resp.status == 507 {
-            self.no_room.insert(path.to_owned(), (before, Instant::now()));
-            // In our own words and units: the server's message counts in binary units (T-049).
-            return Err(format!(
-                "no room in the cloud for this file ({}): the storage is full. Storage use updates within a few minutes after emptying the trash (earlier versions count too); it's tried again then.",
-                craftcloud_core::size::text(before.size)
-            ));
-        }
-        if matches!(resp.status, 400 | 403 | 414 | 415 | 422) {
-            // Refused for what it is, not for now: tried again once the file changes.
-            self.refused.insert(path.to_owned(), before);
-            let why = serde_json::from_slice::<serde_json::Value>(&resp.body)
-                .ok()
-                .and_then(|v| v["message"].as_str().map(str::to_owned))
-                .unwrap_or_else(|| format!("the server answered {}", resp.status));
-            return Err(format!("the cloud refused it: {}. Not tried again until it changes.", why.trim_end_matches('.')));
-        }
-        match dav::parse_upload(&resp).map_err(|e| e.to_string())? {
-            Uploaded::Conflict => Ok(false),
-            Uploaded::Saved { etag } => {
-                let etag = match etag {
-                    Some(e) => e,
-                    None => self.remote_etag(path)?,
-                };
+        let written = match write {
+            Write::Create => self.storage.create(path, &file),
+            Write::Replace { etag } => self.storage.replace(path, etag, &file),
+        };
+        match written {
+            Err(StorageError::NoRoom) => {
+                self.no_room.insert(path.to_owned(), (before, Instant::now()));
+                // In our own words and units: the server's message counts in binary units (T-049).
+                Err(format!(
+                    "no room in the cloud for this file ({}): the storage is full. Storage use updates within a few minutes after emptying the trash (earlier versions count too); it's tried again then.",
+                    craftcloud_core::size::text(before.size)
+                ))
+            }
+            Err(StorageError::Refused(why)) => {
+                // Refused for what it is, not for now: tried again once the file changes.
+                self.refused.insert(path.to_owned(), before);
+                Err(format!("the cloud refused it: {}. Not tried again until it changes.", why.trim_end_matches('.')))
+            }
+            Err(e) => Err(e.into()),
+            Ok(Written::Conflict) => Ok(false),
+            Ok(Written::Saved { etag }) => {
                 state.files.insert(path.to_owned(), Known { etag, size: before.size, mtime: before.mtime, hash });
                 Ok(true)
             }
         }
-    }
-
-    fn remote_etag(&mut self, path: &str) -> Result<String, String> {
-        let (parent, _) = path.rsplit_once('/').unwrap_or(("", path));
-        self.list(parent)?.into_iter().find(|e| e.path == path).and_then(|e| e.etag).ok_or_else(|| format!("{path}: no ETag after upload"))
     }
 
     /// Puts back from the cloud's trash what the held deletes in `actions` would delete here
@@ -1232,27 +1062,16 @@ impl Engine {
         if gone.is_empty() {
             return Ok(back);
         }
-        let mut listed = Vec::new();
-        let mut cursor: Option<String> = None;
-        loop {
-            let resp = self.session.call(&trash::list(&self.session.server, Some(200), cursor.as_deref()))?;
-            let page = trash::parse_list(&resp).map_err(|e| format!("listing the trash: {e}"))?;
-            for item in page.items {
-                if let Some(place) = item.resource.cloud_path() {
-                    listed.push((item.resource.id().to_owned(), place, item.trashed_at));
-                }
-            }
-            match page.next_cursor {
-                Some(c) => cursor = Some(c),
-                None => break,
-            }
-        }
+        let items = self.storage.trash_list()?;
+        let listed: Vec<(String, String, String)> = items.iter().map(|i| (i.id.clone(), i.path.clone(), i.trashed_at.clone())).collect();
         for (id, place, covers) in trash_to_restore(&gone, &listed) {
-            let resp = self.session.call(&trash::restore(&self.session.server, &id))?;
-            if resp.is_success() {
-                back.extend(covers);
-            } else {
-                log::warn!("putting {place} back from the trash failed ({}); its files are uploaded again", resp.status);
+            let item = items.iter().find(|i| i.id == id).cloned().unwrap_or(TrashItem { id, path: place.clone(), trashed_at: String::new() });
+            match self.storage.restore(&item) {
+                Ok(()) => back.extend(covers),
+                Err(StorageError::Status(status)) => {
+                    log::warn!("putting {place} back from the trash failed ({status}); its files are uploaded again");
+                }
+                Err(e) => return Err(e.into()),
             }
         }
         Ok(back)
@@ -1260,7 +1079,7 @@ impl Engine {
 
     /// Keeps the cloud version about to be replaced in `.craftcloud/versions/<path>/`, newest 5.
     fn snapshot(&mut self, path: &str) -> Result<(), String> {
-        self.session.snapshot(path)
+        Ok(self.storage.keep_version(path)?)
     }
 
     /// Streams a cloud file into place (temporary name, then rename) and records it. Where it
@@ -1293,15 +1112,11 @@ impl Engine {
         }
         remove_other_parts(dest, &part);
         let have = listed.and_then(|r| resume_from(std::fs::metadata(&part).ok().map(|m| m.len()), r.size));
-        let mut req = dav::download(&self.session.server, path);
-        if let Some(from) = have {
-            req = req.header("Range", format!("bytes={from}-"));
-        }
-        let mut resp = self.session.open(&req)?;
-        let etag = resp.headers().get("etag").and_then(|v| v.to_str().ok()).map(str::to_owned);
-        let resumed = match (resp.status().as_u16(), have, listed) {
+        let mut resp = self.storage.download(path, have)?;
+        let etag = resp.header("etag").map(str::to_owned);
+        let resumed = match (resp.status(), have, listed) {
             (206, Some(from), Some(r)) => {
-                let range = resp.headers().get("content-range").and_then(|v| v.to_str().ok()).unwrap_or_default();
+                let range = resp.header("content-range").unwrap_or_default();
                 if !range_continues(range, from, r.size) || !etag.as_deref().is_some_and(|e| e.trim_matches('"') == r.etag.trim_matches('"')) {
                     // Another version now: start over next time.
                     let _ = std::fs::remove_file(&part);
@@ -1315,7 +1130,7 @@ impl Engine {
         let written = (|| {
             let mut out = if resumed.is_some() { std::fs::OpenOptions::new().append(true).open(&part) } else { std::fs::File::create(&part) }
                 .map_err(|e| format!("can't write {}: {e}", part.display()))?;
-            http::stream_body(&mut resp, &mut out, &self.session.cancel)?;
+            resp.stream_to(&mut out)?;
             out.sync_all().map_err(|e| e.to_string())
         })();
         if let Err(e) = written {
@@ -1335,7 +1150,7 @@ impl Engine {
         }
         let etag = match etag {
             Some(e) => e,
-            None => self.remote_etag(path)?,
+            None => self.storage.listed_etag(path)?,
         };
         Ok((part, etag, resumed))
     }

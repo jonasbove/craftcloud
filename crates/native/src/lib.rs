@@ -11,6 +11,7 @@ pub mod open;
 pub mod secrets;
 pub mod session;
 pub mod settings;
+pub mod storage;
 pub mod sync;
 pub mod url_scheme;
 
