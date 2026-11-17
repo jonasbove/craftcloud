@@ -1,0 +1,28 @@
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Docs/a.txt | authorization: Bearer a1 | depth: 0 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/.craftcloud/versions/Docs/a.txt/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+MKCOL /webdav/.craftcloud/ | authorization: Bearer a1
+MKCOL /webdav/.craftcloud/versions/ | authorization: Bearer a1
+MKCOL /webdav/.craftcloud/versions/Docs/ | authorization: Bearer a1
+MKCOL /webdav/.craftcloud/versions/Docs/a.txt/ | authorization: Bearer a1
+COPY /webdav/Docs/a.txt | authorization: Bearer a1 | destination: http://SERVER/webdav/.craftcloud/versions/Docs/a.txt/<STAMP>_<STAMP> | overwrite: F
+PROPFIND /webdav/.craftcloud/versions/Docs/a.txt/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PUT /webdav/Docs/a.txt | authorization: Bearer a1 | if-match: "e1" | body: "mine, changed"
+GET /webdav/Docs/a.txt | authorization: Bearer a1
+PUT /webdav/Docs/a%20(conflict%20<WHEN>%20Laptop).txt | authorization: Bearer a1 | if-none-match: * | body: "mine, changed"
+activity: Conflict "Docs/a.txt" Some(6) yours kept as a (conflict <WHEN> Laptop).txt
+state: UpToDate
+conflict: Docs/a.txt / Docs/a (conflict <WHEN> Laptop).txt
+saved: Docs/a (conflict <WHEN> Laptop).txt "n1" 13
+saved: Docs/a.txt "e9" 6
+saved folders: {"Docs"}
+== end
+local: Docs/ ""
+local: Docs/a (conflict <WHEN> Laptop).txt "mine, changed"
+local: Docs/a.txt "theirs"
+cloud: .craftcloud/versions/Docs/a.txt/<STAMP>_<STAMP> e1 "abc"
+cloud: Docs/a (conflict <WHEN> Laptop).txt n1 "mine, changed"
+cloud: Docs/a.txt e9 "theirs"
+cloud folders: [".craftcloud", ".craftcloud/versions", ".craftcloud/versions/Docs", ".craftcloud/versions/Docs/a.txt", "Docs"]

@@ -28,7 +28,7 @@ fn plan(server: &str, root: &Path, excluded: &[&str]) -> SyncPlan {
 }
 
 /// An engine on `server` syncing `root`, as `sync::start_with` builds it but on this thread.
-fn engine(server: ServerUrl, root: &Path, excluded: &[&str]) -> Engine {
+pub(super) fn engine(server: ServerUrl, root: &Path, excluded: &[&str]) -> Engine {
     let session = Session::new(server.clone(), Tokens { access_token: "a1".into(), refresh_token: "r1".into() }, Box::new(|_| {}));
     Engine {
         plan: plan(server.as_str(), root, excluded),

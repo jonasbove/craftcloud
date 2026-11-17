@@ -1,0 +1,29 @@
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/More/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+POST /api/auth/refresh | content-type: application/json | body: "{\"refresh_token\":\"r1\"}"
+PROPFIND /webdav/Docs/ | authorization: Bearer a2 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/More/ | authorization: Bearer a2 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+GET /webdav/Docs/a.txt | authorization: Bearer a2
+GET /webdav/More/b.txt | authorization: Bearer a2
+PUT /webdav/up.txt | authorization: Bearer a2 | if-none-match: * | body: "up"
+activity: Down "Docs/a.txt" Some(3) 
+activity: Down "More/b.txt" Some(1) 
+activity: Up "up.txt" Some(2) 
+state: UpToDate
+saved: Docs/a.txt "e1" 3
+saved: More/b.txt "e2" 1
+saved: up.txt "n1" 2
+saved folders: {"Docs", "More"}
+== end
+local: Docs/ ""
+local: Docs/a.txt "abc"
+local: More/ ""
+local: More/b.txt "b"
+local: up.txt "up"
+cloud: Docs/a.txt e1 "abc"
+cloud: More/b.txt e2 "b"
+cloud: up.txt n1 "up"
+cloud folders: ["Docs", "More"]

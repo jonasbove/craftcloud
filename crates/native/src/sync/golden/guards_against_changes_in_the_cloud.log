@@ -1,0 +1,54 @@
+== apply DeleteRemote { path: "Docs/a.txt", etag: "\"e1\"" }
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+state: Idle
+saved folders: {}
+done: Ok(None)
+state files: ["Docs/plain.txt"]
+folders: {"Docs", "Full", "Old"}
+== apply DeleteRemote { path: "Docs/plain.txt", etag: "\"e5\"" }
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+activity: Skipped "Docs/plain.txt" None the cloud lists no version for it, so it is left as it is there
+state: Idle
+saved folders: {}
+done: Ok(None)
+state files: []
+folders: {"Docs", "Full", "Old"}
+== apply DeleteRemote { path: "Docs/plain.txt", etag: "\"e5\"" }
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+state: Idle
+saved folders: {}
+done: Ok(None)
+state files: []
+folders: {"Docs", "Full", "Old"}
+== apply MoveRemote { from: "Docs/a.txt", to: "Docs/b.txt", etag: "\"e1\"" }
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PUT /webdav/Docs/b.txt | authorization: Bearer a1 | if-none-match: * | body: "abc"
+state: Idle
+saved folders: {}
+done: Ok(Some(Up, moved here from Docs/a.txt))
+state files: ["Docs/b.txt"]
+folders: {"Docs", "Full", "Old"}
+== apply DeleteRemoteFolder { path: "Old", files: [("Old/x.txt", "\"e3\"")] }
+PROPFIND /webdav/Old/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+state: Idle
+saved folders: {}
+done: Ok(None)
+state files: ["Docs/b.txt"]
+folders: {"Docs", "Full", "Old"}
+== apply RemoveRemoteFolder("Full")
+PROPFIND /webdav/Full/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+state: Idle
+saved folders: {}
+done: Ok(None)
+state files: ["Docs/b.txt"]
+folders: {"Docs", "Full", "Old"}
+== end
+local: Docs/ ""
+local: Docs/b.txt "abc"
+cloud: Docs/a.txt e2 "new"
+cloud: Docs/b.txt n1 "abc"
+cloud: Docs/plain.txt e5 "abc"
+cloud: Full/late.txt e6 "late"
+cloud: Old/added.txt e4 "added"
+cloud: Old/x.txt e3 "x"
+cloud folders: ["Docs", "Full", "Old"]

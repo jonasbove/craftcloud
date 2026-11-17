@@ -2742,3 +2742,6 @@ mod tests {
 /// Tests that build an [`Engine`] and drive it against `crate::fake_server`.
 #[cfg(test)]
 mod engine_tests;
+/// The requests the engine sends, recorded (`golden/`) and compared on every run.
+#[cfg(test)]
+mod golden_tests;

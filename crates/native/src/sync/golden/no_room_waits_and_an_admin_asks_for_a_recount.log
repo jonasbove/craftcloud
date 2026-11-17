@@ -1,0 +1,20 @@
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PUT /webdav/big.txt | authorization: Bearer a1 | if-none-match: * | body: "too big for the room left"
+activity: Skipped "big.txt" None couldn't upload big.txt: no room in the cloud for this file (25 B): the storage is full. Storage use updates within a few minutes after emptying the trash (earlier versions count too); it's tried again then.
+state: UpToDate
+no room: ["big.txt"]
+saved folders: {}
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+GET /api/auth/me | authorization: Bearer a1
+POST /api/admin/jobs/usage_reconcile/trigger | authorization: Bearer a1
+GET /api/auth/me | authorization: Bearer a1
+PUT /webdav/big.txt | authorization: Bearer a1 | if-none-match: * | body: "too big for the room left"
+activity: Skipped "big.txt" None couldn't upload big.txt: no room in the cloud for this file (25 B): the storage is full. Storage use updates within a few minutes after emptying the trash (earlier versions count too); it's tried again then.
+state: UpToDate
+no room: ["big.txt"]
+saved folders: {}
+== end
+local: big.txt "too big for the room left"
+cloud folders: []

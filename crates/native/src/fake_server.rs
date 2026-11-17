@@ -37,6 +37,33 @@ impl Seen {
 /// What the server answers: a status and a body (JSON, or a WebDAV multistatus for 207).
 pub type Reply = (u16, String);
 
+/// A full answer: a status, extra headers (an `ETag`, a `Content-Range` …; a `Content-Type` here
+/// replaces the one the status would get) and a body.
+#[derive(Clone, Debug)]
+pub struct Answer {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: String,
+}
+
+impl Answer {
+    pub fn new(status: u16, body: impl Into<String>) -> Self {
+        Self { status, headers: Vec::new(), body: body.into() }
+    }
+
+    #[must_use]
+    pub fn header(mut self, name: &str, value: impl Into<String>) -> Self {
+        self.headers.push((name.to_owned(), value.into()));
+        self
+    }
+}
+
+impl From<Reply> for Answer {
+    fn from((status, body): Reply) -> Self {
+        Self::new(status, body)
+    }
+}
+
 pub struct FakeServer {
     pub url: String,
     stop: Arc<AtomicBool>,
@@ -47,6 +74,11 @@ pub struct FakeServer {
 impl FakeServer {
     /// Starts a server that answers every request with `answer(request)`.
     pub fn start(answer: impl Fn(&Seen) -> Reply + Send + Sync + 'static) -> Self {
+        Self::start_full(move |r| Answer::from(answer(r)))
+    }
+
+    /// Like [`Self::start`], with answers that can carry headers.
+    pub fn start_full(answer: impl Fn(&Seen) -> Answer + Send + Sync + 'static) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let stop = Arc::new(AtomicBool::new(false));
@@ -64,15 +96,18 @@ impl FakeServer {
                     let (seen, answer) = (Arc::clone(&seen), Arc::clone(&answer));
                     std::thread::spawn(move || {
                         if let Some(request) = read_request(&conn) {
-                            let (status, body) = answer(&request);
+                            let Answer { status, headers, body } = answer(&request);
                             seen.lock().unwrap_or_else(PoisonError::into_inner).push(request);
                             let kind = if status == 207 { "application/xml; charset=utf-8" } else { "application/json" };
+                            let mut head = String::new();
+                            if !headers.iter().any(|(n, _)| n.eq_ignore_ascii_case("content-type")) {
+                                head.push_str(&format!("Content-Type: {kind}\r\n"));
+                            }
+                            for (name, value) in &headers {
+                                head.push_str(&format!("{name}: {value}\r\n"));
+                            }
                             let mut conn = conn;
-                            let _ = write!(
-                                conn,
-                                "HTTP/1.1 {status} X\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                                body.len()
-                            );
+                            let _ = write!(conn, "HTTP/1.1 {status} X\r\n{head}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                         }
                     });
                 }

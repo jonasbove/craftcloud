@@ -1,0 +1,16 @@
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+GET /webdav/a.txt | authorization: Bearer a1
+PUT /webdav/a%20(conflict%20<WHEN>%20Laptop).txt | authorization: Bearer a1 | if-none-match: * | body: "mine, changed"
+activity: Conflict "a.txt" Some(15) yours kept as a (conflict <WHEN> Laptop).txt
+state: UpToDate
+conflict: a.txt / a (conflict <WHEN> Laptop).txt
+saved: a (conflict <WHEN> Laptop).txt "n1" 13
+saved: a.txt "e2" 15
+saved folders: {}
+== end
+local: a (conflict <WHEN> Laptop).txt "mine, changed"
+local: a.txt "theirs, changed"
+cloud: a (conflict <WHEN> Laptop).txt n1 "mine, changed"
+cloud: a.txt e2 "theirs, changed"
+cloud folders: []
