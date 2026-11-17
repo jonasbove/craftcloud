@@ -91,7 +91,9 @@ them, this says why. Nothing here weakens a rule for new work; it says what exis
 - **Rust only** (Rust rule 4): everything CraftCloud adds is Rust (egui; Trunk for the web). The one planned
   exception is `craftcloud-shim.js`, which the `-apps` image is to inject into Craft web apps that lack the
   `craft-web-host` bridge (`apps.toml`, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)). It is not in the tree yet;
-  adding it is a maintainer decision.
+  adding it is a maintainer decision. Python is left in two kinds of tooling, neither shipped: the operator
+  scripts in `scripts/` and `packaging/icons.sh` (moving to Rust for 0.3.0), and the design build in
+  `design/tools/` (FigCraft, `cargo xtask design` later; roadmap M10).
 - **Time** (Rust rule 5): CraftCloud uses `jiff`, and `crates/ui-egui/src/web/` still has some hand-rolled calendar
   code. New date code goes through a date crate; moving the old code over is its own task.
 - **Contributor credits** (Rust rule 6): there is no `contributors/` folder yet; see

@@ -56,6 +56,7 @@ backup of anything you sync with it.
 | M7 Signed desktop builds | Signed and notarized macOS builds, signed Windows builds | Not started; v1 is unsigned |
 | M8 Native NixOS deployment | OxiCloud, Caddy and craftcloud-admin as NixOS services without Docker, with the Craft web apps built by Nix from `apps.toml` | Not started; the NixOS module runs the Docker image today |
 | M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Planned for 0.3.0 |
+| M10 No Python in the tree | The operator scripts and packaging icons in Rust (0.3.0), then the design build (`design/tools`, FigCraft) as `cargo xtask design` | 0.3.0: scripts and icons in progress; the design build later |
 
 ## Current focus
 
@@ -100,9 +101,18 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
      the server, never the account's password.
    - Desktop and command line only; the web frontend stays with OxiCloud. It changes how the sync decides, so it
      comes with an "upgrade all devices together" entry in [RELEASE-NOTES.md](RELEASE-NOTES.md).
+9. **No Python in the tree (M10), part 1, for 0.3.0:** `scripts/create-owner`, `add-user`, `app-password` and
+   `smoke-test` read and write JSON through `python3 -c` one-liners; they move onto the `craftcloud` command line (or
+   a `cargo xtask` command), so they need only `sh` and `curl`. `packaging/icons.sh` (Pillow) becomes
+   `cargo xtask icons`.
+10. **No Python in the tree (M10), part 2:** the design build, about 7,000 lines in `design/tools/*.py` that drive
+   `figcraft-cli` over MCP to make `design/craftcloud.figcraft` and its exports, becomes `cargo xtask design`,
+   building on craft-libs' `jsonrpc` and `mcp` crates. Until then it is the one Python left (AGENTS.md).
 
 ## Progress log
 
+- 2026-11-17: Roadmap: M10, no Python in the tree: the operator scripts and the packaging icons in Rust for
+  0.3.0, the design build later; AGENTS.md names `design/tools` as the one Python until then.
 - 2026-11-17: Web: the version a page shows before the server's config arrives is this build's own, not a fixed
   "0.1.0"; the README's screenshots (`docs/screenshots/`) are rendered again by `web_shots`, which now takes the
   version from the build too, so they say 0.2.0.
@@ -438,3 +448,4 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 | 2026-11-15 | minor | M8, a native NixOS deployment, with the Craft web apps built by Nix from `apps.toml`. |
 | 2026-11-16 | minor | M9, any WebDAV server as the storage; the Upcoming list put back in order after a merge, without the Windows command line, which is done. |
 | 2026-11-16 | minor | Version 0.2.0; M4 done; M9 planned for 0.3.0. |
+| 2026-11-17 | minor | M10, no Python in the tree. |
