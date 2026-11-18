@@ -309,7 +309,7 @@ A profile is small: it knows where things are, never what they guarantee.
 | WebDAV base | `/webdav/` | `/remote.php/dav/files/<user id>/` | `/remote.php/dav/files/<user id>/` | to verify (personal space URL) | the URL the person gives |
 | User id | from the token | `current-user-principal` (the login name can differ) | `current-user-principal` | to verify | from the URL |
 | Trash | REST (today) | WebDAV trashbin (`trashbin/<user id>/trash/`, restore to `restore/<name>`) | WebDAV trash bin (`trash-bin/<user id>/`, items by file id, restore by `MOVE` to the original path) | spaces trash | client |
-| Versions | client | server, by file id (`versions/<user id>/versions/<file id>/`) | server, by file id (`meta/<file id>/v/`, restore by `COPY`) | server, by file id | client |
+| Versions | client | server, by file id (`versions/<user id>/versions/<file id>/`) | server, by file id (`meta/<file id>/v/`; a restore reads the version and writes it with a guarded `PUT`) | server, by file id | client |
 | Quota | REST | OCS user endpoint | WebDAV props | WebDAV props | WebDAV props, else unknown |
 | Sign-in | device flow | Login Flow v2 | app password | OIDC (to verify) | app password |
 
@@ -670,9 +670,12 @@ measured against ownCloud 10.15.3 on 2026-11-18, the answers recorded in `crates
   `names::restored_name`; without the header the server overwrites; a missing parent answers 409, so the parents are
   made first; Nextcloud's `restore/` shape answers 409); versions at `/remote.php/dav/meta/<file id>/v/<seconds>`,
   the current file **not** among them (so step 17 lists before and after the overwrite and needs one more); a
-  version restored by a `COPY` of it over the file (`Overwrite: T`; `F` answers 412; the server keeps the replaced
-  file as a version itself), and only a stamp a fresh listing names (a mistaken copy of the `v/` collection over a
-  file turns the file into a folder, seen while measuring); the quota from WebDAV's `quota-available-bytes` on the
+  version restored as on Nextcloud, by the generic driver's guarded path (the file's current ETag, a `GET` of the
+  version's bytes at `meta/<file id>/v/<seconds>`, a `PUT` with `If-Match` and the checksum check; a 412 is
+  "changed meanwhile, nothing restored", exit code 5; the server keeps the replaced file as a version itself) and
+  only for a stamp a fresh listing names. ownCloud's own restore, a `COPY` of the version over the file with
+  `Overwrite: T`, is never sent: it has no precondition on the file it replaces, and since two writes within one
+  second keep only one version (F1), a write landing just before it could be lost for good; the quota from WebDAV's `quota-available-bytes` on the
   base, `-3` read as no limit. `oc:checksums` (SHA1, MD5, ADLER32) are computed by the server and listed for every
   file, and an `OC-Checksum` sent with a `PUT` is checked against the bytes received (400 and nothing written on a
   mismatch); `Depth: infinity` answers 412 and a `PUT` into a missing folder 409, both recorded by the probe as

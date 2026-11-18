@@ -217,7 +217,7 @@ can use without an admin, so `--user` is required and the command says where to 
 uses ownCloud's own trash bin and versions once the check on connect has confirmed them with the same round trips:
 a delete is a WebDAV `DELETE` into the trash bin, `trash ls` shows each item by the path it had, `trash restore`
 moves it back (or to `--as PATH`; a taken name gets `NAME (restored).EXT`), `versions` and `versions … restore` are
-ownCloud's versions by file id (a restore copies the version over the file, and the server keeps the replaced file
+ownCloud's versions by file id (a restore reads the version and writes it over the file only if the file is still as it was, exit code 5 when it changed meanwhile; the server keeps the replaced file
 as a version), and `trash rm` and `trash empty` answer code 10, as on Nextcloud. ownCloud also reuses a file's
 version tag within one second, so every upload carries its SHA1 checksum, which ownCloud checks on receipt, and is
 read back. Storage use is WebDAV's quota property. `logout` forgets the app password here and says where to revoke
