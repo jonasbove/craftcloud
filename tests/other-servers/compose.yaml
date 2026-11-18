@@ -1,0 +1,85 @@
+# Throwaway servers for CraftCloud's live tests against other WebDAV servers
+# (docs/WEBDAV-STORAGE.md § 13; how to run them is in README.md beside this file).
+#
+# Loopback only, never for real data. Every image is pinned by digest; the passwords come from the
+# environment (all required), the user is `john` everywhere but OpenCloud, whose built-in admin is
+# `admin`. Start one service at a time on a small machine: `docker compose -f tests/other-servers/compose.yaml
+# -p craftcloud-others up -d nextcloud`. The ports are variables so a set can run beside another one.
+services:
+  # Nextcloud 31: two-way sync expected (every guard honoured; its own trash and versions).
+  nextcloud:
+    image: nextcloud:31-apache@sha256:07ec73cc816e58d6f45a162cd53ef886462c29271a23fc68d0124cec276e3767
+    ports: ["127.0.0.1:${NC_PORT:-8111}:80"]
+    environment:
+      SQLITE_DATABASE: nextcloud
+      NEXTCLOUD_ADMIN_USER: john
+      NEXTCLOUD_ADMIN_PASSWORD: ${NC_PASS:?set NC_PASS, the test user's password}
+      NEXTCLOUD_TRUSTED_DOMAINS: "127.0.0.1 localhost"
+    volumes: [nc:/var/www/html]
+
+  # ownCloud 10.15: two-way sync expected (every guard honoured; its own trash and versions).
+  owncloud:
+    image: owncloud/server:10.15@sha256:8bff31563f3f165b2d5d5b6377c4555e2ce6f4943c58c9e5f8ba19e53415823d
+    ports: ["127.0.0.1:${OC_PORT:-8112}:8080"]
+    environment:
+      OWNCLOUD_DOMAIN: 127.0.0.1:${OC_PORT:-8112}
+      OWNCLOUD_TRUSTED_DOMAINS: 127.0.0.1,localhost
+      OWNCLOUD_DB_TYPE: sqlite
+      OWNCLOUD_ADMIN_USERNAME: john
+      OWNCLOUD_ADMIN_PASSWORD: ${OC_PASS:?set OC_PASS, the test user's password}
+    volumes: [oc:/mnt/data]
+
+  # OpenCloud 9.1.1, a stable release (never `rolling` or `latest`): download only expected
+  # (docs/WEBDAV-STORAGE.md § 16, Q1: it ignores `If-None-Match: *`). Basic auth is an admin
+  # switch (`PROXY_ENABLE_BASIC_AUTH`), on here so the tests can make an app token with the account
+  # password (`POST /auth-app/tokens`) and sign in with that; the product never relies on it.
+  opencloud:
+    image: opencloudeu/opencloud:9.1.1@sha256:d7d5b547f9e41db24f030d6a6857c4184752b2c875c936952ee0601b6531cd51
+    entrypoint: ["/bin/sh", "-c", "opencloud init || true; exec opencloud server"]
+    ports: ["127.0.0.1:${OPC_PORT:-8113}:9200"]
+    environment:
+      OC_URL: https://localhost:${OPC_PORT:-8113}
+      OC_INSECURE: "true"
+      PROXY_TLS: "false"
+      PROXY_ENABLE_BASIC_AUTH: "true"
+      IDM_CREATE_DEMO_USERS: "false"
+      IDM_ADMIN_PASSWORD: ${OPC_PASS:?set OPC_PASS, the admin's password}
+      OC_LOG_LEVEL: warn
+    volumes: [opc-config:/etc/opencloud, opc-data:/var/lib/opencloud]
+
+  # Plain WebDAV, no trash and no versions, two servers:
+  # `rclone serve webdav` (Go's x/net/webdav) ignores `If-Match` and `If-None-Match` on `PUT`
+  # (golang/go#44492), so CraftCloud gives it download only (§ 16, Q2).
+  rclone:
+    image: rclone/rclone:1.76.0@sha256:7cbeec24a44f206067597c0368be4de90ae19a64d5113c7d1938bd737a81e466
+    # The user and password through rclone's environment (`RCLONE_<FLAG>`), not `--pass` on the
+    # command line, which would show in the container's process list.
+    command: ["serve", "webdav", "/data", "--addr", ":8080"]
+    environment:
+      RCLONE_USER: john
+      RCLONE_PASS: ${DAV_PASS:?set DAV_PASS, the WebDAV password}
+    ports: ["127.0.0.1:${RCLONE_PORT:-8114}:8080"]
+    volumes: [rclone:/data]
+
+  # Apache httpd with mod_dav keeps the guards (measured; README.md), so CraftCloud syncs two-way
+  # with its own trash and versions in `.craftcloud/`. The password file is made at start, from
+  # stdin, so the password is in no process list.
+  apache:
+    # The Debian image, not `-alpine`: Alpine's apr-util leaves out the DBM drivers mod_dav_fs's
+    # lock database needs, so every write answers 500 there.
+    image: httpd:2.4.71@sha256:32e9403360ab2f1047523e72f256527fb9aee68b342abf6ad03f0d629157f3d9
+    command:
+      - /bin/sh
+      - -c
+      - |
+        printf '%s' "$$DAV_PASS" | htpasswd -i -c /usr/local/apache2/conf/dav.htpasswd john &&
+        mkdir -p /var/dav/data /var/dav/lock && chown -R daemon:daemon /var/dav &&
+        exec httpd-foreground
+    environment:
+      DAV_PASS: ${DAV_PASS:?set DAV_PASS, the WebDAV password}
+    ports: ["127.0.0.1:${APACHE_PORT:-8115}:80"]
+    volumes:
+      - ./httpd.conf:/usr/local/apache2/conf/httpd.conf:ro
+      - apache:/var/dav
+
+volumes: {nc: {}, oc: {}, opc-config: {}, opc-data: {}, rclone: {}, apache: {}}

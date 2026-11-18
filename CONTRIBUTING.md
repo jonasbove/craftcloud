@@ -61,6 +61,12 @@ A sync change also gets the two-client smoke test, `cargo xtask e2e-sync` with t
 clients sync a fresh folder pass by pass and check each other, and it ends with a PASS/FAIL table
 ([docs/TESTING.md](docs/TESTING.md)).
 
+A change to the storage trait, the generic WebDAV driver or the check on connect also runs the live tests
+against the other kinds of server, one at a time: `tests/other-servers/compose.yaml` starts Nextcloud, ownCloud,
+OpenCloud, `rclone serve webdav` and Apache `mod_dav` (images pinned by digest, loopback only), and the same
+`live` and `cli_live` suites run against each with `CRAFTCLOUD_TEST_KIND` and `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`.
+[Its README](tests/other-servers/README.md) has the commands per server and what each is expected to get.
+
 ## What the bot does
 
 Claude, run by the repository's GitHub Actions, looks at every pull request and issue:
