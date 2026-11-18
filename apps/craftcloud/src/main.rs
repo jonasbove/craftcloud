@@ -121,6 +121,13 @@ impl DesktopHost for NativeHost {
             log::error!("not a server address: {}", plan.server);
             return;
         };
+        if let Some(why) = desktop_refusal(&self.store.get().0) {
+            // Never a sync with another kind of server through OxiCloud's driver.
+            log::error!("{why}");
+            self.sync = None;
+            self.blocked = Some(why);
+            return;
+        }
         // One engine per folder: let go of the old claim before making the new one.
         self.sync = None;
         self.folder = None;
@@ -279,6 +286,22 @@ impl DesktopHost for NativeHost {
     }
 }
 
+/// What this desktop client says to settings naming another kind of server with the opt-in on:
+/// it syncs CraftCloud's own server only until it learns the others (docs/WEBDAV-STORAGE.md § 14,
+/// pull request 10); the command line's `craftcloud daemon` and `sync` do sync them.
+const DESKTOP_OXICLOUD_ONLY: &str = "This desktop client syncs with a CraftCloud server only for now; `craftcloud daemon` or `craftcloud sync` syncs this server from the command line.";
+
+/// Why the desktop client won't sync with the saved settings' kind of server, if it won't:
+/// refused by this build without the opt-in (`craftcloud_native::experimental`), or not yet
+/// known to the desktop client. `None` for CraftCloud's own server.
+fn desktop_refusal(settings: &ClientSettings) -> Option<String> {
+    match craftcloud_native::experimental::allowed_here(settings) {
+        Err(why) => Some(why.to_owned()),
+        Ok(()) if settings.storage != craftcloud_core::sync::Storage::Oxicloud => Some(DESKTOP_OXICLOUD_ONLY.to_owned()),
+        Ok(()) => None,
+    }
+}
+
 /// Wakes whichever is running: the window's frames, or the loop that waits in the tray without one.
 struct Wake {
     window: Mutex<Option<egui::Context>>,
@@ -393,8 +416,15 @@ impl Client {
         if !self.desktop.signed_in_elsewhere(saved.clone()) {
             return None;
         }
-        log::info!("a sign-in was saved on the command line: taking it");
         self.desktop.host.store = store;
+        if let Some(why) = desktop_refusal(&saved) {
+            // Signed in to another kind of server on the command line: this desktop client
+            // doesn't sync it (yet), and says so instead of reading the keychain.
+            log::warn!("{why}");
+            self.desktop.refuse(why);
+            return None;
+        }
+        log::info!("a sign-in was saved on the command line: taking it");
         Some((saved.server, dir))
     }
 
@@ -712,7 +742,11 @@ fn main() -> ExitCode {
         })
     };
     let saved = store.get().0.clone();
-    let keychain = (!saved.server.is_empty()).then(|| read_keychain(saved.server.clone(), store.dir().map(Into::into), &wake));
+    // Settings naming another kind of server: refused by this build (docs/WEBDAV-STORAGE.md § 16)
+    // or by this desktop client, which syncs CraftCloud's own server only so far; the window
+    // opens and says so, and the keychain isn't read.
+    let refusal = desktop_refusal(&saved);
+    let keychain = (refusal.is_none() && !saved.server.is_empty()).then(|| read_keychain(saved.server.clone(), store.dir().map(Into::into), &wake));
     let control: control::Slot = Arc::default();
     // The command line's way in; a `craftcloud daemon` already answering keeps it.
     let _control_server = store
@@ -732,7 +766,11 @@ fn main() -> ExitCode {
         blocked: None,
     };
     // The desktop UI themes whichever window draws it; this context only stands in until then.
-    let desktop = DesktopApp::waiting_for_keychain(&egui::Context::default(), host, saved);
+    let mut desktop = DesktopApp::waiting_for_keychain(&egui::Context::default(), host, saved);
+    if let Some(why) = refusal {
+        log::warn!("{why}");
+        desktop.refuse(why);
+    }
     let tray = TRAY_WITHOUT_WINDOW.then(|| {
         let wake = Arc::clone(&wake);
         TrayHandle::spawn(move || wake.wake())

@@ -37,6 +37,10 @@ fn headline_for(p: &SyncProgress) -> Lines {
             let what = if conflicts == 1 { "1 file".to_owned() } else { format!("{conflicts} files") };
             [vec![plain(&what), plain(" changed")], vec![plain("in "), accent("two places"), plain(".")]]
         }
+        // Download only (docs/WEBDAV-STORAGE.md § 9): the cloud is here; changes made here stay here.
+        SyncState::UpToDate if p.mode == Some(craftcloud_core::storage::Mode::DownloadOnly) => {
+            [vec![plain("Everything")], vec![plain("is "), accent("downloaded"), plain(".")]]
+        }
         SyncState::UpToDate => [vec![plain("Everything")], vec![plain("is "), accent("synced"), plain(".")]],
         SyncState::Paused => [vec![plain("Syncing")], vec![plain("is "), accent("paused"), plain(".")]],
         SyncState::Offline(_) => [vec![plain("Can't reach")], vec![plain("the "), accent("server"), plain(".")]],

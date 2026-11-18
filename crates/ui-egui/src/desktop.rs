@@ -304,6 +304,14 @@ impl<H: DesktopHost> DesktopApp<H> {
         self.screen = Screen::Connect(ConnectScreen::new(self.settings.server.clone()));
     }
 
+    /// The saved settings name a kind of server this build (or this desktop client) won't sync
+    /// with (docs/WEBDAV-STORAGE.md § 16): nothing syncs, no sign-in is read, and the window
+    /// opens on the Connect sheet with `why`. The host decides this; the window only says it.
+    pub fn refuse(&mut self, why: String) {
+        self.net = Net::default();
+        self.saved_sign_in_failed(why);
+    }
+
     pub fn new(ctx: &egui::Context, mut host: H, settings: ClientSettings, tokens: Option<Tokens>) -> Self {
         crate::theme::install(ctx);
         let server = ServerUrl::parse(&settings.server).ok();
@@ -814,7 +822,16 @@ pub fn status_text(p: &SyncProgress) -> String {
 }
 
 /// The header's status cell: a few words and the dot's colour (design frame `v2-desktop-states`).
+/// Under download only (docs/WEBDAV-STORAGE.md § 11) the words say so beside the state, so
+/// nobody takes it for a two-way sync.
 fn status_line(p: &SyncProgress, t: &Look) -> (String, Color32) {
+    let (words, colour) = state_line(p, t);
+    let download_only = p.mode == Some(craftcloud_core::storage::Mode::DownloadOnly)
+        && !matches!(p.state, SyncState::Idle | SyncState::SignedOut | SyncState::Failed(_) | SyncState::FolderMissing);
+    if download_only { (format!("{words} · Download only"), colour) } else { (words, colour) }
+}
+
+fn state_line(p: &SyncProgress, t: &Look) -> (String, Color32) {
     let conflicts = p.conflicts.len();
     match &p.state {
         SyncState::Idle => ("Starting…".into(), t.muted),

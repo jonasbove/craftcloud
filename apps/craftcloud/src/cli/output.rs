@@ -30,6 +30,9 @@ pub enum Fail {
     Unreachable,
     /// 9: the sync is held and waits for a decision (a mass delete, a missing sync folder).
     Held,
+    /// 10: not available on this server (share links, stars, search, people and the server's
+    /// settings are CraftCloud's own server's; docs/WEBDAV-STORAGE.md § 11).
+    Unsupported,
 }
 
 impl Fail {
@@ -44,6 +47,7 @@ impl Fail {
             Self::Forbidden => 7,
             Self::Unreachable => 8,
             Self::Held => 9,
+            Self::Unsupported => 10,
         }
     }
 
@@ -59,9 +63,13 @@ impl Fail {
             Self::Forbidden => "forbidden",
             Self::Unreachable => "unreachable",
             Self::Held => "held",
+            Self::Unsupported => "unsupported",
         }
     }
 }
+
+/// What a command CraftCloud's own server has and this kind of server hasn't says.
+pub const NOT_ON_THIS_SERVER: &str = "not available on this server";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CliError {
@@ -90,6 +98,11 @@ impl CliError {
 
     pub fn usage(message: impl Into<String>) -> Self {
         Self::new(Fail::Usage, message)
+    }
+
+    /// `what` isn't available on this kind of server (exit code 10, kind `unsupported`).
+    pub fn unsupported(what: &str) -> Self {
+        Self::new(Fail::Unsupported, format!("{what}: {NOT_ON_THIS_SERVER}"))
     }
 
     /// Adds what was being done: "mkdir Documents: …".
@@ -297,6 +310,31 @@ mod tests {
         assert_eq!(CliError::not_found("x").context("rm a").message, "rm a: x");
         let internal = CliError::api(&ApiError::Status { status: 500, message: "An internal error occurred".into() });
         assert_eq!((internal.kind.code(), internal.message.as_str()), (1, "the server couldn't do it (500): An internal error occurred"));
+    }
+
+    /// Every kind has its own code and JSON name, and they are the ones docs/CLI.md's tables
+    /// give; what another kind of server hasn't is code 10, `unsupported`.
+    #[test]
+    fn every_kind_has_its_code_and_name() {
+        let all = [
+            (Fail::Error, 1, "error"),
+            (Fail::Usage, 2, "usage"),
+            (Fail::SignedOut, 3, "signed_out"),
+            (Fail::NotFound, 4, "not_found"),
+            (Fail::Conflict, 5, "conflict"),
+            (Fail::NoClient, 6, "no_client"),
+            (Fail::Forbidden, 7, "forbidden"),
+            (Fail::Unreachable, 8, "unreachable"),
+            (Fail::Held, 9, "held"),
+            (Fail::Unsupported, 10, "unsupported"),
+        ];
+        for (kind, code, name) in all {
+            assert_eq!((kind.code(), kind.name()), (code, name), "{kind:?}");
+        }
+        let codes: std::collections::BTreeSet<u8> = all.iter().map(|(k, _, _)| k.code()).collect();
+        assert_eq!(codes.len(), all.len(), "no two kinds share a code");
+        let e = CliError::unsupported("share links");
+        assert_eq!((e.kind, e.message.as_str()), (Fail::Unsupported, "share links: not available on this server"));
     }
 
     /// Errors name cloud paths, never the server's own (`/Personal/…`).

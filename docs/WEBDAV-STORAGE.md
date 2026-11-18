@@ -409,6 +409,66 @@ As built (pull request 3, `crates/core/src/storage/probe.rs` and `crates/native/
 - `Capabilities`, its enums, `Mode` and `NameRules` serialize (snake case; `two_way`, `download_only`, `refused`),
   and `Capabilities::unknown()` is the server nobody knows: every guard ignored, nothing trusted.
 
+As built (pull request 4a, the first of two under § 14's row 4; `crates/native/src/storage/webdav.rs`,
+`crates/native/src/experimental.rs`, `secrets.rs`, `session.rs`, `apps/craftcloud/src/cli/webdav.rs`):
+
+- **The opt-in** is `craftcloud_native::experimental::experimental_webdav()`, true only when
+  `CRAFTCLOUD_EXPERIMENTAL_WEBDAV` is exactly `1`; `experimental::allowed(settings, experimental)` is the one decision
+  (pure, so it is tested without the process's environment), asked by the command line before every command but
+  `logout` and `apps`, by the daemon and by the desktop client. Without it a settings file naming another kind is
+  refused with the message of § 16 (exit code 1, kind `error`; the desktop's window opens on the Connect sheet with
+  it); `--kind` and `--user` are hidden from `--help` and `--kind webdav` is a usage error. With it, `nextcloud`,
+  `owncloud` and `opencloud` in the settings are refused too ("can't sync with this kind of server yet"): a known
+  server is never taken for a plain WebDAV server, whose client trash and versions don't belong in its drive.
+- **`Credential`** (`secrets.rs`) is `Bearer(Tokens)` or `AppPassword { user, secret }`. A `Bearer` entry is written
+  exactly as 0.2.0 wrote it (no `kind` field; a test compares the bytes), an app password with `kind:
+  app_password`; an entry with a `kind` this build doesn't know isn't a sign-in. `TokenStore::load` (tokens) answers
+  nothing for an app password, so no OxiCloud path ever takes one for tokens. `AppPasswordSession` (`session.rs`)
+  sends Basic auth, refreshes nothing, takes a 401 as signed out, and refuses at construction to send a password over
+  plain http to anything but this computer (`127.0.0.1`, `::1`, `localhost`). Its `Debug` prints no secret.
+- **The generic driver** does what § 8's "Server lacks it" column says: listings read against the base
+  (`probe::parse_listing`, which now carries `getcontentlength` and `quota-available-bytes` too), a create with
+  `If-None-Match: *`, an overwrite with `If-Match`, `still_at` and `cloud_holds` before a move or a trash as the
+  OxiCloud driver does, a trash by `MOVE` with `Overwrite: F` into `.craftcloud/trash/<time>-<device>/<path>` (the
+  entry's folder is made first, with the item's parents in it; a 412 on the `MOVE` is an error tried again next pass,
+  never a forced move), a folder as one `MOVE`, versions by `COPY` into `.craftcloud/versions/<path>/<time>` with the
+  same code OxiCloud's driver uses (`storage::versions`, over the probe's `Transport`), free space from
+  `quota-available-bytes` (negative or absent: unknown), and a `DELETE` only through `purge_own`.
+  `trash_list` reads the entries' folders: one item per entry, found by walking down while a folder holds exactly
+  one folder (a file is the item, and so is a folder holding nothing or several things); a trashed folder whose only
+  content is one folder lists as that folder, and a restore puts the same tree back. `restore` is a `MOVE` back with
+  `Overwrite: F`, `names::restored_name` when the place is taken, and purges the entry's folder once it holds
+  nothing. `WebDav::connect` reads `storage-check.json` when it was saved for this base, else runs the probe and
+  saves it; a refused check leaves `Capabilities::unknown()`, so the engine refuses to sync and says why.
+  `already_kept` compares content hashes the way OxiCloud's ETags carry them; another server's ETags carry none, so
+  a retried overwrite there may keep the same bytes twice (harmless; pruned with the rest).
+- **The engine** builds the driver on its own thread (`sync::start_webdav` takes a connect closure, since the
+  check on connect may take a while); `status` shows "checking the server" meanwhile. `SyncProgress.mode` and
+  `status --json`'s `mode` say what the server allows. Under download only the uploads the cut takes out are said
+  once per version of the file ("changed on this computer, not uploaded: this server only syncs downwards"; "new on
+  this computer, …") and listed as `not_synced` with the reason `not_uploaded`. On a case-insensitive server two
+  local names that differ only in case get the clash rule the other way round: the one the cloud has keeps
+  syncing, the other stays here and is said once; this computer's own name rule is unchanged by it.
+- **The command line**: `login <WebDAV address> --kind webdav --user NAME` (the password from `CRAFTCLOUD_APP_PASSWORD`
+  or a prompt, never an argument) checks the address with one listing, saves the sign-in under the server's origin,
+  sets `storage` and `dav_url`, runs the check on connect and prints the mode; `server check` on such a server runs
+  the probe afresh and prints every step; `ls`, `get`, `put`, `save`, `mkdir`, `mv`, `rm`, `files` and `sync` go
+  through the trait; `share`, `star`/`starred`, `recent`, `search`, `usage`, `cp` and `server info|users|settings`
+  answer "not available on this server" with exit code 10 (kind `unsupported`), and so do `trash` and `versions`
+  until 4b wires them through the trait. OxiCloud's commands keep their REST paths unchanged. A sync folder holding
+  another sync client's database (`.sync_*.db`, `.owncloudsync.log`, `.csync_journal.db`) is refused by the folder
+  claim, for every kind of server (exit code 5).
+- **The desktop client** syncs CraftCloud's own server only until pull request 10: with the opt-in and a settings
+  file naming another kind, its window opens on the Connect sheet and says to use `craftcloud daemon` or `sync`.
+  Under download only its header, tray and headline say "Download only".
+- **Left to pull request 4b**, as § 14 splits the row: the client trash's retention (30 days by the server's clock,
+  through `purge_own`) and `craftcloud trash empty`, `trash ls`/`restore` and `versions`/`restore` through the trait,
+  the probe's re-run schedule (daily, on a version change, "Check again") and the runtime watch of § 7.5. A trash
+  that is never emptied is safe; it only takes room.
+- **Carried from pull request 3, not decided here:** Nextcloud 31 and ownCloud 10.15 keep a file's version tag when
+  it is overwritten within the same second as the write before it. The generic driver changes nothing about it;
+  the engine's `If-Match` can't tell two writes to one file apart within one second on those servers.
+
 ## 8. How each non-negotiable is met
 
 | Non-negotiable | Server has it (honoured, measured) | Server lacks it | OpenCloud as measured |

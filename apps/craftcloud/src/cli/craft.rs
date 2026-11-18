@@ -102,6 +102,11 @@ pub fn files(ctx: &Ctx, app: Option<&str>, within: Option<&str>) -> Result<()> {
     };
     let items: Vec<Item> = match from_client {
         Some(found) => found.into_iter().filter(|f| inside(&f.path, &within)).map(Item::local).collect(),
+        None if ctx.is_webdav() => {
+            let mut items = super::webdav::walk(ctx, &within, app)?;
+            add_local(ctx, &mut items);
+            items
+        }
         None => {
             let mut remote = ctx.remote()?;
             let mut items = walk(&mut remote, &within, app)?;
@@ -204,13 +209,17 @@ pub fn save(ctx: &Ctx, args: &SaveArgs) -> Result<()> {
         );
     }
 
-    let mut remote = ctx.remote()?;
-    let folder = split(&path).0.to_owned();
-    if !folder.is_empty() {
-        files::make_folder(&mut remote, &folder, true)?;
-    }
-    let existing = remote.stat(&path)?;
-    let replaced = files::upload_to(&mut remote, file, &path, existing, args.force)?;
+    let replaced = if ctx.is_webdav() {
+        super::webdav::save_direct(ctx, file, &path, args.force)?
+    } else {
+        let mut remote = ctx.remote()?;
+        let folder = split(&path).0.to_owned();
+        if !folder.is_empty() {
+            files::make_folder(&mut remote, &folder, true)?;
+        }
+        let existing = remote.stat(&path)?;
+        files::upload_to(&mut remote, file, &path, existing, args.force)?
+    };
     let said = format!("{} {path}", if replaced { "Replaced" } else { "Uploaded" });
     done(ctx, json!({"path": path, "local_path": null, "via": "server", "state": "uploaded", "replaced": replaced, "size": meta.len()}), &said)
 }

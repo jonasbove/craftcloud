@@ -41,6 +41,16 @@ impl Transport for Session {
     }
 }
 
+impl Transport for crate::session::AppPasswordSession {
+    fn call(&mut self, req: &HttpRequest) -> Result<HttpResponse, String> {
+        Self::call(self, req)
+    }
+
+    fn upload(&mut self, req: &HttpRequest, file: &Path) -> Result<HttpResponse, String> {
+        Self::upload(self, req, file)
+    }
+}
+
 /// How long a probe may take.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
@@ -421,32 +431,8 @@ mod tests {
             eprintln!("skipped: CRAFTCLOUD_PROBE_URL not set");
             return;
         };
-        struct Basic(String);
-        impl Transport for Basic {
-            fn call(&mut self, req: &HttpRequest) -> Result<HttpResponse, String> {
-                crate::http::execute(&req.clone().header("Authorization", self.0.clone()))
-            }
-            fn upload(&mut self, req: &HttpRequest, file: &std::path::Path) -> Result<HttpResponse, String> {
-                crate::http::send_file(&req.clone().header("Authorization", self.0.clone()), file, &Arc::default())
-            }
-        }
-        fn base64(bytes: &[u8]) -> String {
-            const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-            let mut out = String::new();
-            for chunk in bytes.chunks(3) {
-                let n = chunk.iter().fold(0u32, |acc, b| (acc << 8) | u32::from(*b)) << (8 * (3 - chunk.len()));
-                for i in 0..4 {
-                    if i <= chunk.len() {
-                        out.push(char::from(T[((n >> (18 - 6 * i)) & 63) as usize]));
-                    } else {
-                        out.push('=');
-                    }
-                }
-            }
-            out
-        }
-        let mut transport = Basic(format!("Basic {}", base64(format!("{user}:{password}").as_bytes())));
         let base = Base::parse(&url).unwrap();
+        let mut transport = crate::session::AppPasswordSession::new(base.clone(), &user, &password).unwrap();
         let verdict = run(&mut transport, &base, &folder_name(), Profile::default(), Limits::default());
         for s in &verdict.steps {
             eprintln!("{:>2}. {} [{}]\n    {}", s.number, s.what, if s.ok { "ok" } else { "NO" }, s.result);

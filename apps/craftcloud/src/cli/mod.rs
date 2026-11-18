@@ -11,6 +11,7 @@ mod headless;
 mod output;
 mod remote;
 mod sharing;
+mod webdav;
 
 use std::process::ExitCode;
 
@@ -31,7 +32,8 @@ Examples:
 Paths are cloud paths, from the top of your cloud: Documents/report.pdf.
 Exit codes: 0 ok, 1 error, 2 usage, 3 not signed in, 4 not found, 5 conflict (already
 there, changed meanwhile, or another sync engine has the folder), 6 desktop client not
-running, 7 not allowed, 8 server unreachable, 9 sync held (waits for you).
+running, 7 not allowed, 8 server unreachable, 9 sync held (waits for you), 10 not available
+on this server.
 Every command takes --json (output for scripts) and --server URL (or CRAFTCLOUD_SERVER).";
 
 #[derive(Debug, Parser)]
@@ -66,6 +68,15 @@ pub enum Cmd {
         /// Print the address to open instead of opening the browser.
         #[arg(long)]
         no_browser: bool,
+        /// The kind of server: oxicloud (CraftCloud's own, the default) or webdav (any other WebDAV
+        /// server, signed in to with an app or WebDAV password; SERVER is then its WebDAV address,
+        /// e.g. https://cloud.example.org/remote.php/dav/files/NAME/). Experimental: needs
+        /// CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1 until 0.3.0.
+        #[arg(long, value_name = "KIND", hide = !craftcloud_native::experimental::experimental_webdav())]
+        kind: Option<String>,
+        /// The user name, for a server signed in to with an app or WebDAV password (--kind webdav).
+        #[arg(long, value_name = "NAME", hide = !craftcloud_native::experimental::experimental_webdav())]
+        user: Option<String>,
     },
     /// Sign this computer out (the desktop client too).
     #[command(after_help = "Example:\n  craftcloud logout")]
@@ -520,8 +531,14 @@ fn is_closed_pipe(panic_message: &str) -> bool {
 }
 
 fn run(ctx: &mut Ctx, command: Cmd) -> Result<()> {
+    // A settings file naming another kind of server is refused by a build without the opt-in
+    // (docs/WEBDAV-STORAGE.md § 16), before anything is read from or written to a server or the
+    // sync folder. Signing out (which forgets it) and the built-in app list still work.
+    if !matches!(command, Cmd::Logout | Cmd::Apps) {
+        ctx.allowed()?;
+    }
     match command {
-        Cmd::Login { server, no_browser } => account::login(ctx, server.as_deref(), no_browser),
+        Cmd::Login { server, no_browser, kind, user } => account::login(ctx, server.as_deref(), no_browser, kind.as_deref(), user.as_deref()),
         Cmd::Logout => account::logout(ctx),
         Cmd::Status => account::status(ctx),
         Cmd::Sync { no_wait, once, confirm_deletes, discard_deletes } => {

@@ -612,6 +612,266 @@ fn a_refused_server_syncs_nothing() {
     assert!(matches!(engine.progress.lock().unwrap_or_else(PoisonError::into_inner).state, SyncState::Failed(_)));
 }
 
+// --- The generic WebDAV driver: the same engine, the same guards, over a plain WebDAV server ---
+
+use craftcloud_core::storage::probe::fake::Flags;
+
+use crate::storage::webdav::WebDav;
+use crate::storage::webdav::tests::{scripted, session as webdav_session, two_way};
+
+/// [`engine`] over the generic WebDAV driver on `server` (a scripted WebDAV server under a
+/// Nextcloud-shaped base), with these capabilities.
+fn webdav_engine(server: &FakeServer, root: &Path, caps: Capabilities) -> Engine<WebDav> {
+    let session = webdav_session(server);
+    Engine {
+        plan: plan(&server.url, root, &[]),
+        cancel: Arc::clone(&session.cancel),
+        storage: WebDav::new(session, caps, "Laptop"),
+        device: "Laptop".into(),
+        progress: Arc::default(),
+        waker: Arc::new(|| {}),
+        paused: false,
+        settled: BTreeSet::new(),
+        reported: BTreeSet::new(),
+        no_room: BTreeMap::new(),
+        refused: BTreeMap::new(),
+        no_folder_move: BTreeSet::new(),
+        platform: Platform::current(),
+        parts_swept: None,
+        _watcher: None,
+    }
+}
+
+/// The cloud holds `Docs/{kept,edited,gone}.txt`, all synced; since then `edited.txt` was changed
+/// here, `gone.txt` deleted here and `new.txt` made here. The state carries the cloud's ETags.
+fn webdav_scene(server: &FakeServer, dav: &Arc<std::sync::Mutex<craftcloud_core::storage::probe::fake::FakeDav>>, root: &Path) -> State {
+    {
+        let mut dav = dav.lock().unwrap();
+        dav.add_folder("Docs", None);
+        for name in ["kept", "edited", "gone"] {
+            dav.add_file(&format!("Docs/{name}.txt"), b"abc");
+        }
+    }
+    let listed = webdav_engine(server, root, two_way()).storage.list("Docs").unwrap();
+    let etag = |name: &str| listed.iter().find(|e| e.path == format!("Docs/{name}.txt")).unwrap().etag.clone().unwrap();
+    let mut state = State::default();
+    for name in ["kept", "edited"] {
+        let file = write(root, &format!("Docs/{name}.txt"), "abc");
+        state.files.insert(format!("Docs/{name}.txt"), Known { etag: etag(name), ..as_synced(&file) });
+    }
+    state.files.insert("Docs/gone.txt".into(), Known { etag: etag("gone"), size: 3, mtime: 1, hash: None });
+    state.folders.insert("Docs".into());
+    // Written a while ago (a file written in the last two seconds is held as being saved).
+    let an_hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+    std::fs::write(root.join("Docs/edited.txt"), "abcd").unwrap();
+    let new = write(root, "Docs/new.txt", "mine");
+    for file in [root.join("Docs/edited.txt"), new] {
+        std::fs::File::options().write(true).open(&file).unwrap().set_modified(an_hour_ago).unwrap();
+    }
+    state
+}
+
+/// The methods the server saw, in order, without listings and downloads.
+fn writes(server: &FakeServer) -> Vec<String> {
+    server.seen().iter().filter(|r| !matches!(r.method.as_str(), "PROPFIND" | "GET")).map(|r| format!("{} {}", r.method, r.path)).collect()
+}
+
+/// Two-way over the generic driver, one whole cycle: the new file is created with its guard, the
+/// change overwrites with its guard after a `COPY` kept the old bytes, the file deleted here goes
+/// to `.craftcloud/trash/` by one `MOVE`, and nothing is ever deleted outside `.craftcloud/`.
+#[test]
+fn webdav_two_way_uploads_keeps_versions_and_trashes_by_move() {
+    let (server, dav) = scripted(Flags::default());
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let state = webdav_scene(&server, &dav, root);
+    let mut engine = webdav_engine(&server, root, two_way());
+    save_saved(&engine.state_path(), &Saved { server: engine.plan.server.clone(), state, ..Saved::default() }).unwrap();
+    engine.cycle(Deletes::Hold);
+
+    let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    assert_eq!(p.state, SyncState::UpToDate, "{:?}", p.activity);
+    assert_eq!(p.mode, Some(craftcloud_core::storage::Mode::TwoWay));
+    for r in &server.seen() {
+        match r.method.as_str() {
+            "PUT" => assert!(r.header("if-match").is_some() || r.header("if-none-match") == Some("*"), "an unguarded PUT: {r:?}"),
+            "MOVE" | "COPY" => assert_eq!(r.header("overwrite"), Some("F"), "{r:?}"),
+            "DELETE" => panic!("a DELETE: {r:?}"),
+            _ => {}
+        }
+    }
+    let dav = dav.lock().unwrap();
+    assert_eq!(dav.body("Docs/new.txt"), Some(b"mine".as_slice()), "{:?}", writes(&server));
+    assert_eq!(dav.body("Docs/edited.txt"), Some(b"abcd".as_slice()));
+    assert!(!dav.has("Docs/gone.txt"), "gone to the trash");
+    let folders = dav.folders();
+    let trashed: Vec<&String> = folders.iter().filter(|f| f.starts_with(".craftcloud/trash/") && f.ends_with("/Docs")).collect();
+    assert_eq!(trashed.len(), 1, "{folders:?}");
+    assert_eq!(dav.body(&format!("{}/gone.txt", trashed[0])), Some(b"abc".as_slice()), "kept whole in the trash");
+    let versions: Vec<&String> = folders.iter().filter(|f| f.starts_with(".craftcloud/versions/Docs/edited.txt")).collect();
+    assert_eq!(versions.len(), 1, "{folders:?}");
+    assert_eq!(server.seen().iter().filter(|r| r.method == "COPY").count(), 1, "one version kept");
+    let said: Vec<String> = p.activity.iter().map(|e| format!("{:?} {} {}", e.kind, e.path, e.detail)).collect();
+    assert!(said.iter().any(|s| s.starts_with("Deleted Docs/gone.txt")), "{said:?}");
+    assert!(said.iter().any(|s| s == "Up Docs/edited.txt previous version kept"), "{said:?}");
+}
+
+/// Download only over the generic driver (docs/WEBDAV-STORAGE.md § 9): no `PUT`, `MKCOL`,
+/// `MOVE`, `COPY` or `DELETE` reaches the server in any cycle; the change and the new file made
+/// here stay, are said once ("not uploaded") and listed as not synced; the file deleted in the
+/// cloud goes to the local `.craftcloud/trash/`.
+#[test]
+fn webdav_download_only_writes_nothing_and_says_so_once() {
+    let (server, dav) = scripted(Flags { ignores_if_none_match: true, ..Flags::default() });
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let state = webdav_scene(&server, &dav, root);
+    // Deleted in the cloud since the last sync.
+    let deleted_here = write(root, "Docs/cloud-deleted.txt", "abc");
+    let mut state = state;
+    state.files.insert("Docs/cloud-deleted.txt".into(), as_synced(&deleted_here));
+    let lowered = Capabilities { create_if_absent: Guard::Ignored, ..two_way() };
+    let mut engine = webdav_engine(&server, root, lowered);
+    save_saved(&engine.state_path(), &Saved { server: engine.plan.server.clone(), state, ..Saved::default() }).unwrap();
+    for cycle in 1..=2 {
+        engine.cycle(Deletes::Hold);
+        assert!(writes(&server).is_empty(), "cycle {cycle}: only listings and downloads reach the server: {:?}", writes(&server));
+        let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        assert_eq!(p.state, SyncState::UpToDate, "cycle {cycle}: {:?}", p.activity);
+        assert_eq!(p.mode, Some(craftcloud_core::storage::Mode::DownloadOnly));
+        let not_uploaded: Vec<&String> =
+            p.left_out.iter().filter(|(_, why)| **why == craftcloud_core::sync::LeftOut::NotUploaded).map(|(p, _)| p).collect();
+        assert_eq!(not_uploaded, ["Docs/edited.txt", "Docs/new.txt"], "cycle {cycle}");
+        assert!(p.not_synced.contains(&"Docs/new.txt".to_owned()), "cycle {cycle}: {:?}", p.not_synced);
+        let said: Vec<&str> = p.activity.iter().filter(|e| e.kind == ActivityKind::Skipped).map(|e| e.detail.as_str()).collect();
+        assert_eq!(
+            said,
+            [
+                "changed on this computer, not uploaded: this server only syncs downwards",
+                "new on this computer, not uploaded: this server only syncs downwards"
+            ],
+            "cycle {cycle}: said once, in the first cycle"
+        );
+    }
+    assert_eq!(std::fs::read_to_string(root.join("Docs/edited.txt")).unwrap(), "abcd", "the change stays here");
+    assert_eq!(std::fs::read_to_string(root.join("Docs/new.txt")).unwrap(), "mine");
+    assert!(!root.join("Docs/cloud-deleted.txt").exists());
+    let trashed = walkdir(&root.join(".craftcloud/trash"));
+    assert_eq!(trashed.len(), 1, "{trashed:?}");
+    assert!(trashed[0].ends_with("Docs/cloud-deleted.txt"));
+    let dav = dav.lock().unwrap();
+    assert!(!dav.has("Docs/new.txt") && dav.body("Docs/edited.txt") == Some(b"abc".as_slice()), "nothing written to the server");
+    assert!(dav.has("Docs/gone.txt"), "deleted here, download only: the cloud keeps it (it comes back down)");
+    assert!(root.join("Docs/gone.txt").exists(), "and it came back down");
+}
+
+/// The guards before a trash hold over the generic driver too: a file whose version tag moved
+/// since the plan stays, a folder that gained a file stays, and a folder whose listing fails is
+/// unknown (an error, nothing moved).
+#[test]
+fn webdav_trash_guards_hold_a_changed_file_a_grown_folder_and_a_failed_listing() {
+    let (server, dav) = scripted(Flags::default());
+    {
+        let mut dav = dav.lock().unwrap();
+        dav.add_folder("Docs/Sub", None);
+        dav.add_file("Docs/a.txt", b"a");
+        dav.add_file("Docs/Sub/b.txt", b"b");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut engine = webdav_engine(&server, dir.path(), two_way());
+    let etag = |engine: &mut Engine<WebDav>, folder: &str, path: &str| {
+        engine.storage.list(folder).unwrap().into_iter().find(|e| e.path == path).unwrap().etag.unwrap()
+    };
+    let (a, b) = (etag(&mut engine, "Docs", "Docs/a.txt"), etag(&mut engine, "Docs/Sub", "Docs/Sub/b.txt"));
+    let mut state = State::default();
+    state.files.insert("Docs/a.txt".into(), Known { etag: a.clone(), size: 1, mtime: 1, hash: None });
+    state.files.insert("Docs/Sub/b.txt".into(), Known { etag: b.clone(), size: 1, mtime: 1, hash: None });
+    let mut folders: BTreeSet<String> = ["Docs".to_owned(), "Docs/Sub".to_owned()].into();
+    let root = engine.root();
+
+    // Changed in the cloud since the plan: stays, forgotten so the next cycle brings it down.
+    let stale = Action::DeleteRemote { path: "Docs/a.txt".into(), etag: "\"stale\"".into() };
+    assert_eq!(engine.apply(&root, &stale, &mut state, &mut folders, &Tree::default()), Ok(None));
+    assert!(dav.lock().unwrap().has("Docs/a.txt") && !state.files.contains_key("Docs/a.txt"));
+    state.files.insert("Docs/a.txt".into(), Known { etag: a.clone(), size: 1, mtime: 1, hash: None });
+
+    // A file added in the cloud meanwhile keeps the folder whole.
+    dav.lock().unwrap().add_file("Docs/late.txt", b"late");
+    let folder =
+        Action::DeleteRemoteFolder { path: "Docs".into(), files: vec![("Docs/a.txt".into(), a.clone()), ("Docs/Sub/b.txt".into(), b.clone())] };
+    assert_eq!(engine.apply(&root, &folder, &mut state, &mut folders, &Tree::default()), Ok(None));
+    assert!(dav.lock().unwrap().has("Docs") && state.files.len() == 2 && folders.len() == 2);
+    assert!(writes(&server).is_empty(), "{:?}", writes(&server));
+
+    // A subfolder whose listing fails: unknown, an error, nothing moved.
+    let inner = Arc::clone(&dav);
+    let failing = FakeServer::start_full(move |seen: &Seen| {
+        if seen.path.contains("/Docs/Sub/") {
+            return crate::fake_server::Answer::new(500, "");
+        }
+        let mut dav = inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let resp = dav.answer(&seen.method, &seen.path, &seen.headers, seen.body.as_bytes());
+        let mut answer = crate::fake_server::Answer::new(resp.status, String::from_utf8_lossy(&resp.body).into_owned());
+        for (name, value) in resp.headers {
+            answer = answer.header(&name, value);
+        }
+        answer
+    });
+    let mut engine = webdav_engine(&failing, dir.path(), two_way());
+    let late = etag(&mut engine, "Docs", "Docs/late.txt");
+    let folder = Action::DeleteRemoteFolder {
+        path: "Docs".into(),
+        files: vec![("Docs/a.txt".into(), a), ("Docs/Sub/b.txt".into(), b), ("Docs/late.txt".into(), late)],
+    };
+    let done = engine.apply(&root, &folder, &mut state, &mut folders, &Tree::default());
+    assert!(done.is_err(), "a failed listing is unknown, not empty: {done:?}");
+    assert!(writes(&failing).is_empty(), "{:?}", writes(&failing));
+    assert!(dav.lock().unwrap().has("Docs/Sub/b.txt"));
+}
+
+/// A refused app password (401) ends the cycle signed out, with no retry; a server that doesn't
+/// answer leaves it offline.
+#[test]
+fn webdav_a_refused_password_ends_signed_out() {
+    let server = FakeServer::start(|_| (401, String::new()));
+    let dir = tempfile::tempdir().unwrap();
+    let mut engine = webdav_engine(&server, dir.path(), two_way());
+    engine.cycle(Deletes::Hold);
+    assert_eq!(engine.progress.lock().unwrap_or_else(PoisonError::into_inner).state, SyncState::SignedOut);
+    assert_eq!(server.seen().len(), 1, "{:?}", server.seen());
+    drop(server);
+    let gone = FakeServer::start(|_| (200, String::new()));
+    let mut engine = webdav_engine(&gone, dir.path(), two_way());
+    drop(gone);
+    engine.cycle(Deletes::Hold);
+    assert!(matches!(engine.progress.lock().unwrap_or_else(PoisonError::into_inner).state, SyncState::Offline(_)));
+}
+
+/// A listing that fails mid-scan ends the cycle with nothing done, over the generic driver too:
+/// the folder that couldn't be listed is unknown, so nothing here is deleted or overwritten.
+#[test]
+fn webdav_a_failed_listing_ends_the_cycle_with_nothing_done() {
+    let (server, dav) = scripted(Flags::default());
+    let root_dir = tempfile::tempdir().unwrap();
+    let root = root_dir.path();
+    let state = webdav_scene(&server, &dav, root);
+    let failing = FakeServer::start_full(move |seen: &Seen| {
+        if seen.path.ends_with("/Docs/") {
+            return crate::fake_server::Answer::new(500, "");
+        }
+        let mut dav = dav.lock().unwrap_or_else(PoisonError::into_inner);
+        let resp = dav.answer(&seen.method, &seen.path, &seen.headers, seen.body.as_bytes());
+        crate::fake_server::Answer::new(resp.status, String::from_utf8_lossy(&resp.body).into_owned())
+    });
+    let mut engine = webdav_engine(&failing, root, two_way());
+    save_saved(&engine.state_path(), &Saved { server: engine.plan.server.clone(), state, ..Saved::default() }).unwrap();
+    engine.cycle(Deletes::Hold);
+    assert!(matches!(engine.progress.lock().unwrap_or_else(PoisonError::into_inner).state, SyncState::Failed(_)));
+    assert!(writes(&failing).is_empty(), "{:?}", writes(&failing));
+    assert_eq!(std::fs::read_to_string(root.join("Docs/edited.txt")).unwrap(), "abcd");
+    assert!(root.join("Docs/new.txt").exists() && root.join("Docs/kept.txt").exists());
+}
+
 /// Every file under `dir`.
 fn walkdir(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();

@@ -90,11 +90,16 @@ The desktop client keeps chosen server folders in a local folder, two ways.
 - **The storage layer** ([WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 7): the engine (`crates/native/src/sync.rs`)
   talks to the server only through the `RemoteStorage` trait (`crates/native/src/storage.rs`), which has no
   unguarded write: a create, an overwrite, a move and a trash each take the guard they must hold, and a permanent
-  delete exists only for an `OwnPath` inside `.craftcloud/`. OxiCloud is its one driver
-  (`storage/oxicloud.rs`: WebDAV for bytes and listings, REST for the trash, its ids and the quota). What a server
-  guarantees is a `Capabilities` (`crates/core/src/storage.rs`, pure data), OxiCloud's filled in by hand. The
+  delete exists only for an `OwnPath` inside `.craftcloud/`. Two drivers: OxiCloud's
+  (`storage/oxicloud.rs`: WebDAV for bytes and listings, REST for the trash, its ids and the quota) and the generic
+  WebDAV driver (`storage/webdav.rs`, behind `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` until 0.3.0: any other WebDAV server
+  with an app password, a trash by `MOVE` into `.craftcloud/trash/<time>-<device>/<path>`, versions by `COPY` into
+  `.craftcloud/versions/`, hrefs read against its base so one outside it fails the listing). What a server
+  guarantees is a `Capabilities` (`crates/core/src/storage.rs`, pure data): OxiCloud's filled in by hand, another
+  server's measured by the check on connect (`storage/probe.rs`, `storage-check.json` in the settings folder) when
+  the driver connects, which the engine does on its sync thread. The
   requests the engine sends are recorded per scenario (`crates/native/src/sync/golden/`) and checked on every test
-  run, along with the rule that every write carries its guard.
+  run, along with the rule that every write carries its guard; the engine's tests run over both drivers.
 
 ## Apps in the browser
 

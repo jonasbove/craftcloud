@@ -25,6 +25,60 @@ pub struct ClientSettings {
     pub device_name: String,
     /// Light, dark, or as the system is.
     pub appearance: Appearance,
+    /// The kind of server (docs/WEBDAV-STORAGE.md § 11): CraftCloud's own unless said otherwise.
+    /// A file from before this field reads as `oxicloud`. Always written, since the settings
+    /// store merges into the file.
+    pub storage: Storage,
+    /// The WebDAV base for another kind of server (`https://cloud.example.org/remote.php/dav/files/john/`);
+    /// empty for OxiCloud, whose base is `<server>/webdav/`.
+    pub dav_url: String,
+}
+
+/// The kind of server the client syncs with (docs/WEBDAV-STORAGE.md § 7.4). Only `oxicloud` and
+/// `webdav` have a driver so far; the other three are reserved for their profiles, and a client
+/// without one refuses them rather than treating them as another kind.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Storage {
+    /// CraftCloud's own server.
+    #[default]
+    Oxicloud,
+    /// Any other WebDAV server, with CraftCloud's own trash and versions in `.craftcloud/`.
+    Webdav,
+    Nextcloud,
+    Owncloud,
+    Opencloud,
+}
+
+impl Storage {
+    /// The word in settings, `--kind` and `--json`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Oxicloud => "oxicloud",
+            Self::Webdav => "webdav",
+            Self::Nextcloud => "nextcloud",
+            Self::Owncloud => "owncloud",
+            Self::Opencloud => "opencloud",
+        }
+    }
+
+    /// The kind a word names (`as_str`'s, any case).
+    pub fn parse(word: &str) -> Option<Self> {
+        [Self::Oxicloud, Self::Webdav, Self::Nextcloud, Self::Owncloud, Self::Opencloud]
+            .into_iter()
+            .find(|k| k.as_str().eq_ignore_ascii_case(word.trim()))
+    }
+
+    /// In plain words: "CraftCloud (OxiCloud)", "another WebDAV server" …
+    pub const fn words(self) -> &'static str {
+        match self {
+            Self::Oxicloud => "CraftCloud (OxiCloud)",
+            Self::Webdav => "another WebDAV server",
+            Self::Nextcloud => "Nextcloud",
+            Self::Owncloud => "ownCloud",
+            Self::Opencloud => "OpenCloud",
+        }
+    }
 }
 
 impl ClientSettings {
@@ -223,6 +277,9 @@ pub struct SyncProgress {
     /// Files the last cycle held because they were written moments before (an app may still be
     /// saving them): untouched by that cycle, synced by the next one.
     pub waiting: Vec<String>,
+    /// What the sync may do with this server (docs/WEBDAV-STORAGE.md § 7.3), once the engine knows
+    /// (`None` before its first cycle). Two-way on CraftCloud's own server.
+    pub mode: Option<crate::storage::Mode>,
 }
 
 /// Why a local place is left out of the sync ([`SyncProgress::left_out`]).
@@ -238,6 +295,9 @@ pub enum LeftOut {
     Name,
     /// A file whose name looks like an app's temporary, lock or backup file; never synced.
     Temporary,
+    /// New or changed on this computer, and not uploaded: the server only syncs downwards
+    /// (download only, docs/WEBDAV-STORAGE.md § 9). It stays here as it is.
+    NotUploaded,
 }
 
 impl LeftOut {
@@ -248,6 +308,7 @@ impl LeftOut {
             Self::Symlink => "symlink",
             Self::Name => "name",
             Self::Temporary => "temporary",
+            Self::NotUploaded => "not_uploaded",
         }
     }
 }
@@ -448,6 +509,30 @@ mod tests {
         let all: ClientSettings = serde_json::from_str(r#"{"folders":[],"sync_root_files":true}"#).unwrap();
         assert!(!all.needs_migration());
         assert!(in_plan(&SyncPlan::from(&all), "Anything/new.txt", false));
+    }
+
+    /// A 0.2.0 settings file names no server kind: it reads as CraftCloud's own server with no
+    /// WebDAV base, and both are written from then on (docs/WEBDAV-STORAGE.md § 11, § 12).
+    #[test]
+    fn a_0_2_0_settings_file_reads_as_oxicloud() {
+        use super::Storage;
+        let old: ClientSettings = serde_json::from_str(
+            r#"{"server":"https://cloud.example.org","local_folder":"/home/john/CraftCloud","excluded":["Photos"],"folders":[],"sync_root_files":true,"device_name":"Laptop","appearance":"dark"}"#,
+        )
+        .unwrap();
+        assert_eq!((old.storage, old.dav_url.as_str()), (Storage::Oxicloud, ""));
+        assert_eq!(old.server, "https://cloud.example.org");
+        assert_eq!(old.excluded, ["Photos"]);
+        let written = serde_json::to_string(&old).unwrap();
+        assert!(written.contains("\"storage\":\"oxicloud\"") && written.contains("\"dav_url\":\"\""), "{written}");
+        let other: ClientSettings =
+            serde_json::from_str(r#"{"server":"https://cloud.example.org","storage":"webdav","dav_url":"https://cloud.example.org/dav/john/"}"#)
+                .unwrap();
+        assert_eq!(other.storage, Storage::Webdav);
+        assert_eq!(Storage::parse("WebDAV"), Some(Storage::Webdav));
+        assert_eq!(Storage::parse("nextcloud"), Some(Storage::Nextcloud));
+        assert_eq!(Storage::parse("dropbox"), None);
+        assert_eq!(serde_json::to_string(&Storage::Opencloud).unwrap(), "\"opencloud\"");
     }
 
     #[test]

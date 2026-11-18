@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 
 use craftcloud_core::sync::{ActivityEvent, ClientSettings, SyncPlan, SyncProgress, SyncState};
 use craftcloud_native::control::{self, Activity, Attached, FolderLock, Status};
+use craftcloud_native::storage::probe::Limits;
+use craftcloud_native::storage::webdav::WebDav;
 use craftcloud_native::sync::{Command, Handle};
 use serde_json::json;
 
@@ -27,11 +29,21 @@ fn start(ctx: &Ctx) -> Result<Engine> {
         return Err(CliError::usage("No sync folder yet: set one up in the desktop client first (or in its settings file)."));
     }
     let lock = control::claim_folder(Path::new(&settings.local_folder)).map_err(CliError::conflict)?;
-    let remote = ctx.remote()?;
-    let mut plan = SyncPlan::from(&settings);
-    plan.server = remote.server().to_string();
-    let device = Some(settings.device_name.trim().to_owned()).filter(|d| !d.is_empty()).unwrap_or_else(craftcloud_native::device_name);
-    let handle = craftcloud_native::sync::start_with(plan, remote.session, device, Arc::new(|| {}));
+    let device = ctx.device();
+    let handle = if ctx.is_webdav() {
+        // The driver connects on the sync thread (the check on connect may take a while).
+        let session = ctx.app_password_session()?;
+        let dir = ctx.dir();
+        let device_too = device.clone();
+        let connect: craftcloud_native::sync::Connect =
+            Box::new(move || Ok(WebDav::connect(session, &device_too, dir.as_deref(), Limits::default())));
+        craftcloud_native::sync::start_webdav(SyncPlan::from(&settings), connect, device, Arc::new(|| {}))
+    } else {
+        let remote = ctx.remote()?;
+        let mut plan = SyncPlan::from(&settings);
+        plan.server = remote.server().to_string();
+        craftcloud_native::sync::start_with(plan, remote.session, device, Arc::new(|| {}))
+    };
     Ok(Engine { handle, _lock: lock, settings })
 }
 
@@ -81,6 +93,7 @@ pub fn once(ctx: &Ctx, deletes: super::account::Deletes) -> Result<()> {
     if ctx.json {
         print_json(&json!({
             "state": status.state,
+            "mode": status.mode,
             "error": status.error,
             "pending_deletes": status.pending_deletes,
             "files_done": p.files_done,
