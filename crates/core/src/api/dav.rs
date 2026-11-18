@@ -207,6 +207,11 @@ pub fn copy_over(server: &ServerUrl, from: &str, to: &str) -> HttpRequest {
     HttpRequest::new(Method::Copy, url(server, from, false)).header("Destination", url(server, to, false)).header("Overwrite", "T")
 }
 
+/// [`copy_over`] under any WebDAV base (the generic driver restoring a version).
+pub fn copy_over_under(base: &str, from: &str, to: &str) -> HttpRequest {
+    HttpRequest::new(Method::Copy, url_under(base, from, false)).header("Destination", url_under(base, to, false)).header("Overwrite", "T")
+}
+
 /// `COPY` a file or folder (a folder with everything in it) to a new path, never overwriting
 /// (412 when the destination exists).
 pub fn copy_to(server: &ServerUrl, from: &str, to: &str, folder: bool) -> HttpRequest {
@@ -286,6 +291,11 @@ pub fn delete_under(base: &str, path: &str, folder: bool) -> HttpRequest {
 /// CraftCloud's own trash on a server without one (docs/WEBDAV-STORAGE.md § 8), and the local
 /// folder's trash under download only (§ 9): `.craftcloud/trash`.
 pub const TRASH_DIR: &str = ".craftcloud/trash";
+
+/// How long the client trash keeps an entry, flat (docs/WEBDAV-STORAGE.md § 16, Q5): 30 days, by
+/// the server's clock only, never shorter for quota reasons. Only the person empties it sooner
+/// (`craftcloud trash empty`). An entry older than this is removed through `purge_own`.
+pub const TRASH_RETAIN_SECS: i64 = 30 * 24 * 60 * 60;
 
 /// The name of one trash entry's folder, `<time>-<device>` (`20261117T143205Z-Laptop`), or
 /// `<time>-<device>-<n>` for `n` 2 and on when that name is taken; the trashed item keeps its

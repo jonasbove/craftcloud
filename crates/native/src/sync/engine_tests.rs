@@ -48,6 +48,8 @@ pub(super) fn engine(server: ServerUrl, root: &Path, excluded: &[&str]) -> Engin
         no_folder_move: BTreeSet::new(),
         platform: Platform::current(),
         parts_swept: None,
+        watched: BTreeMap::new(),
+        two_way_off: false,
         _watcher: None,
     }
 }
@@ -488,6 +490,8 @@ fn engine_with(server: ServerUrl, root: &Path, caps: Capabilities) -> Engine<Wit
         no_folder_move,
         platform,
         parts_swept,
+        watched,
+        two_way_off,
         _watcher,
     } = engine(server, root, &[]);
     Engine {
@@ -505,6 +509,8 @@ fn engine_with(server: ServerUrl, root: &Path, caps: Capabilities) -> Engine<Wit
         no_folder_move,
         platform,
         parts_swept,
+        watched,
+        two_way_off,
         _watcher,
     }
 }
@@ -638,6 +644,8 @@ fn webdav_engine(server: &FakeServer, root: &Path, caps: Capabilities) -> Engine
         no_folder_move: BTreeSet::new(),
         platform: Platform::current(),
         parts_swept: None,
+        watched: BTreeMap::new(),
+        two_way_off: false,
         _watcher: None,
     }
 }
@@ -870,6 +878,75 @@ fn webdav_a_failed_listing_ends_the_cycle_with_nothing_done() {
     assert!(writes(&failing).is_empty(), "{:?}", writes(&failing));
     assert_eq!(std::fs::read_to_string(root.join("Docs/edited.txt")).unwrap(), "abcd");
     assert!(root.join("Docs/new.txt").exists() && root.join("Docs/kept.txt").exists());
+}
+
+/// The runtime watch (docs/WEBDAV-STORAGE.md § 7.5): a create that comes back as someone else's
+/// file (the server answered 201 yet kept the other file) stops two-way sync for the run — the
+/// mode drops to download only, the probe re-runs, the activity list says so once, and nothing
+/// more is written to the server afterwards in that session.
+#[test]
+fn the_runtime_watch_stops_two_way_after_a_create_replaced_someone_elses_file() {
+    use craftcloud_core::storage::Mode;
+    let (server, dav) = scripted(Flags { create_keeps_other: true, ..Flags::default() });
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    // A different file is already at Docs/new.txt; the engine, told to create it, gets a 201 but
+    // the server keeps the other file.
+    {
+        let mut d = dav.lock().unwrap();
+        d.add_folder("Docs", None);
+        d.add_file("Docs/new.txt", b"someone-elses");
+    }
+    let mut engine = webdav_engine(&server, root, two_way());
+    write(root, "Docs/new.txt", "mine");
+    let mut state = State::default();
+    state.folders.insert("Docs".into());
+    let root_path = engine.root();
+    let mut folders: BTreeSet<String> = ["Docs".to_owned()].into();
+    let done = engine.apply(&root_path, &Action::UploadNew("Docs/new.txt".into()), &mut state, &mut folders, &Tree::default());
+    assert!(done.is_ok(), "{done:?}");
+
+    engine.cycle(Deletes::Hold);
+    let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    assert_eq!(p.mode, Some(Mode::DownloadOnly), "two-way sync stopped: {:?}", p.activity);
+    assert!(p.activity.iter().any(|e| e.kind == ActivityKind::Warning && e.detail.contains("leave alone")), "{:?}", p.activity);
+    assert!(server.seen().iter().any(|r| r.path.contains("/.craftcloud/probe/")), "the probe re-ran");
+
+    // Nothing more is written to the server for the rest of the run.
+    write(root, "Docs/another.txt", "x");
+    let before = writes(&server).len();
+    engine.cycle(Deletes::Hold);
+    assert_eq!(writes(&server).len(), before, "download only now: nothing written: {:?}", writes(&server));
+}
+
+/// The runtime watch's other trigger: a replace that succeeded on a guard the server ignored (it
+/// answered 204 yet kept the newer file). Same result: two-way off, the probe re-run, said once.
+#[test]
+fn the_runtime_watch_stops_two_way_after_a_replace_ignored_its_guard() {
+    use craftcloud_core::storage::Mode;
+    let (server, dav) = scripted(Flags { replace_keeps_other: true, ..Flags::default() });
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    {
+        let mut d = dav.lock().unwrap();
+        d.add_folder("Docs", None);
+        d.add_file("Docs/a.txt", b"the-newer-one");
+    }
+    let mut engine = webdav_engine(&server, root, two_way());
+    write(root, "Docs/a.txt", "x");
+    let mut state = State::default();
+    state.files.insert("Docs/a.txt".into(), Known { etag: "\"stale\"".into(), size: 1, mtime: 1, hash: None });
+    state.folders.insert("Docs".into());
+    let root_path = engine.root();
+    let mut folders: BTreeSet<String> = ["Docs".to_owned()].into();
+    let change = Action::UploadChange { path: "Docs/a.txt".into(), etag: "\"stale\"".into() };
+    assert!(engine.apply(&root_path, &change, &mut state, &mut folders, &Tree::default()).is_ok());
+
+    engine.cycle(Deletes::Hold);
+    let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    assert_eq!(p.mode, Some(Mode::DownloadOnly), "{:?}", p.activity);
+    assert!(p.activity.iter().any(|e| e.kind == ActivityKind::Warning), "{:?}", p.activity);
+    assert!(server.seen().iter().any(|r| r.path.contains("/.craftcloud/probe/")), "the probe re-ran");
 }
 
 /// Every file under `dir`.

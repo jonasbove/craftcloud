@@ -65,6 +65,18 @@ pub fn list(transport: &mut dyn Transport, base: &Base, path: &str) -> Result<Ve
     Ok(out)
 }
 
+/// Puts version `stamp` of `path` back under `base`, after keeping the current file as a version
+/// of its own (so the restore can be undone), exactly as OxiCloud's driver does. The version must
+/// be one of the kept ones.
+pub fn restore(transport: &mut dyn Transport, base: &Base, path: &str, stamp: &str) -> Result<(), String> {
+    if !list(transport, base, path)?.iter().any(|v| v.stamp == stamp) {
+        return Err(format!("{path} has no version {stamp}"));
+    }
+    keep(transport, base, path)?;
+    let resp = transport.call(&versions::restore_under(base.url(), path, stamp))?;
+    craftcloud_core::api::expect_ok(&resp).map_err(|e| format!("restoring {path} failed: {e}"))
+}
+
 /// Takes the versions of `from` (a file, or a folder's files) along to `to` after a rename or
 /// move. No history is fine; where `to` already has one, the versions are added to it.
 pub fn follow_move(transport: &mut dyn Transport, base: &Base, from: &str, to: &str) -> Result<(), String> {

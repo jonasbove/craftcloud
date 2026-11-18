@@ -40,6 +40,14 @@ pub struct Flags {
     pub no_ids: bool,
     /// A `MOVE` gives the file a new ETag.
     pub move_changes_etag: bool,
+    /// A create (`If-None-Match: *`) over an existing file answers 201 with a fresh ETag but keeps
+    /// the file already there: a server that passed the probe yet, at runtime, silently drops a
+    /// guarded create and leaves someone else's file (the runtime watch, docs/WEBDAV-STORAGE.md
+    /// § 7.5).
+    pub create_keeps_other: bool,
+    /// A replace with a stale `If-Match` answers 204 with a fresh ETag but keeps the newer file
+    /// already there: the guard is honoured at probe time yet ignored at runtime (the runtime watch).
+    pub replace_keeps_other: bool,
     /// The server's clock, as an RFC 1123 time: the `Date` header on every answer, and the
     /// `getlastmodified` of every folder made from now on.
     pub date: Option<String>,
@@ -287,6 +295,19 @@ impl FakeDav {
             return self.done(if self.flags.missing_parent_404 { 404 } else { 409 }, "no such folder");
         }
         let existing = self.files.get(&key).cloned();
+        // The runtime-watch misbehaviours: the server answers success but keeps the file already
+        // there (someone else's), so the next listing shows neither our ETag nor our bytes.
+        if if_none_match.as_deref() == Some("*") && existing.is_some() && self.flags.create_keeps_other {
+            let etag = self.fresh_etag("e");
+            return self.done(201, "").with_header("ETag", &etag);
+        }
+        if let Some(wanted) = &if_match
+            && self.flags.replace_keeps_other
+            && existing.as_ref().is_some_and(|f| f.etag.trim_matches('"') != wanted.trim_matches('"'))
+        {
+            let etag = self.fresh_etag("e");
+            return self.done(204, "").with_header("ETag", &etag);
+        }
         if if_none_match.as_deref() == Some("*") && existing.is_some() && !self.flags.ignores_if_none_match {
             return self.done(412, "");
         }

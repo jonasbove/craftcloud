@@ -185,10 +185,16 @@ to any WebDAV server (Nextcloud, ownCloud, a NAS …) as "another WebDAV server"
 where the server honours every write guard, **download only** where it doesn't (nothing is written to the server;
 changes made here stay here and are listed as `not synced … (not uploaded)`; a file deleted in the cloud goes to
 `.craftcloud/trash/` in the local folder), refused where a file's version tag can't be trusted. `ls`, `get`, `put`,
-`save`, `mkdir`, `mv`, `rm`, `files`, `open`, `sync`, `daemon`, `status` and `server check` work; `share`, `star`,
-`starred`, `recent`, `search`, `usage`, `cp`, `server info|users|settings`, and for now `trash` and `versions`, answer
-"not available on this server" (code 10). The desktop client syncs CraftCloud's own server only so far: with such
-settings its window opens and says to use `craftcloud daemon` or `sync`. Nextcloud, ownCloud and OpenCloud get
+`save`, `mkdir`, `mv`, `rm`, `files`, `open`, `sync`, `daemon`, `status`, `server check`, `trash` (`ls`, `restore`,
+`rm`, `empty`) and `versions` work through the storage trait; `share`, `star`, `starred`, `recent`, `search`,
+`usage`, `cp` and `server info|users|settings` answer "not available on this server" (code 10). The client trash
+keeps an entry 30 days by the **server's** clock (never this computer's); only `trash empty` clears it sooner, and
+`trash restore` renames a restored item (`NAME (restored).EXT`) when its old place is taken. The check on connect
+re-runs by itself when the saved result is more than a day old or the server's version string changed, and on
+`server check`; the sync mode in use always comes from that saved check. If the server replaces a file the sync told
+it to leave alone (a guard honoured at the check yet ignored later), the sync stops writing for the rest of the run
+(download only), re-runs the check and says so. The desktop client syncs CraftCloud's own server only so far: with
+such settings its window opens and says to use `craftcloud daemon` or `sync`. Nextcloud, ownCloud and OpenCloud get
 their own profiles (their trash, versions and browser sign-in) in later pull requests; until then
 `--kind nextcloud|owncloud|opencloud` is refused.
 

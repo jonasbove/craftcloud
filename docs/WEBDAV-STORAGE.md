@@ -461,13 +461,45 @@ As built (pull request 4a, the first of two under § 14's row 4; `crates/native/
 - **The desktop client** syncs CraftCloud's own server only until pull request 10: with the opt-in and a settings
   file naming another kind, its window opens on the Connect sheet and says to use `craftcloud daemon` or `sync`.
   Under download only its header, tray and headline say "Download only".
-- **Left to pull request 4b**, as § 14 splits the row: the client trash's retention (30 days by the server's clock,
-  through `purge_own`) and `craftcloud trash empty`, `trash ls`/`restore` and `versions`/`restore` through the trait,
-  the probe's re-run schedule (daily, on a version change, "Check again") and the runtime watch of § 7.5. A trash
-  that is never emptied is safe; it only takes room.
+- **Done in pull request 4b**, as § 14 splits the row: see the as-built note below.
 - **Carried from pull request 3, not decided here:** Nextcloud 31 and ownCloud 10.15 keep a file's version tag when
   it is overwritten within the same second as the write before it. The generic driver changes nothing about it;
   the engine's `If-Match` can't tell two writes to one file apart within one second on those servers.
+
+As built (pull request 4b, the second of two under § 14's row 4; `crates/native/src/storage/webdav.rs`,
+`crates/native/src/sync.rs`, `crates/core/src/storage/probe.rs`, `apps/craftcloud/src/cli/webdav.rs`):
+
+- **The client trash's retention** (§ 16, Q5). `RemoteStorage::sweep_trash` (a no-op where the server keeps its own
+  trash) removes entries of `.craftcloud/trash/` older than 30 days (`dav::TRASH_RETAIN_SECS`) **by the server's
+  clock**: each entry folder's `getlastmodified` against the `Date` header of the same listing, through the shared
+  pure `core::storage::probe::older_than` that `stale_probe_folders` now also uses, never this computer's clock. A
+  listing without a `Date`, or an entry without a time, removes nothing. Removal is `purge_own` only, inside
+  `.craftcloud/`. The engine calls it after a clean cycle, at most once a day per client (a monotonic-clock rate
+  limit, not a deletion decision). Never sooner for quota reasons.
+- **The trash and version commands through the trait.** On another WebDAV server the command line routes
+  `trash ls|restore|rm|empty` and `versions`/`versions … restore` through the storage trait (`cli/webdav.rs`): `ls`
+  shows each item's original cloud path (from the entry's name) and when it was trashed, reading only; `restore`,
+  `rm`, `empty` and a version restore write, so they need two-way sync (`webdav_for_writes`). `restore` is a `MOVE`
+  back with `Overwrite: F`, `names::restored_name` when the place is taken (`--as PATH` restores elsewhere); `empty`
+  and `rm` purge inside `.craftcloud/trash/` only; `versions`/`restore` read and restore `.craftcloud/versions/`
+  through the same code OxiCloud uses (`storage::versions`, now with a `restore` that snapshots the current file
+  first, so the restore can be undone).
+- **The runtime watch** (§ 7.5, engine). A file this client just wrote that comes back from the next listing as
+  someone else's — the ETag the write answered isn't the one listed **and** the listed size isn't the one uploaded —
+  stops two-way sync for the rest of the run (`Engine::effective_mode` forces download only), re-runs the check
+  (`RemoteStorage::recheck`, which saves it and takes the fresh capabilities), and says so once in the activity list
+  and in `status`. It adds no request on a well-behaved server (the next listing shows exactly what the write
+  answered), so OxiCloud's golden logs are unchanged. Two `fake::Flags` stage it (`create_keeps_other`,
+  `replace_keeps_other`).
+- **The check's re-run schedule** (§ 7.5, "When"). `WebDav::connect` reuses the saved check only while it is less
+  than a day old (`checked_at`, this computer's clock — cache freshness, not a server-clock safety decision) and the
+  server's version string is unchanged; otherwise it re-probes and saves. The version string is a plain WebDAV
+  server's `Server` header (none, or the richer `status.php`, come with the profiles of PRs 6–8); an unknown version
+  never forces a re-check on its own, so a momentary blip keeps a good saved check. `server check` still re-runs the
+  probe. The mode in use always comes from the saved check, never from a product name.
+- **Left as is (the maintainer decides):** 4a's command line refuses CLI writes (exit code 10) on a download-only
+  server (`webdav_for_writes`), beyond what § 11 lists; a trashed item's restored path isn't echoed back when a
+  clash renamed it (the generic `restore` reports the original path).
 
 ## 8. How each non-negotiable is met
 
