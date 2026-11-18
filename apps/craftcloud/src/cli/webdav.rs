@@ -362,7 +362,9 @@ fn pick<'a>(items: &'a [TrashItem], wanted: &str) -> Result<&'a TrashItem> {
     }
 }
 
-/// The trash entry folder (`.craftcloud/trash/<time>-<device>`) an item lives in, from its id.
+/// The trash entry folder (`.craftcloud/trash/<time>-<device>`) an item lives in, from its id. An
+/// entry holds exactly one trashed item (the driver makes a fresh entry for every `MOVE` into the
+/// trash), so removing the entry removes that item and nothing else.
 fn entry_folder(id: &str) -> Option<OwnPath> {
     let entry = id.strip_prefix(dav::TRASH_DIR)?.trim_start_matches('/').split('/').next().filter(|e| !e.is_empty())?;
     OwnPath::new(&format!("{}/{entry}", dav::TRASH_DIR))
@@ -373,23 +375,35 @@ fn entry_folder(id: &str) -> Option<OwnPath> {
 /// `ls` reads; the rest write, so they need two-way sync (`webdav_for_writes`).
 pub fn trash(ctx: &Ctx, cmd: TrashCmd) -> Result<()> {
     match cmd {
-        TrashCmd::Ls { all: _ } => {
+        TrashCmd::Ls { all } => {
             let (mut storage, _) = ctx.webdav()?;
-            let items: Vec<Item> = storage.trash_list().map_err(cli)?.iter().map(trash_item).collect();
+            // As on CraftCloud's server, `--all` shows CraftCloud's own `.craftcloud` paths too.
+            let items: Vec<Item> = storage
+                .trash_list()
+                .map_err(cli)?
+                .iter()
+                .filter(|i| all || !craftcloud_core::api::resources::is_internal(&i.path))
+                .map(trash_item)
+                .collect();
             print_items(ctx, &items, |i| i.path.clone())
         }
-        TrashCmd::Restore { item, to, rename: _ } => {
+        TrashCmd::Restore { item, to, rename } => {
             let (mut storage, _) = ctx.webdav_for_writes()?;
             let all = storage.trash_list().map_err(cli)?;
             let found = pick(&all, &item)?.clone();
             let from = found.path.clone();
-            // `--as PATH` restores elsewhere; otherwise back where it was. A taken place gets
-            // "NAME (restored).EXT" next to it (a `MOVE` with `Overwrite: F`, never an overwrite).
+            // `--as PATH` restores elsewhere; otherwise back where it was. As on CraftCloud's
+            // server, a place that is taken is refused unless `--rename`, which restores next to
+            // it as "NAME (restored).EXT" (the driver's `MOVE` with `Overwrite: F` does that; it
+            // never overwrites).
             let target = match to {
                 Some(to) => TrashItem { path: clean(&to)?, ..found },
                 None => found,
             };
             let dest = target.path.clone();
+            if !rename && stat(&mut storage, &dest)?.is_some() {
+                return Err(CliError::conflict(format!("{dest} is there now; use --rename to restore next to it, or --as PATH")));
+            }
             storage.restore(&target).map_err(cli)?;
             let human = if dest == from { format!("Restored {from}") } else { format!("Restored {from} as {dest}") };
             done(ctx, json!({"restored": dest, "from": from, "id": target.id}), &human)
@@ -403,10 +417,11 @@ pub fn trash(ctx: &Ctx, cmd: TrashCmd) -> Result<()> {
             done(ctx, json!({"deleted": found.path, "id": found.id}), &format!("Deleted {} for good", found.path))
         }
         TrashCmd::Empty { yes } => {
+            // The mode first: on a download-only server the answer is exit 10, not a question.
+            let (mut storage, _) = ctx.webdav_for_writes()?;
             if !yes {
                 confirm("Delete everything in the trash for good?")?;
             }
-            let (mut storage, _) = ctx.webdav_for_writes()?;
             let entries = match storage.list(dav::TRASH_DIR) {
                 Ok(entries) => entries,
                 Err(StorageError::NotFound(_)) => Vec::new(),

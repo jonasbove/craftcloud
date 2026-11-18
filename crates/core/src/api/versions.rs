@@ -197,12 +197,6 @@ pub fn delete_under(base: &str, path: &str, stamp: &str) -> HttpRequest {
 pub fn restore(server: &ServerUrl, path: &str, stamp: &str) -> HttpRequest {
     dav::copy_over(server, &version_path(path, stamp), path)
 }
-
-/// [`restore`] under any WebDAV base (the generic driver).
-pub fn restore_under(base: &str, path: &str, stamp: &str) -> HttpRequest {
-    dav::copy_over_under(base, &version_path(path, stamp), path)
-}
-
 /// `20261113T151013.123Z` → `2026-11-13 15:10:13 UTC`.
 pub fn display_stamp(stamp: &str) -> Option<String> {
     let b = stamp.as_bytes();

@@ -29,6 +29,12 @@ What no test reaches, from a coverage run, is in [TESTING.md › Coverage](TESTI
 
 ## Known limits
 
+- **Other WebDAV servers (experimental, behind `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`):** `trash restore` reports the
+  item's original path even when `--rename` put it next to a file of that name; a trashed folder whose only content
+  is one file (or one folder) is listed in `trash ls` as, and restored or removed by, that inner path. The command
+  line writes none of the person's files to a server whose check measured download only (exit code 10), retention
+  sweep included; the check itself writes only inside `.craftcloud/probe/` ([WEBDAV-STORAGE.md](WEBDAV-STORAGE.md)
+  § 7.5, § 11).
 - **Start at login doesn't work from the Flatpak.** The entry is written inside the sandbox, which the session
   never reads; use the AppImage, deb, rpm or Arch package for that.
 - **Desktop builds are unsigned.** macOS asks once (right-click › Open, or remove the quarantine attribute) and

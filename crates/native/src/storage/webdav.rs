@@ -66,6 +66,9 @@ pub struct WebDav {
     limits: Limits,
     /// When this client last swept the client trash (a rate limit; `None` until the first sweep).
     last_trash_sweep: Option<Instant>,
+    /// The server's version string read on connect (its `Server` header, or nothing), saved with a
+    /// re-check so the next connect doesn't take the re-check for a version change.
+    server_version: String,
 }
 
 impl WebDav {
@@ -74,7 +77,16 @@ impl WebDav {
     /// [`WebDav::connect`]).
     pub fn new(session: AppPasswordSession, caps: Capabilities, device: &str) -> Self {
         let base = session.base().clone();
-        Self { session, base, caps, device: device.to_owned(), settings_dir: None, limits: Limits::default(), last_trash_sweep: None }
+        Self {
+            session,
+            base,
+            caps,
+            device: device.to_owned(),
+            settings_dir: None,
+            limits: Limits::default(),
+            last_trash_sweep: None,
+            server_version: String::new(),
+        }
     }
 
     /// Connects (docs/WEBDAV-STORAGE.md § 7.5, "When"): the check saved in `settings_dir` for this
@@ -109,6 +121,7 @@ impl WebDav {
         let mut driver = Self::new(session, caps, device);
         driver.settings_dir = settings_dir.map(Path::to_path_buf);
         driver.limits = limits;
+        driver.server_version = version.unwrap_or_else(|| check.server_version.clone());
         (driver, check)
     }
 
@@ -318,8 +331,15 @@ impl WebDav {
         // the slash form. The session never follows a redirect (`http::execute_direct`), so the
         // answer is read here: a redirect to `<path>/` says "a folder". Any other 3xx is unknown.
         if (300..400).contains(&resp.status) {
-            let slash_form = dav::url_under("", path, true);
-            let to_slash_form = resp.header("Location").is_some_and(|l| l.split('?').next().unwrap_or(l).ends_with(&slash_form));
+            // Exactly this path with its slash, on this server: an absolute `Location` must start
+            // with the base's origin, a relative one with `/`; the path must be the base's path plus
+            // the folder's. Anything else (another host, another path) is an error, not a folder.
+            let expected = format!("{}{}", self.base.path().trim_end_matches('/'), dav::url_under("", path, true));
+            let to_slash_form = resp.header("Location").is_some_and(|l| {
+                let l = l.split('?').next().unwrap_or(l);
+                let path_part = l.strip_prefix(&self.base.origin()).or_else(|| l.starts_with('/').then_some(l));
+                path_part == Some(expected.as_str())
+            });
             return if to_slash_form { Ok(true) } else { Err(StorageError::Status(resp.status)) };
         }
         let listed = parse_listing(&resp, &self.base).map_err(|e| format!("listing {path:?}: {e}"))?;
@@ -347,7 +367,9 @@ fn server_version(session: &mut AppPasswordSession, base: &Base) -> Option<Strin
         .header("Depth", "0")
         .header("Content-Type", "application/xml; charset=utf-8")
         .body(PROPFIND_BODY.as_bytes().to_vec());
-    session.call(&req).ok().map(|resp| resp.header("Server").unwrap_or_default().to_owned())
+    // Only a successful answer says what the server is: a 401, a proxy's error page or a 5xx
+    // carries no version worth comparing, and must never throw a good saved check away.
+    session.call(&req).ok().filter(|resp| resp.is_success()).map(|resp| resp.header("Server").unwrap_or_default().to_owned())
 }
 
 /// Whether a saved check's `checked_at` (RFC 3339, this computer's clock when it was written) is
@@ -403,6 +425,20 @@ impl RemoteStorage for WebDav {
 
     fn list(&mut self, folder: &str) -> Result<Vec<Entry>, StorageError> {
         Ok(self.listing(folder)?.into_iter().map(Entry::from).collect())
+    }
+
+    /// One depth-0 `PROPFIND` of the path (a file: no trailing slash). A 404 is nothing there; a
+    /// redirect or anything else that isn't a readable 207 is an error (unknown).
+    fn stat(&mut self, path: &str) -> Result<Option<Entry>, StorageError> {
+        let resp = self.session.call(&self.propfind(path, false, "0"))?;
+        if resp.status == 404 {
+            return Ok(None);
+        }
+        if (300..400).contains(&resp.status) {
+            return Err(StorageError::Status(resp.status));
+        }
+        let listed = parse_listing(&resp, &self.base).map_err(|e| format!("reading {path:?}: {e}"))?;
+        Ok(listed.into_iter().find(|e| e.path == path.trim_matches('/')).map(Entry::from))
     }
 
     fn download(&mut self, path: &str, from: Option<u64>) -> Result<Download, StorageError> {
@@ -588,10 +624,17 @@ impl RemoteStorage for WebDav {
         Ok(())
     }
 
+    fn measured(&self) -> bool {
+        // Its capabilities come from the check on connect, never from knowing the kind of server.
+        true
+    }
+
+    /// The one write allowed after the watch has tripped: the probe, inside `.craftcloud/probe/`
+    /// only, bounded by `Limits` (30 s a request, 180 s in all).
     fn recheck(&mut self) -> Option<craftcloud_core::storage::Mode> {
         let verdict = probe::run(&mut self.session, &self.base, &probe::folder_name(), Profile::default(), self.limits);
         let now = jiff::Timestamp::now().strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
-        let check = StoredCheck::from_verdict(&verdict, self.base.url(), "", &now);
+        let check = StoredCheck::from_verdict(&verdict, self.base.url(), &self.server_version, &now);
         if let Some(dir) = &self.settings_dir
             && let Err(e) = save_check(dir, &check)
         {
@@ -1039,6 +1082,44 @@ pub(crate) mod tests {
         assert_eq!(dav.lock().unwrap().body("Docs/a.txt"), Some(b"v0".as_slice()), "the version is back");
         assert_eq!(s.list_versions("Docs/a.txt").unwrap().len(), 4, "the replaced file is kept as a new version, so the restore can be undone");
         assert!(s.restore_version("Docs/a.txt", "20200101T000000.000Z").unwrap_err().to_string().contains("no version"));
+        // The restore is a guarded write: a `PUT` with `If-Match`, never a `COPY` onto the file (the
+        // only `COPY`s are `keep_version`'s, from the file into `.craftcloud/versions/`).
+        for r in &server.seen() {
+            match r.method.as_str() {
+                "PUT" => assert!(r.header("if-match").is_some() || r.header("if-none-match") == Some("*"), "{r:?}"),
+                "COPY" => assert!(r.header("destination").is_some_and(|d| d.contains("/.craftcloud/versions/")), "a COPY onto a file: {r:?}"),
+                _ => {}
+            }
+            assert_ne!(r.header("overwrite"), Some("T"), "never Overwrite: T: {r:?}");
+        }
+
+        // A change landing between the version's read and the write: the guard holds (412),
+        // nothing is restored, and the change stays, with its own version kept.
+        let (plain, dav2) = scripted(Flags::default());
+        dav2.lock().unwrap().add_folder("Docs", None);
+        let racing = Arc::clone(&dav2);
+        let server2 = FakeServer::start_full(move |seen: &Seen| {
+            let mut dav = racing.lock().unwrap_or_else(PoisonError::into_inner);
+            if seen.method == "GET" && seen.path.contains("/.craftcloud/versions/") {
+                dav.add_file("Docs/a.txt", b"changed meanwhile");
+            }
+            let resp = dav.answer(&seen.method, &seen.path, &seen.headers, seen.body.as_bytes());
+            let mut answer = Answer::new(resp.status, String::from_utf8_lossy(&resp.body).into_owned());
+            for (name, value) in resp.headers {
+                answer = answer.header(&name, value);
+            }
+            answer
+        });
+        drop(plain);
+        let mut s = driver(&server2);
+        let Written::Saved { etag } = s.create("Docs/a.txt", &a).unwrap() else { panic!() };
+        s.keep_version("Docs/a.txt").unwrap();
+        std::fs::write(&a, "v9").unwrap();
+        assert!(matches!(s.replace("Docs/a.txt", &etag, &a).unwrap(), Written::Saved { .. }));
+        let stamp = s.list_versions("Docs/a.txt").unwrap().last().unwrap().stamp.clone();
+        let err = s.restore_version("Docs/a.txt", &stamp).unwrap_err().to_string();
+        assert!(err.contains("changed on the server meanwhile"), "{err}");
+        assert_eq!(dav2.lock().unwrap().body("Docs/a.txt"), Some(b"changed meanwhile".as_slice()), "never silently overwritten");
     }
 
     /// A `MOVE` into a fresh trash entry that finds the file gone (404) is done, and the entry just

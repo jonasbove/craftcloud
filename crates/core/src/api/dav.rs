@@ -206,12 +206,6 @@ pub fn copy_under(base: &str, from: &str, to: &str) -> HttpRequest {
 pub fn copy_over(server: &ServerUrl, from: &str, to: &str) -> HttpRequest {
     HttpRequest::new(Method::Copy, url(server, from, false)).header("Destination", url(server, to, false)).header("Overwrite", "T")
 }
-
-/// [`copy_over`] under any WebDAV base (the generic driver restoring a version).
-pub fn copy_over_under(base: &str, from: &str, to: &str) -> HttpRequest {
-    HttpRequest::new(Method::Copy, url_under(base, from, false)).header("Destination", url_under(base, to, false)).header("Overwrite", "T")
-}
-
 /// `COPY` a file or folder (a folder with everything in it) to a new path, never overwriting
 /// (412 when the destination exists).
 pub fn copy_to(server: &ServerUrl, from: &str, to: &str, folder: bool) -> HttpRequest {

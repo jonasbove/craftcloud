@@ -12,7 +12,9 @@
   of it is switched off unless the environment variable `CRAFTCLOUD_EXPERIMENTAL_WEBDAV` is exactly `1`
   (nothing in the release, its packaging or its settings sets it): without it, `--kind` isn't offered, and a
   settings file naming another kind of server is refused with a message, nothing synced. CraftCloud's own server
-  syncs exactly as before. **A new kind of server: upgrade all devices together.** Every device that syncs an
+  syncs exactly as before. The 30-day trash sweep and the drop to download only are rules only this version's
+  clients follow; that is fine, because no earlier CraftCloud can sync with such a server at all (below).
+  **A new kind of server: upgrade all devices together.** Every device that syncs an
   account on another WebDAV server must run this version or later: no earlier CraftCloud can sync with such a
   server, so none can undo its plan, and from now on any change to how a server kind is decided or what it skips
   gets its own line here, as for CraftCloud's server.

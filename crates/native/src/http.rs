@@ -337,6 +337,29 @@ mod tests {
         CANCELLED, CANT_CONNECT, CANT_FIND, CHANGED_WHILE_UPLOADING, FOLLOW_REDIRECTS, FileBody, agent, describe, execute_on, is_unreachable,
         send_file_on,
     };
+
+    /// The direct agent (another WebDAV server) hands a 3xx back as the answer it is, never as an
+    /// error and never followed; the usual agent follows it as before, without the password.
+    #[test]
+    fn the_direct_agent_never_follows_a_redirect() {
+        use crate::fake_server::{Answer, FakeServer, Seen};
+        let server =
+            FakeServer::start_full(
+                |r: &Seen| {
+                    if r.path == "/old" { Answer::new(301, "").header("Location", "/new") } else { Answer::new(200, "here") }
+                },
+            );
+        let req = HttpRequest::new(Method::Get, format!("{}/old", server.url)).header("Authorization", "Basic c2VjcmV0");
+        let direct = execute_on(&agent(Duration::from_secs(5), 0), &req).unwrap();
+        assert_eq!(direct.status, 301, "the redirect is the answer, not an error");
+        assert_eq!(direct.header("Location"), Some("/new"));
+        assert_eq!(server.seen().len(), 1, "never followed: {:?}", server.seen());
+        let followed = execute_on(&agent(Duration::from_secs(5), FOLLOW_REDIRECTS), &req).unwrap();
+        assert_eq!((followed.status, followed.body.as_slice()), (200, b"here".as_slice()), "the usual agent follows as before");
+        let seen = server.seen();
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        assert!(seen[2].header("authorization").is_none(), "the password never travels to the redirect target: {:?}", seen[2]);
+    }
     use craftcloud_core::http::{HttpRequest, Method};
     use std::io::{Read, Write};
     use std::sync::Arc;

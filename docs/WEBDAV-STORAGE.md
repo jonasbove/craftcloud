@@ -462,9 +462,10 @@ As built (pull request 4a, the first of two under § 14's row 4; `crates/native/
   file naming another kind, its window opens on the Connect sheet and says to use `craftcloud daemon` or `sync`.
   Under download only its header, tray and headline say "Download only".
 - **Done in pull request 4b**, as § 14 splits the row: see the as-built note below.
-- **Carried from pull request 3, not decided here:** Nextcloud 31 and ownCloud 10.15 keep a file's version tag when
-  it is overwritten within the same second as the write before it. The generic driver changes nothing about it;
-  the engine's `If-Match` can't tell two writes to one file apart within one second on those servers.
+- **Carried from pull request 3, decided 2026-11-18 for pull requests 6 and 7:** Nextcloud 31 and ownCloud 10.15
+  keep a file's version tag when it is overwritten within the same second as the write before it, so the engine's
+  `If-Match` can't tell two writes to one file apart within one second there. Their profiles add a checksum check
+  after every overwrite, and a mismatch becomes a conflict copy. The generic driver changes nothing about it.
 
 As built (pull request 4b, the second of two under § 14's row 4; `crates/native/src/storage/webdav.rs`,
 `crates/native/src/sync.rs`, `crates/core/src/storage/probe.rs`, `apps/craftcloud/src/cli/webdav.rs`):
@@ -484,13 +485,29 @@ As built (pull request 4b, the second of two under § 14's row 4; `crates/native
   and `rm` purge inside `.craftcloud/trash/` only; `versions`/`restore` read and restore `.craftcloud/versions/`
   through the same code OxiCloud uses (`storage::versions`, now with a `restore` that snapshots the current file
   first, so the restore can be undone).
-- **The runtime watch** (§ 7.5, engine). A file this client just wrote that comes back from the next listing as
-  someone else's — the ETag the write answered isn't the one listed **and** the listed size isn't the one uploaded —
-  stops two-way sync for the rest of the run (`Engine::effective_mode` forces download only), re-runs the check
-  (`RemoteStorage::recheck`, which saves it and takes the fresh capabilities), and says so once in the activity list
-  and in `status`. It adds no request on a well-behaved server (the next listing shows exactly what the write
-  answered), so OxiCloud's golden logs are unchanged. Two `fake::Flags` stage it (`create_keeps_other`,
-  `replace_keeps_other`).
+- **The runtime watch** (§ 7.5, engine, `Engine::verify_write`). § 7.5 says "a replace that succeeds on a version
+  the listing says is newer": that isn't observable as written (a listing has no "newer than", and by the next
+  listing a later edit by another device looks the same). What the watch compares instead: right after a guarded
+  write answered "saved", **in the same step**, one depth-0 stat of the path (`RemoteStorage::stat`); if the file is
+  there at neither the size just uploaded nor the tag the write answered, the server said it saved ours yet kept
+  another file, a guard honoured at the check but ignored now. Then two-way sync stops for the rest of the run
+  (`Engine::effective_mode` forces download only; the rest of that cycle's writes are skipped), the check re-runs
+  (`RemoteStorage::recheck`, which saves it and takes the fresh capabilities), the file is not recorded as synced (so
+  the next cycle keeps the local version as a conflict copy, never overwrites it), and the activity list and `status`
+  say so once. Checking before anything else can list the new tag and write with an honoured guard is what tells a
+  lie from a later edit: another device's edit comes after the stat and is an ordinary change next cycle (a test
+  runs that sequence against the well-behaved scripted server: two-way stays on, no warning). The watch applies only
+  to a server whose capabilities were **measured** (`RemoteStorage::measured`: the generic driver); CraftCloud's own
+  server's guards are known and checked by its live suite, so it is never watched, sends no stat, and nothing changes
+  for it (a test over the OxiCloud driver; the golden logs are unchanged). The one extra request is the stat after
+  each write on a generic server. After the trip nothing is written but the re-check's probe, inside
+  `.craftcloud/probe/` and bounded by `Limits`; the retention sweep runs only under two-way sync. Two `fake::Flags`
+  stage the trip (`create_keeps_other`, `replace_keeps_other`).
+- **A version restore is a guarded write.** On the generic driver `versions … restore` keeps the current file as a
+  version, then writes the chosen version's bytes over it with a `PUT` and `If-Match` on the tag read at the start:
+  a change landing meanwhile answers 412 and nothing is restored (its new version is kept). Not OxiCloud's `COPY`
+  with `Overwrite: T`, whose precondition can't name the destination's version; OxiCloud's own restore is
+  unchanged here.
 - **The check's re-run schedule** (§ 7.5, "When"). `WebDav::connect` reuses the saved check only while it is less
   than a day old (`checked_at`, this computer's clock — cache freshness, not a server-clock safety decision) and the
   server's version string is unchanged; otherwise it re-probes and saves. The version string is a plain WebDAV
@@ -625,8 +642,9 @@ local side:
 - **On a server whose check measured download only, the command line writes nothing either** (decided 2026-11-18):
   `put`, `mkdir`, `mv`, `rm`, a direct `save`, `trash restore`, `trash rm`, `trash empty` and `versions … restore`
   answer "not available on this server" (exit code 10, kind `unsupported`), with the mode and a pointer to
-  `server check`. A guard the sync won't rely on must not be exercised by hand either: nothing is ever written to
-  such a server, by the engine or by the command line.
+  `server check`. A guard the sync won't rely on must not be exercised by hand either: nothing of the person's files
+  is ever written to such a server, by the engine or by the command line (the client trash's retention sweep
+  included); the check itself writes only inside `.craftcloud/probe/`.
 
 ## 12. Migration and "upgrade all devices together"
 

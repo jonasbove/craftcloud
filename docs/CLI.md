@@ -191,7 +191,8 @@ changes made here stay here and are listed as `not synced … (not uploaded)`; a
 command that would write (`put`, `mkdir`, `mv`, `rm`, `save`, `trash restore|rm|empty`, `versions … restore`) on a
 server whose check measured download only: nothing is written to such a server, by the sync or by hand. The client trash
 keeps an entry 30 days by the **server's** clock (never this computer's); only `trash empty` clears it sooner, and
-`trash restore` renames a restored item (`NAME (restored).EXT`) when its old place is taken. The check on connect
+`trash restore` works as on CraftCloud's server: refused (code 5) when the old place is taken unless `--rename`
+(restored next to it as `NAME (restored).EXT`) or `--as PATH`. The check on connect
 re-runs by itself when the saved result is more than a day old or the server's version string changed, and on
 `server check`; the sync mode in use always comes from that saved check. If the server replaces a file the sync told
 it to leave alone (a guard honoured at the check yet ignored later), the sync stops writing for the rest of the run
