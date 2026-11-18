@@ -12,8 +12,11 @@
 //!   delete what [`to_prune`] names.
 //! - **Rename or move** `from` to `to` (a file or a folder): `MKCOL` each of [`history_parents`]
 //!   of `to`, then [`move_history`] (404: there was no history).
-//! - **Restore** version `stamp` of `path`: snapshot the current file first (so a restore can be
-//!   undone), then [`restore`] (a `COPY` over the file).
+//! - **Restore** version `stamp` of `path`: `PROPFIND` the file for its current ETag, `GET` the
+//!   version's bytes, snapshot the current file (so a restore can be undone), then `PUT` the bytes
+//!   with `If-Match: <that ETag>` (`dav::upload`, `dav::Write::Replace`): a 412 means the file
+//!   changed meanwhile, and nothing is overwritten. Never a `COPY` over the file: a `COPY` with
+//!   `Overwrite: T` has no guard, and would lose a change made meanwhile with no version kept.
 
 use super::dav::{self, CRAFTCLOUD_DIR, Entry};
 pub use super::dav::{VERSIONS_KEPT, version_folders as folders_for, version_path, versions_folder, versions_to_prune as to_prune};
@@ -193,10 +196,6 @@ pub fn delete_under(base: &str, path: &str, stamp: &str) -> HttpRequest {
     dav::delete_under(base, &version_path(path, stamp), false)
 }
 
-/// `COPY .craftcloud/versions/<path>/<stamp> → path`, replacing the file.
-pub fn restore(server: &ServerUrl, path: &str, stamp: &str) -> HttpRequest {
-    dav::copy_over(server, &version_path(path, stamp), path)
-}
 /// `20261113T151013.123Z` → `2026-11-13 15:10:13 UTC`.
 pub fn display_stamp(stamp: &str) -> Option<String> {
     let b = stamp.as_bytes();
@@ -226,8 +225,8 @@ pub fn make_folders_under(base: &str, path: &str) -> Vec<HttpRequest> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Version, already_kept, content_hash, display_stamp, history_parents, is_version_path, list, make_folders, move_history, parse_list, restore,
-        snapshot, snapshot_done,
+        Version, already_kept, content_hash, display_stamp, history_parents, is_version_path, list, make_folders, move_history, parse_list, snapshot,
+        snapshot_done,
     };
     use crate::ServerUrl;
     use crate::http::{HttpResponse, Method};
@@ -250,10 +249,6 @@ mod tests {
         let snap = snapshot(&s, "Documents/notes.md", "20261113T151013.123Z");
         assert_eq!((snap.method, snap.url.as_str()), (Method::Copy, "http://127.0.0.1:8095/webdav/Documents/notes.md"));
         assert_eq!(snap.header_value("Overwrite"), Some("F"));
-        let r = restore(&s, "Documents/notes.md", "20261113T151013.123Z");
-        assert_eq!(r.url, "http://127.0.0.1:8095/webdav/.craftcloud/versions/Documents/notes.md/20261113T151013.123Z");
-        assert_eq!(r.header_value("Destination"), Some("http://127.0.0.1:8095/webdav/Documents/notes.md"));
-        assert_eq!(r.header_value("Overwrite"), Some("T"));
         let folders: Vec<String> = make_folders(&s, "a.md").into_iter().map(|r| r.url).collect();
         assert_eq!(folders.last().map(String::as_str), Some("http://127.0.0.1:8095/webdav/.craftcloud/versions/a.md/"));
     }

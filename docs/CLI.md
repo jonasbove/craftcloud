@@ -160,7 +160,7 @@ copy, so the content's own time is kept in the name.
 | Command | What it does |
 |---|---|
 | `versions PATH` | The kept versions, numbered from 1 (the newest): when each one's content was last changed, its size, and when it was replaced, in this computer's time zone. Versions kept before the content's time was recorded (or kept by the web frontend) show `-` there |
-| `versions PATH restore N` | Puts version `N` back; the version it replaces is kept too, so a restore can be undone |
+| `versions PATH restore N` | Puts version `N` back; the version it replaces is kept too, so a restore can be undone. Refuses (code 5) when the file changed meanwhile: the change is kept, nothing is overwritten; list the versions again and choose |
 
 ### The server
 
