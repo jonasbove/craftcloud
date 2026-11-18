@@ -685,7 +685,7 @@ impl FakeDav {
                     return Some(self.trashbin(method, rest, destination.and_then(Self::url_path).as_deref()));
                 }
                 if let Some(rest) = path.strip_prefix(&versions) {
-                    return Some(self.versions_endpoint(method, rest, destination.and_then(Self::url_path).as_deref()));
+                    return Some(self.versions_endpoint(method, rest));
                 }
                 Some(self.done(404, "not found"))
             }
@@ -746,7 +746,7 @@ impl FakeDav {
         }
     }
 
-    fn versions_endpoint(&mut self, method: &str, rest: &str, destination: Option<&str>) -> HttpResponse {
+    fn versions_endpoint(&mut self, method: &str, rest: &str) -> HttpResponse {
         let user = self.user().to_owned();
         let root = format!("/remote.php/dav/versions/{user}/");
         let Some(rest) = rest.strip_prefix("versions/") else { return self.done(404, "") };
@@ -770,23 +770,13 @@ impl FakeDav {
                 xml.push_str("</d:multistatus>");
                 self.done(207, xml)
             }
-            "MOVE" => {
-                if destination != Some(format!("{root}restore/target").as_str()) {
-                    return self.done(400, "a version moves only to restore/target here");
-                }
-                let Some(version) = earlier.iter().find(|(at, _)| at.to_string() == stamp).cloned() else { return self.done(404, "") };
-                let key = self.key(&file.path);
-                let etag = self.fresh_etag("e");
-                let now = self.tick();
-                self.versions.entry(id).or_default().push((file.written_secs, file.body.clone()));
-                if let Some(f) = self.files.get_mut(&key) {
-                    f.body = version.1;
-                    f.etag = etag;
-                    f.written_secs = now;
-                    f.checksum = None;
-                }
-                self.done(201, "")
-            }
+            // A version's bytes. (The real server also restores by a `MOVE` to `restore/target`;
+            // CraftCloud never sends that unguarded write, so the scripted server answers 405.)
+            "GET" => match earlier.iter().find(|(at, _)| at.to_string() == stamp) {
+                Some((_, bytes)) => self.done(200, bytes.clone()),
+                None if file.written_secs.to_string() == stamp => self.done(200, file.body.clone()),
+                None => self.done(404, ""),
+            },
             _ => self.done(405, ""),
         }
     }

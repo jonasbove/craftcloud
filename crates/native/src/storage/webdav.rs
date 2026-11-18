@@ -55,7 +55,7 @@ use craftcloud_core::storage::{Capabilities, Checksum, Trash, Versions};
 
 use super::probe::{self, Limits, Transport, load_check, save_check};
 use super::profile::{Generic, ServerProfile};
-use super::{Download, Entry, MoveGuard, Moved, OwnPath, RemoteStorage, StorageError, TrashGuard, TrashItem, Trashed, Written, versions};
+use super::{Download, Entry, MoveGuard, Moved, OwnPath, RemoteStorage, Restored, StorageError, TrashGuard, TrashItem, Trashed, Written, versions};
 use crate::session::AppPasswordSession;
 
 /// How a trash entry's time is written in its folder's name (UTC, whole seconds).
@@ -180,11 +180,40 @@ impl WebDav {
 
     /// Puts version `stamp` of `path` back, after keeping the current file as a version of its own
     /// (so the restore can be undone): the server does that itself for its own versions.
-    pub fn restore_version(&mut self, path: &str, stamp: &str) -> Result<(), StorageError> {
+    pub fn restore_version(&mut self, path: &str, stamp: &str) -> Result<Restored, StorageError> {
         if self.server_versions() {
-            return self.profile.restore_version(&mut self.session, &self.base, path, stamp);
+            return self.restore_server_version(path, stamp);
         }
-        Ok(versions::restore(&mut self.session, &self.base, path, stamp)?)
+        versions::restore(&mut self.session, &self.base, path, stamp)?;
+        Ok(Restored::Done)
+    }
+
+    /// Restores one of the server's own versions as a **guarded write**, the same on every kind of
+    /// server (docs/WEBDAV-STORAGE.md § 7.2, "no unguarded write"): the file's version tag is read
+    /// first, the version's bytes are read where the profile says ([`ServerProfile::version_download`]),
+    /// and they are written back with `If-Match` on that tag (and the checksum check of Q13 where
+    /// the profile asks for it). A change that lands in between answers 412: nothing is restored,
+    /// the newer file stays ([`Restored::Changed`]). The server keeps the bytes the `PUT` replaces
+    /// as a version itself. Never the server's own restore call: it names no version of the file
+    /// it replaces. The bytes pass through memory (the HTTP layer reads at most 64 MB).
+    fn restore_server_version(&mut self, path: &str, stamp: &str) -> Result<Restored, StorageError> {
+        let resp = self.session.call(&self.propfind(path, false, "0"))?;
+        if resp.status == 404 {
+            return Err(StorageError::NotFound(format!("{path} isn't there any more; nothing restored")));
+        }
+        let listed = parse_listing(&resp, &self.base).map_err(|e| format!("listing {path:?}: {e}"))?;
+        let etag = listed.into_iter().find(|e| e.path == path.trim_matches('/')).and_then(|e| e.etag).ok_or_else(|| {
+            StorageError::Failed(format!("{path} is listed without a version tag, so a restore can't be guarded; nothing restored"))
+        })?;
+        let read = self.profile.version_download(&mut self.session, &self.base, path, stamp)?;
+        let version = self.session.call(&read)?;
+        if !version.is_success() {
+            return Err(StorageError::Failed(format!("reading version {stamp} of {path}: the server answered {}", version.status)));
+        }
+        match self.upload_bytes(path, version.body, &Write::Replace { etag })? {
+            Written::Saved { .. } => Ok(Restored::Done),
+            Written::Conflict => Ok(Restored::Changed),
+        }
     }
 
     pub fn base(&self) -> &Base {
@@ -317,6 +346,29 @@ impl WebDav {
             req = req.header("OC-Checksum", sum.clone());
         }
         let resp = self.session.upload(&req, file)?;
+        self.uploaded(path, &resp, checksum.as_deref())
+    }
+
+    /// [`Self::upload`] for bytes in memory (a version being restored): the same guard, the same
+    /// checksum check.
+    fn upload_bytes(&mut self, path: &str, bytes: Vec<u8>, write: &Write) -> Result<Written, StorageError> {
+        let checksum = match self.profile.verify_writes() {
+            Some(Checksum::Sha1) => {
+                use sha1::Digest;
+                Some(format!("SHA1:{}", sha1::Sha1::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect::<String>()))
+            }
+            _ => None,
+        };
+        let mut req = dav::upload_under(self.base.url(), path, bytes, write);
+        if let Some(sum) = &checksum {
+            req = req.header("OC-Checksum", sum.clone());
+        }
+        let resp = self.session.call(&req)?;
+        self.uploaded(path, &resp, checksum.as_deref())
+    }
+
+    /// What a guarded `PUT`'s answer means, with the checksum read back where one was sent.
+    fn uploaded(&mut self, path: &str, resp: &craftcloud_core::http::HttpResponse, checksum: Option<&str>) -> Result<Written, StorageError> {
         if resp.status == 507 {
             return Err(StorageError::NoRoom);
         }
@@ -330,10 +382,10 @@ impl WebDav {
             // Refused for what it is, not for now.
             return Err(StorageError::Refused(format!("the server answered {}", resp.status)));
         }
-        match dav::parse_upload(&resp).map_err(|e| e.to_string())? {
+        match dav::parse_upload(resp).map_err(|e| e.to_string())? {
             Uploaded::Conflict => Ok(Written::Conflict),
             Uploaded::Saved { etag } => {
-                if let Some(sum) = &checksum
+                if let Some(sum) = checksum
                     && !self.holds_checksum(path, sum)?
                 {
                     log::warn!(

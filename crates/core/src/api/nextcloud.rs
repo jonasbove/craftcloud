@@ -19,7 +19,9 @@
 //!   `MOVE` to `/remote.php/dav/trashbin/<user id>/restore/<name>`.
 //! - **Versions** are `/remote.php/dav/versions/<user id>/versions/<file id>/`, one entry per
 //!   version named by its time in seconds, the current file among them; restoring one is a `MOVE`
-//!   to `/remote.php/dav/versions/<user id>/restore/target`.
+//!   to `/remote.php/dav/versions/<user id>/restore/target`, which CraftCloud never sends: that move
+//!   names no version of the file it replaces, so it is an unguarded write. A version's bytes are
+//!   read with a `GET` ([`versions_download`]) and written back with a guarded `PUT`.
 //! - **Quota** is the OCS user endpoint's `quota.free` (WebDAV's `quota-available-bytes` says `-3`).
 //! - **Checksums**: the server lists `oc:checksums` only for a file whose last `PUT` carried an
 //!   `OC-Checksum` header, and it stores that value without checking it (measured on 31.0.14).
@@ -245,7 +247,7 @@ pub fn trashbin_root(origin: &str, user: &str) -> String {
 }
 
 /// The versions root: `<origin>/remote.php/dav/versions/<user>/` (a file's versions under
-/// `versions/<file id>/`, a restore is a `MOVE` to `restore/target`).
+/// `versions/<file id>/`, each one readable with a `GET`).
 pub fn versions_root(origin: &str, user: &str) -> String {
     crate::api::dav::url_under(&under(origin, "remote.php/dav/versions/"), user, true)
 }
@@ -375,11 +377,11 @@ pub fn parse_versions(resp: &HttpResponse, root: &Base, current_modified: Option
     Ok(out)
 }
 
-/// `MOVE` version `stamp` of file `file_id` over the current file: to `restore/target` under the
-/// versions root. The server keeps the file it replaces as a version of its own.
-pub fn versions_restore(versions_root: &str, file_id: &str, stamp: &str) -> HttpRequest {
-    HttpRequest::new(Method::Move, crate::api::dav::url_under(versions_root, &format!("versions/{file_id}/{stamp}"), false))
-        .header("Destination", under(versions_root, "restore/target"))
+/// `GET` the bytes of version `stamp` of file `file_id`. A restore writes them back over the file
+/// with a guarded `PUT` (`If-Match`), never with the server's own restore `MOVE`, which carries no
+/// precondition on the file it replaces.
+pub fn versions_download(versions_root: &str, file_id: &str, stamp: &str) -> HttpRequest {
+    HttpRequest::new(Method::Get, crate::api::dav::url_under(versions_root, &format!("versions/{file_id}/{stamp}"), false))
 }
 
 #[cfg(test)]
@@ -529,10 +531,10 @@ mod tests {
         assert_eq!(earlier[0].stamp, all[1].stamp);
         assert!(parse_versions(&HttpResponse::new(404, Vec::new()), &root, None).unwrap().is_empty(), "no versions yet");
         assert!(parse_versions(&HttpResponse::new(500, Vec::new()), &root, None).is_err());
-        let restore = versions_restore(root.url(), "2517", &earlier[0].stamp);
-        assert_eq!(restore.method, Method::Move);
-        assert_eq!(restore.url, format!("https://cloud.example.org/remote.php/dav/versions/john/versions/2517/{}", earlier[0].stamp));
-        assert_eq!(restore.header_value("Destination"), Some("https://cloud.example.org/remote.php/dav/versions/john/restore/target"));
+        let read = versions_download(root.url(), "2517", &earlier[0].stamp);
+        assert_eq!(read.method, Method::Get, "a version is read, never moved over the file");
+        assert_eq!(read.url, format!("https://cloud.example.org/remote.php/dav/versions/john/versions/2517/{}", earlier[0].stamp));
+        assert!(read.headers.is_empty());
     }
 
     /// A version named by seconds shows as a date and time.

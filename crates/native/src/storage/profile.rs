@@ -12,6 +12,7 @@
 pub mod nextcloud;
 
 use craftcloud_core::api::versions::Version;
+use craftcloud_core::http::HttpRequest;
 use craftcloud_core::storage::Checksum;
 use craftcloud_core::storage::probe::{Base, ExtraCheck};
 use craftcloud_core::sync::Storage;
@@ -63,10 +64,13 @@ pub trait ServerProfile: Send {
         Err(StorageError::Failed(format!("the server's own versions of {path} aren't known for this kind of server")))
     }
 
-    /// Puts the server's own version `stamp` of `path` back over the current file (the server
-    /// keeps the current one as a version itself).
-    fn restore_version(&self, _transport: &mut dyn Transport, _base: &Base, path: &str, _stamp: &str) -> Result<(), StorageError> {
-        Err(StorageError::Failed(format!("restoring a version of {path} isn't known for this kind of server")))
+    /// The request that reads the bytes of the server's own version `stamp` of `path` (a `GET`).
+    /// A profile never restores a version itself: the driver writes these bytes back with its
+    /// guarded `replace` (`If-Match` on the file's version tag, and the checksum check where the
+    /// profile asks for it), so a restore is a guarded write on every kind of server. A server's
+    /// own "restore" call names no version of the file it replaces, and is never used.
+    fn version_download(&self, _transport: &mut dyn Transport, _base: &Base, path: &str, _stamp: &str) -> Result<HttpRequest, StorageError> {
+        Err(StorageError::Failed(format!("reading a version of {path} isn't known for this kind of server")))
     }
 
     /// The free space, where the profile knows an endpoint for it (Nextcloud's OCS user endpoint;

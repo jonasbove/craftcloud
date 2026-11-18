@@ -8,7 +8,9 @@
 //!   granted, and until then deletes go to CraftCloud's own trash;
 //! - versions are `/remote.php/dav/versions/<user id>/versions/<file id>/`, by id, so they follow
 //!   renames; step 17 confirms an overwrite leaves a version before `Versions::Server` is granted,
-//!   and only then are `keep_version` and `move_versions` no-ops;
+//!   and only then are `keep_version` and `move_versions` no-ops; a version is restored by reading
+//!   its bytes and writing them back with the driver's guarded `replace`, never with the server's
+//!   own restore `MOVE` (which names no version of the file it replaces);
 //! - the quota is the OCS user endpoint's (WebDAV says `-3`);
 //! - the server's version string is `status.php`'s.
 //!
@@ -190,18 +192,13 @@ impl ServerProfile for Nextcloud {
         Ok(nc::parse_versions(&resp, &root, modified)?)
     }
 
-    fn restore_version(&self, transport: &mut dyn Transport, base: &Base, path: &str, stamp: &str) -> Result<(), StorageError> {
+    fn version_download(&self, transport: &mut dyn Transport, base: &Base, path: &str, stamp: &str) -> Result<HttpRequest, StorageError> {
         let versions = self.list_versions(transport, base, path)?;
         if !versions.iter().any(|v| v.stamp == stamp) {
             return Err(StorageError::NotFound(format!("{path} has no version {stamp}")));
         }
         let (id, _) = self.file_id(transport, base, path)?;
-        let resp = transport.call(&nc::versions_restore(&self.versions(), &id, stamp))?;
-        if resp.is_success() {
-            Ok(())
-        } else {
-            Err(StorageError::Failed(format!("restoring version {stamp} of {path}: the server answered {}", resp.status)))
-        }
+        Ok(nc::versions_download(&self.versions(), &id, stamp))
     }
 
     fn free_space(&self, transport: &mut dyn Transport) -> Option<Result<Option<u64>, StorageError>> {
@@ -372,7 +369,7 @@ mod tests {
     use crate::storage::probe::Limits;
     use crate::storage::webdav::WebDav;
     use crate::storage::webdav::tests::two_way;
-    use crate::storage::{MoveGuard, Moved, RemoteStorage, TrashGuard, Trashed, Written};
+    use crate::storage::{MoveGuard, Moved, RemoteStorage, Restored, TrashGuard, Trashed, Written};
 
     const BASE_PATH: &str = "/remote.php/dav/files/john";
 
@@ -553,7 +550,9 @@ mod tests {
 
     /// With the server's versions confirmed, `keep_version` and `move_versions` send nothing; the
     /// versions are listed by file id without the current one, follow a rename, and one is
-    /// restored by a `MOVE`. With the client's versions (unconfirmed) a rename moves the history.
+    /// restored by a guarded write: its bytes read with a `GET`, then a `PUT` with `If-Match` and
+    /// the checksum, never the server's restore `MOVE`. With the client's versions (unconfirmed)
+    /// a rename moves the history.
     #[test]
     fn versions_are_the_servers_and_follow_renames_by_id() {
         let (server, dav) = nextcloud(Flags::default());
@@ -577,16 +576,63 @@ mod tests {
         s.move_versions("Docs/a.txt", "Docs/b.txt").unwrap();
         assert_eq!(server.seen().len(), before, "a no-op: the server keeps them by id");
         assert_eq!(s.list_versions("Docs/b.txt").unwrap().len(), 2, "the history followed the rename");
-        s.restore_version("Docs/b.txt", &versions[1].stamp).unwrap();
+        let before = server.seen().len();
+        assert_eq!(s.restore_version("Docs/b.txt", &versions[1].stamp).unwrap(), Restored::Done);
         assert_eq!(dav.lock().unwrap().body("Docs/b.txt"), Some(b"v0".as_slice()));
         assert_eq!(s.list_versions("Docs/b.txt").unwrap().len(), 3, "the replaced file was kept by the server");
         assert!(matches!(s.restore_version("Docs/b.txt", "1").unwrap_err(), crate::storage::StorageError::NotFound(_)));
+        let restore: Vec<Seen> = server.seen()[before..].to_vec();
+        let writes: Vec<&Seen> = restore.iter().filter(|r| !matches!(r.method.as_str(), "PROPFIND" | "GET")).collect();
+        assert_eq!(writes.len(), 1, "one write, the guarded PUT: {writes:?}");
+        assert_eq!(writes[0].method, "PUT");
+        assert!(writes[0].header("if-match").is_some() && writes[0].header("oc-checksum").is_some_and(|c| c.starts_with("SHA1:")), "{:?}", writes[0]);
+        assert!(restore.iter().any(|r| r.method == "GET" && r.path.contains("/versions/john/versions/")), "the version's bytes are read");
         // Unconfirmed (client versions): the same server, the history is CraftCloud's and moves by MOVE.
         let mut client = WebDav::new(session(&server), two_way(), "Laptop").with_profile(profile(&server));
         client.keep_version("Docs/b.txt").unwrap();
         assert!(server.seen().iter().any(|r| r.method == "COPY"));
         client.move_versions("Docs/b.txt", "Docs/c.txt").unwrap();
         assert!(server.seen().iter().any(|r| r.method == "MOVE" && r.path.contains("/.craftcloud/versions/Docs/b.txt")));
+    }
+
+    /// A version restore is a guarded write: a change landing between the look at the file and the
+    /// write is never overwritten. The newer file stays, nothing is restored, and the driver says
+    /// so ([`Restored::Changed`], exit code 5 on the command line). The server's own restore `MOVE`
+    /// (no precondition on the file it replaces) would have overwritten it.
+    #[test]
+    fn a_change_landing_during_a_version_restore_is_never_overwritten() {
+        let dav = Arc::new(Mutex::new(FakeDav::new(BASE_PATH, Flags { nextcloud: true, ..Flags::default() })));
+        let racing = Arc::clone(&dav);
+        let server = FakeServer::start_full(move |seen: &Seen| {
+            let mut dav = racing.lock().unwrap_or_else(PoisonError::into_inner);
+            let resp = dav.answer(&seen.method, &seen.path, &seen.headers, seen.body.as_bytes());
+            // Another client writes the file right after the version's bytes were read.
+            if seen.method == "GET" && seen.path.contains("/versions/john/versions/") {
+                let theirs = dav.answer("PUT", &format!("{BASE_PATH}/Docs/a.txt"), &[], b"changed meanwhile");
+                assert!(theirs.is_success());
+            }
+            let mut answer = Answer::new(resp.status, String::from_utf8_lossy(&resp.body).into_owned());
+            for (name, value) in resp.headers {
+                answer = answer.header(&name, value);
+            }
+            answer
+        });
+        dav.lock().unwrap().origin = server.url.clone();
+        dav.lock().unwrap().add_folder("Docs", None);
+        let dir = tempfile::tempdir().unwrap();
+        let a = file(dir.path(), "a.txt", "v0");
+        let mut s = driver(&server);
+        let Written::Saved { etag } = s.create("Docs/a.txt", &a).unwrap() else { panic!() };
+        std::fs::write(&a, "v1").unwrap();
+        assert!(matches!(s.replace("Docs/a.txt", &etag, &a).unwrap(), Written::Saved { .. }));
+        let versions = s.list_versions("Docs/a.txt").unwrap();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(s.restore_version("Docs/a.txt", &versions[0].stamp).unwrap(), Restored::Changed);
+        assert_eq!(dav.lock().unwrap().body("Docs/a.txt"), Some(b"changed meanwhile".as_slice()), "the newer file stays");
+        let seen = server.seen();
+        assert!(seen.iter().all(|r| !(r.method == "MOVE" && r.path.contains("/versions/"))), "never the server's restore MOVE: {seen:?}");
+        let last_put = seen.iter().rev().find(|r| r.method == "PUT").unwrap();
+        assert!(last_put.header("if-match").is_some(), "the restore's PUT carried its guard: {last_put:?}");
     }
 
     /// Free space comes from the OCS user endpoint: a count, or no limit (`-3`).

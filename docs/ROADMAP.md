@@ -129,7 +129,9 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   `move_versions` no-ops) used; the runner allows on the trash bin's root only that restore, never a `DELETE`. The
   maintainer's decision Q13: Nextcloud reuses a file's version tag within one second, so every `PUT` carries
   `OC-Checksum: SHA1` and is read back, and a write landing under our tag is a conflict copy (tested without the
-  check: it lands silently; with it: both kept). `trash rm|empty` on the server's trash answer code 10 (Q8).
+  check: it lands silently; with it: both kept). A version restore is a guarded write (the version's bytes read,
+  then a `PUT` with `If-Match`; a change meanwhile restores nothing, code 5), never Nextcloud's own restore
+  `MOVE`. `trash rm|empty` on the server's trash answer code 10 (Q8).
   UPSTREAM.md E1 proposes a fresh ETag on every write. All behind the opt-in; OxiCloud's golden logs unchanged.
 - 2026-11-18: Tests (M9, pull request 5 of [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14): the live suite against
   other servers. `crates/native/tests/live.rs` takes `CRAFTCLOUD_TEST_KIND` (`oxicloud` by default, the suite CI

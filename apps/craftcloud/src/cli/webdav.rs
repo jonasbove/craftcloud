@@ -11,7 +11,7 @@ use std::path::Path;
 
 use craftcloud_core::api::dav;
 use craftcloud_core::storage::Trash;
-use craftcloud_native::storage::{Entry, MoveGuard, Moved, OwnPath, RemoteStorage, StorageError, TrashGuard, TrashItem, Trashed, Written};
+use craftcloud_native::storage::{Entry, MoveGuard, Moved, OwnPath, RemoteStorage, Restored, StorageError, TrashGuard, TrashItem, Trashed, Written};
 use serde_json::json;
 
 use super::TrashCmd;
@@ -451,7 +451,10 @@ pub fn versions(ctx: &Ctx, path: &str, restore: bool, n: Option<usize>) -> Resul
             .and_then(|i| list.get(i))
             .ok_or_else(|| CliError::not_found(format!("{path} has no version {n} (it has {})", list.len())))?
             .clone();
-        storage.restore_version(&path, &version.stamp).map_err(cli)?;
+        // A guarded write: a file that changed on the server meanwhile is never overwritten.
+        if storage.restore_version(&path, &version.stamp).map_err(cli)? == Restored::Changed {
+            return Err(CliError::conflict(format!("{path} changed on the server meanwhile; nothing was restored (the newer file stays)")));
+        }
         if ctx.json {
             let mut out = super::sharing::version_json(n, &version);
             out["path"] = json!(path);

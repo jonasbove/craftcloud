@@ -101,6 +101,16 @@ pub enum Written {
     Conflict,
 }
 
+/// What restoring an earlier version did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Restored {
+    /// The version's bytes are the file now.
+    Done,
+    /// The file changed on the server between the look at it and the write (412): nothing was
+    /// restored, and the newer file stays.
+    Changed,
+}
+
 /// What a move must find before it moves. Neither ever lands on an existing name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MoveGuard {
