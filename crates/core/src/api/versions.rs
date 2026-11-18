@@ -89,9 +89,15 @@ fn seconds_stamp(stamp: &str) -> Option<jiff::Timestamp> {
     jiff::Timestamp::from_second(stamp.parse().ok()?).ok()
 }
 
+/// A version named `<node id>.REV.<RFC 3339 time>` (OpenCloud's own versions): the time.
+fn rev_stamp(stamp: &str) -> Option<jiff::Timestamp> {
+    let (_, time) = stamp.rsplit_once(".REV.")?;
+    time.parse().ok()
+}
+
 /// `20261113T151013.123Z…` or `20261113T151013Z` → `2026-11-13T15:10:13Z`; a name in seconds too.
 fn rfc3339_of(stamp: &str) -> Option<String> {
-    if let Some(at) = seconds_stamp(stamp) {
+    if let Some(at) = seconds_stamp(stamp).or_else(|| rev_stamp(stamp)) {
         return Some(at.strftime("%Y-%m-%dT%H:%M:%SZ").to_string());
     }
     let b = stamp.as_bytes();
@@ -210,7 +216,7 @@ pub fn delete_under(base: &str, path: &str, stamp: &str) -> HttpRequest {
 
 /// `20261113T151013.123Z` → `2026-11-13 15:10:13 UTC`.
 pub fn display_stamp(stamp: &str) -> Option<String> {
-    if let Some(at) = seconds_stamp(stamp) {
+    if let Some(at) = seconds_stamp(stamp).or_else(|| rev_stamp(stamp)) {
         return Some(at.strftime("%Y-%m-%d %H:%M:%S UTC").to_string());
     }
     let b = stamp.as_bytes();

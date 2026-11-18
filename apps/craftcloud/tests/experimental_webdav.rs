@@ -153,6 +153,19 @@ fn with_the_opt_in_the_same_commands_get_past_the_check() {
     let out = run(fresh.path(), Some("1"), &["login", "http://192.0.2.1", "--kind", "nextcloud"]);
     assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(error(&out)["error"]["message"].as_str().unwrap().contains("isn't https"));
+    // OpenCloud has its profile: with an app token and --user it reaches the server (which isn't
+    // there: 8); without --user a usage error that says where the token is made.
+    let out = run(fresh.path(), Some("1"), &["login", "http://127.0.0.1:1", "--kind", "opencloud", "--user", "john"]);
+    let e = error(&out);
+    assert_eq!((out.status.code(), e["error"]["kind"].as_str()), (Some(8), Some("unreachable")), "{e}");
+    assert_eq!(names(fresh.path()), Vec::<String>::new(), "nothing saved");
+    let out = run(fresh.path(), Some("1"), &["login", "http://127.0.0.1:1", "--kind", "opencloud"]);
+    assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stderr));
+    let message = error(&out)["error"]["message"].as_str().unwrap().to_owned();
+    assert!(message.contains("--user") && message.contains("App Tokens"), "{message}");
+    let out = run(fresh.path(), Some("1"), &["login", "http://192.0.2.1", "--kind", "opencloud", "--user", "john"]);
+    assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(error(&out)["error"]["message"].as_str().unwrap().contains("isn't https"));
     // A password over plain http to another computer is refused before anything is sent.
     let out = run(fresh.path(), Some("1"), &["login", "http://192.0.2.1/dav/john/", "--kind", "webdav", "--user", "john"]);
     assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stderr));

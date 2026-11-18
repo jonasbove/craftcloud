@@ -258,7 +258,7 @@ fn a_profile_supplies_the_trash_and_versions_checks() {
         let mut trash = Stub { sent: 0, confirm };
         let mut versions = Stub { sent: 0, confirm };
         let mut server = FakeDav::new("/remote.php/dav/files/john", Flags::default());
-        let mut probe = Probe::new(base(), "Studio-7", Profile { trash: Some(&mut trash), versions: Some(&mut versions) });
+        let mut probe = Probe::new(base(), "Studio-7", Profile { trash: Some(&mut trash), versions: Some(&mut versions), lowered: None });
         let mut extra = 0;
         while let Some(req) = probe.next() {
             extra += usize::from(matches!(req.step, Step::ServerTrash | Step::ServerVersions));
