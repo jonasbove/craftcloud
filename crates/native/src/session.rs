@@ -666,6 +666,38 @@ mod tests {
         assert!(leaked.is_empty(), "a token in the log: {leaked:?}");
     }
 
+    /// An app password (docs/WEBDAV-STORAGE.md § 10) stays out of what the session says and of the
+    /// log at every level, as the tokens do: neither the password nor the Basic header it makes
+    /// shows up when the server refuses it (401), when it has gone away, or in `Debug`.
+    #[test]
+    fn app_passwords_never_reach_an_error_or_the_log() {
+        use craftcloud_core::storage::probe::Base;
+
+        use super::{APP_PASSWORD_REFUSED, AppPasswordSession, base64};
+        let logs = captured_logs();
+        let marker = "SECRET-APP-PW";
+        let encoded = base64(format!("john:{marker}").as_bytes());
+        let server = FakeServer::start(|_| (401, "{}".into()));
+        let base = Base::parse(&format!("{}/dav/", server.url)).unwrap();
+        let mut session = AppPasswordSession::new(base, "john", marker).unwrap();
+        let req = HttpRequest::new(Method::Get, format!("{}/dav/", server.url));
+        let mut said = vec![session.call(&req).unwrap_err()];
+        assert_eq!(said[0], APP_PASSWORD_REFUSED);
+        assert!(session.signed_out);
+        assert_eq!(server.seen()[0].header("authorization"), Some(format!("Basic {encoded}").as_str()), "the request did carry it");
+        let url = server.url.clone();
+        drop(server);
+        said.push(session.call(&HttpRequest::new(Method::Get, format!("{url}/dav/"))).unwrap_err());
+        said.extend(session.offline.clone());
+        said.push(format!("{session:?}"));
+        for s in &said {
+            assert!(!s.contains(marker) && !s.contains(&encoded), "a password in what the session said: {s}");
+        }
+        let logs = logs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let leaked: Vec<&String> = logs.iter().map(|(_, l)| l).filter(|l| l.contains(marker) || l.contains(&encoded)).collect();
+        assert!(leaked.is_empty(), "a password in the log (any level): {leaked:?}");
+    }
+
     #[test]
     fn the_refresh_lock_is_exclusive_across_handles() {
         let dir = tempfile::tempdir().unwrap();

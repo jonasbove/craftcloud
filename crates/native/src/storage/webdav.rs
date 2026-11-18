@@ -418,6 +418,7 @@ impl RemoteStorage for WebDav {
             self.make_folders(parent)?;
         }
         let mut dest = item.path.clone();
+        let mut restored = false;
         for n in 1..100 {
             let resp = self.session.call(&dav::move_to_under(self.base.url(), &item.id, &dest, is_folder))?;
             match resp.status {
@@ -425,9 +426,13 @@ impl RemoteStorage for WebDav {
                 404 => return Err(StorageError::NotFound(format!("{} isn't in the trash", item.path))),
                 _ => {
                     expect_ok(&resp).map_err(|e| StorageError::Failed(format!("restoring {}: {e}", item.path)))?;
+                    restored = true;
                     break;
                 }
             }
+        }
+        if !restored {
+            return Err(StorageError::Failed(format!("restoring {}: every name next to it is taken; it stays in the trash", item.path)));
         }
         if let Some(entry) = entry
             && self.holds_nothing(&entry)
