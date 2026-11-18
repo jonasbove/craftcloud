@@ -208,8 +208,19 @@ answer "not available on this server" (code 10), since CraftCloud never purges a
 web page. Nextcloud reuses a file's version tag when it is overwritten within the same second as the write before
 it, so every upload carries its SHA1 checksum (`OC-Checksum`) and is read back: a checksum that isn't the one
 uploaded means someone else wrote the file in that second, and the sync keeps both as a conflict copy. Storage use
-comes from Nextcloud's OCS user endpoint. ownCloud and OpenCloud get their profiles in later pull requests; until
-then `--kind owncloud|opencloud` is refused.
+comes from Nextcloud's OCS user endpoint.
+
+**OpenCloud** has its own profile, and gets **download only**: `craftcloud login cloud.example.org --kind opencloud
+--user NAME` signs in with an app token you make in OpenCloud's web UI (Account › App Tokens › New; from
+`CRAFTCLOUD_APP_PASSWORD` or a prompt, never an argument; it works with OpenCloud's defaults, nothing for an admin
+to switch on, and your account password never reaches CraftCloud). The sync folder is your personal space; the
+check on connect runs there and the mode is download only whatever it measures, since OpenCloud's write guards
+don't hold when two clients write at once ([WEBDAV-STORAGE.md § 16](WEBDAV-STORAGE.md), Q1; `server check`'s
+last row, "Known about this kind of server", says so): files come down, changes made here stay here, and every
+command that writes answers "not available on this server" (code 10). `trash ls` shows the space's own trash and
+`versions` its versions by file id; `logout` forgets the token, which stays valid until you revoke it on the same
+page. Without `--kind`, a server whose `status.php` says OpenCloud is signed in to as one. ownCloud gets its profile
+in a later pull request; until then `--kind owncloud` is refused.
 
 ### Server administration (owners and admins)
 

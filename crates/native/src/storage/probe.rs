@@ -117,23 +117,35 @@ fn inside_probe_dir(path: &str) -> bool {
 }
 
 /// A known-server check's request on another DAV root: read freely; move only the probe's own
-/// trashed file back (`trash/<name>` → `restore/<name>`, `Overwrite: F`, and the server said it
-/// came from inside the probe's folder); nothing else.
+/// trashed file back, in one of two shapes, and only when the server said it came from inside the
+/// probe's folder (`restores`); nothing else.
+///
+/// - Nextcloud's trash bin: `trash/<name>` → `restore/<name>`, the server's restore endpoint, not
+///   a name in the person's tree (no `Overwrite` rule: Nextcloud answers 412 to the header there).
+/// - OpenCloud's spaces root: `trash-bin/<space>/<key>` → `<space>/<original path>`, where the
+///   path is exactly the one the server said the item came from. The destination is a real name
+///   in the tree, so the `MOVE` must carry `Overwrite: F` (measured: without it OpenCloud
+///   overwrites a newer file).
 fn guarded_on_root(req: &Request, root: &str, probe_folder: &str) -> Result<(), String> {
     match req.method {
         Method::Propfind | Method::Get => Ok(()),
         Method::Move => {
-            let name = req.path.strip_prefix("trash/").filter(|n| !n.is_empty() && !n.contains('/'));
-            let restored = req.destination.as_ref().and_then(|(to, _)| to.strip_prefix("restore/"));
-            let own = req.restores.as_deref().is_some_and(|from| {
+            let own = req.restores.as_deref().filter(|from| {
                 !probe_folder.is_empty() && from.strip_prefix(probe_folder).is_some_and(|rest| rest.starts_with('/') && rest.len() > 1)
             });
-            // No `Overwrite` rule here: the restore address is the server's endpoint, not a name in
-            // the person's tree (Nextcloud answers 412 to `Overwrite: F` there); what guards the
-            // move is that it is a restore, of the probe's own file, to where it was.
-            if name.is_none() || restored != name {
+            let to = req.destination.as_ref().map(|(to, _)| to.as_str());
+            let name = req.path.strip_prefix("trash/").filter(|n| !n.is_empty() && !n.contains('/'));
+            let nextcloud_restore = name.is_some() && to.and_then(|to| to.strip_prefix("restore/")) == name;
+            let spaces_restore = match req.path.strip_prefix("trash-bin/").and_then(|rest| rest.split_once('/')) {
+                Some((space, key)) if !space.is_empty() && !key.is_empty() && !key.contains('/') => {
+                    let back = own.map(|from| format!("{space}/{from}"));
+                    to.is_some() && to == back.as_deref() && req.header_value("Overwrite") == Some("F")
+                }
+                _ => false,
+            };
+            if !nextcloud_restore && !spaces_restore {
                 Err(format!("refused to send a MOVE on {root} that isn't the restore of a trashed item to where it was"))
-            } else if !own {
+            } else if own.is_none() {
                 Err(format!("refused to restore {} from {root}: not the probe's own file", req.path))
             } else {
                 Ok(())
@@ -461,6 +473,37 @@ mod tests {
         let mut plain = restore("d.txt.d1795001745", "restore/d.txt.d1795001745", own);
         plain.headers.clear();
         assert!(guarded(&plain, folder).is_ok(), "the restore needs no Overwrite header (the server's endpoint, not a name)");
+        // OpenCloud's shape on the spaces root: `trash-bin/<space>/<key>` back to exactly where the
+        // server said it came from, under the same space, with `Overwrite: F` (a real name in the
+        // tree); anything else is refused.
+        let spaces = "https://cloud.example.org/remote.php/dav/spaces/";
+        let space = "5d90215b$4ed81edc";
+        let spaces_restore = |path: &str, to: &str, from: Option<&str>, overwrite: Option<&str>| {
+            let mut req = Request::under_root(Step::ServerTrash, Method::Move, spaces, path, false);
+            if let Some(o) = overwrite {
+                req = req.with_header("Overwrite", o);
+            }
+            req.destination = Some((to.to_owned(), false));
+            req.restores = from.map(str::to_owned);
+            req
+        };
+        let key = format!("trash-bin/{space}/9e7e117a");
+        let back = format!("{space}/.craftcloud/probe/Laptop-1/d.txt");
+        assert!(guarded(&spaces_restore(&key, &back, own, Some("F")), folder).is_ok(), "the allowed restore");
+        for (path, to, from, overwrite, why) in [
+            (key.clone(), back.clone(), own, None, "no Overwrite: F (the server would overwrite a newer file)"),
+            (key.clone(), back.clone(), own, Some("T"), "Overwrite: T"),
+            (key.clone(), format!("{space}/Documents/d.txt"), own, Some("F"), "not where it came from"),
+            (key.clone(), "other$space/.craftcloud/probe/Laptop-1/d.txt".to_owned(), own, Some("F"), "another space"),
+            (key.clone(), back.clone(), Some("Documents/d.txt"), Some("F"), "not the probe's file"),
+            (key.clone(), back.clone(), None, Some("F"), "no origin given"),
+            (format!("trash-bin/{space}/sub/9e7e117a"), back.clone(), own, Some("F"), "not a top-level trash item"),
+            (format!("trash-bin/{space}"), back.clone(), own, Some("F"), "the trash bin itself"),
+            (format!("{space}/.craftcloud/probe/Laptop-1/d.txt"), back.clone(), own, Some("F"), "a move inside the space"),
+        ] {
+            assert!(guarded(&spaces_restore(&path, &to, from, overwrite), folder).is_err(), "{why}");
+        }
+        assert!(guarded(&Request::under_root(Step::ServerTrash, Method::Delete, spaces, &key, false), folder).unwrap_err().contains("never purged"));
         // Never a DELETE there, nor any other write.
         for method in [Method::Delete, Method::Put, Method::Mkcol, Method::Copy] {
             let req = Request::under_root(Step::ServerTrash, method, root, "trash/d.txt.d1795001745", false)

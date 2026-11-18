@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **OpenCloud, experimental and off: download only.** With `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, `craftcloud login
+  cloud.example.org --kind opencloud --user NAME` signs in to an OpenCloud with an app token you make in its web UI
+  (Account › App Tokens › New; it works with OpenCloud's defaults, nothing for an admin to switch on; your account
+  password never reaches CraftCloud). The sync is **download only** there, whatever the check on connect measures:
+  OpenCloud's write guards don't hold when two clients write at once (reported upstream, docs/UPSTREAM.md F), so
+  files come down to this computer, changes made here stay here and are listed as not uploaded, and a file deleted
+  in the cloud lands in `.craftcloud/trash/` in the local folder. `trash ls` and `versions` read OpenCloud's own
+  trash and versions; `logout` forgets the token (revoke it on the same page). **A new kind of server: upgrade all
+  devices together.** Every device that syncs an account on an OpenCloud must run this version or later: no earlier
+  CraftCloud can sync with one.
 - **Nextcloud, experimental and off.** With `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, `craftcloud login cloud.example.org
   --kind nextcloud` signs in to a Nextcloud through the browser the way its own clients do (an app password is made
   for this computer; your account password never reaches CraftCloud; `--user NAME` takes an app password you made

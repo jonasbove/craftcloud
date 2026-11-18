@@ -404,3 +404,42 @@ profile is `crates/native/src/storage/profile/nextcloud.rs`. Nothing below is fi
 > in RFC 7232 § 2.3 expects, and key versions finer than the second (or keep a same-second version under a
 > distinct name); or, failing that, verify `OC-Checksum` against the bytes received on a plain `PUT`, as the
 > chunked upload does, so a stored checksum is trustworthy.
+
+## F. OpenCloud (github.com/opencloud-eu)
+
+CraftCloud syncs with OpenCloud through its WebDAV, its spaces' trash bin, its `meta` versions and its Graph API,
+unmodified; the OpenCloud profile is `crates/native/src/storage/profile/opencloud.rs`. Because of the three gaps
+below OpenCloud gets **download only** (docs/WEBDAV-STORAGE.md § 16, Q1): nothing is written to it until they
+are fixed. Every one is already reported upstream; **nothing new is filed**, and the links are the record.
+
+### F1. `If-None-Match: *` is ignored on upload (reva#866)
+
+> https://github.com/opencloud-eu/reva/issues/866 (open)
+>
+> A `PUT` with `If-None-Match: *` over an existing file overwrites it and answers 2xx. Reproduced by the
+> reporter on OpenCloud 8.1.0; measured again on 9.1.1 on 2026-11-18 (204, the bytes replaced). `ocdav/put.go`
+> forwards only `If-Match` to the storage and never sets the CS3 `if_not_exist` option the storage API has.
+> CraftCloud's "create only where nothing is" guard therefore can't be sent to OpenCloud, and the check on
+> connect measures it (step 4) as ignored.
+
+### F2. Conditional uploads aren't atomic (reva#959)
+
+> https://github.com/opencloud-eu/reva/issues/959 (open)
+>
+> Two uploads with the same `If-Match` both answered 201 in 10 of 10 rounds on 9.0.0 (TUS uploads; a plain `PUT`
+> wasn't measured under a race). A single `PUT` with a stale `If-Match` is refused (412), so a check that sends
+> one request at a time passes; the guard still doesn't protect against two clients writing at once. The profile
+> therefore caps OpenCloud's mode at download only whatever the check measures (`Capabilities::lowered`).
+> Related: https://github.com/opencloud-eu/opencloud/issues/3736 (concurrent `MOVE`, `DELETE` and `PUT` races);
+> on 2026-11-16 a `MOVE` with `Overwrite: F` lost a race in 1 of 3 runs (both of two creates won).
+
+### F3. `MOVE` and `DELETE` ignore a stale `If-Match` (reva#961)
+
+> https://github.com/opencloud-eu/reva/issues/961 (open; the `DELETE` confirmed by a maintainer on 9.0.0)
+>
+> A `DELETE` with a made-up `If-Match` deletes anyway (204; measured on 9.1.1 on 2026-11-18), and so does a
+> `MOVE`. CraftCloud's "delete only the version last seen" guard can't be sent either; the check on connect records
+> it (step 15) and, were two-way sync ever on, a fresh listing before every delete would stand in for it (§ 8).
+
+Observed besides, not a gap: the trash bin's restore `MOVE` honours `Overwrite: F` (a taken name answers 412) but
+overwrites the newer file without the header, so CraftCloud always sends it; a restore to another name answers 500.

@@ -369,14 +369,14 @@ fn entry_folder(id: &str) -> Option<OwnPath> {
     OwnPath::new(&format!("{}/{entry}", dav::TRASH_DIR))
 }
 
-/// What `trash rm` and `trash empty` say on a server with a trash of its own (Nextcloud): purging
+/// What `trash rm` and `trash empty` say on a server with a trash of its own (Nextcloud, OpenCloud): purging
 /// the person's trash is a permanent delete outside `.craftcloud/`, which CraftCloud never sends
 /// (docs/WEBDAV-STORAGE.md § 16, Q8).
 const SERVER_TRASH_KEPT: &str = "deleting from this server's own trash for good (empty it on the server's web page)";
 
 /// `trash ls|restore|rm|empty` on another WebDAV server, through the storage trait
 /// (docs/WEBDAV-STORAGE.md § 11): the server's own trash where the check on connect confirmed it
-/// (Nextcloud), else CraftCloud's own in `.craftcloud/trash/` on the server. `ls` reads; the rest
+/// (Nextcloud, OpenCloud), else CraftCloud's own in `.craftcloud/trash/` on the server. `ls` reads; the rest
 /// write, so they need two-way sync (`webdav_for_writes`). `rm` and `empty` purge CraftCloud's
 /// trash only, never a server's own.
 pub fn trash(ctx: &Ctx, cmd: TrashCmd) -> Result<()> {
@@ -437,7 +437,7 @@ pub fn trash(ctx: &Ctx, cmd: TrashCmd) -> Result<()> {
 }
 
 /// `versions <path> [restore <n>]` on another WebDAV server: the server's own versions where the
-/// check on connect confirmed them (Nextcloud, by file id), else the kept versions in
+/// check on connect confirmed them (Nextcloud, OpenCloud, by file id), else the kept versions in
 /// `.craftcloud/versions/<path>/`, read and restored through the same code OxiCloud uses. Listing
 /// reads; a restore writes, so it needs two-way sync.
 pub fn versions(ctx: &Ctx, path: &str, restore: bool, n: Option<usize>) -> Result<()> {

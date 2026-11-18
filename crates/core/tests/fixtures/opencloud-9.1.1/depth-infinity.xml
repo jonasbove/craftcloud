@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<d:error xmlns:d="DAV" xmlns:s="http://sabredav.org/ns"><s:exception>Sabre\DAV\Exception\BadRequest</s:exception><s:message>Invalid Depth header value: infinity</s:message><s:errorcode></s:errorcode></d:error>

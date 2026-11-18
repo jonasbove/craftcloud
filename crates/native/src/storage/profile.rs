@@ -6,15 +6,21 @@
 //! versions only where that check confirmed them (`Trash::Server`, `Versions::Server`).
 //!
 //! [`ServerProfile`] is the hook the generic driver calls; [`Generic`] is the profile of a server
-//! nobody knows (every method its default), [`nextcloud::Nextcloud`] the first known one. The
-//! ownCloud and OpenCloud profiles plug in the same way.
+//! nobody knows (every method its default), [`nextcloud::Nextcloud`] the first known one,
+//! [`opencloud::Opencloud`] the second (download only, § 16 Q1). The ownCloud profile plugs in
+//! the same way.
+//!
+//! One thing a profile may say about guarantees: a **ceiling** on the mode
+//! ([`ServerProfile::lowered`]), from measurements the check on connect can't make (a guard that
+//! holds in one request but not under a race). It can only lower the mode, never raise it.
 
 pub mod nextcloud;
+pub mod opencloud;
 
 use craftcloud_core::api::versions::Version;
 use craftcloud_core::http::HttpRequest;
-use craftcloud_core::storage::Checksum;
 use craftcloud_core::storage::probe::{Base, ExtraCheck};
+use craftcloud_core::storage::{Checksum, Lowered};
 use craftcloud_core::sync::Storage;
 
 use super::probe::Transport;
@@ -36,6 +42,15 @@ pub trait ServerProfile: Send {
     /// The known-server checks of the probe's steps 16 (the trash round trip) and 17 (the server's
     /// versions). `None`: the probe records the client's trash and versions.
     fn probe_checks(&self) -> Option<(Box<dyn ExtraCheck>, Box<dyn ExtraCheck>)> {
+        None
+    }
+
+    /// A ceiling on the mode from what is known about this kind of server and the check can't
+    /// measure (docs/WEBDAV-STORAGE.md § 7.5, "Atomicity"; § 16, Q1: OpenCloud's guards don't
+    /// hold under a race). Recorded in the check's capabilities, so `mode_for` applies it
+    /// wherever the mode is read; it can only lower the mode measured, never raise it. `None`:
+    /// the measurements decide alone.
+    fn lowered(&self) -> Option<Lowered> {
         None
     }
 
@@ -92,11 +107,13 @@ impl ServerProfile for Generic {
 
 /// The profile for a kind of server on `base` (the WebDAV base the settings hold): a known server
 /// gets its profile, any other the generic one. `None` when the base isn't one that kind of server
-/// has (a Nextcloud base must be `…/remote.php/dav/files/<user id>/`).
+/// has (a Nextcloud base must be `…/remote.php/dav/files/<user id>/`, an OpenCloud base
+/// `…/remote.php/dav/spaces/<space id>/`).
 pub fn for_kind(kind: Storage, base: &Base) -> Option<Box<dyn ServerProfile>> {
     match kind {
         Storage::Nextcloud => nextcloud::Nextcloud::from_base(base).map(|p| Box::new(p) as Box<dyn ServerProfile>),
-        Storage::Oxicloud | Storage::Owncloud | Storage::Opencloud | Storage::Webdav => Some(Box::new(Generic)),
+        Storage::Opencloud => opencloud::Opencloud::from_base(base).map(|p| Box::new(p) as Box<dyn ServerProfile>),
+        Storage::Oxicloud | Storage::Owncloud | Storage::Webdav => Some(Box::new(Generic)),
     }
 }
 
@@ -110,7 +127,12 @@ mod tests {
         assert_eq!(for_kind(Storage::Nextcloud, &nc).map(|p| p.kind()), Some(Storage::Nextcloud));
         assert_eq!(for_kind(Storage::Webdav, &nc).map(|p| p.kind()), Some(Storage::Webdav));
         assert!(for_kind(Storage::Nextcloud, &Base::parse("https://nas.example.org/dav/").unwrap()).is_none(), "not a Nextcloud base");
+        let opc =
+            Base::parse("https://cloud.example.org/remote.php/dav/spaces/5d90215b-14f0-4b05-9f8d-8971b9810172$4ed81edc-3290-4003-a070-9f24bb826ff8/")
+                .unwrap();
+        assert_eq!(for_kind(Storage::Opencloud, &opc).map(|p| p.kind()), Some(Storage::Opencloud));
+        assert!(for_kind(Storage::Opencloud, &nc).is_none(), "a files base isn't an OpenCloud space");
         let generic = Generic;
-        assert!(generic.probe_checks().is_none() && generic.verify_writes().is_none());
+        assert!(generic.probe_checks().is_none() && generic.verify_writes().is_none() && generic.lowered().is_none());
     }
 }

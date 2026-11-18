@@ -23,14 +23,15 @@ docker compose -p craftcloud-others logs -f nextcloud  # until it says it is rea
 |---|---|---|---|---|
 | `nextcloud` | 8111 | `john` | two-way | every guard honoured; its own trash and versions, used through its profile (the suite connects with `--kind nextcloud`'s profile, and the command line's test signs in with `login --kind nextcloud --user john`, the app password from the environment, since the browser's Login Flow can't be driven headless) |
 | `owncloud` | 8112 | `john` | two-way | the same |
-| `opencloud` | 8113 | `admin` | download only | ignores `If-None-Match: *` on `PUT` (§ 16, Q1) |
+| `opencloud` | 8113 | `admin` | download only | ignores `If-None-Match: *` on `PUT`, and its guards don't hold under a race (§ 16, Q1); the suite connects with `--kind opencloud`'s profile (the personal space, its trash and versions), and the command line's test signs in with `login --kind opencloud --user admin`, the app token from the environment |
 | `rclone` | 8114 | `john` | download only | ignores `If-Match` and `If-None-Match` on `PUT` (golang/go#44492; § 16, Q2) |
 | `apache` | 8115 | `john` | two-way, with CraftCloud's own trash and versions in `.craftcloud/` | keeps every guard (measured, below) |
 
 OpenCloud's built-in admin is `admin`; the compose file turns its basic-auth switch on
-(`PROXY_ENABLE_BASIC_AUTH`), which only an admin can do and the product never relies on (its own sign-in comes
-with its profile, § 14 row 8). Nextcloud and ownCloud are set up with `john` as their admin; a plain user does
-as well.
+(`PROXY_ENABLE_BASIC_AUTH`), which only an admin can do and the product never relies on: it is on here only so the
+tests can make an app token with the account password. A person makes one in the web UI instead (Account › App
+Tokens), and the token works with OpenCloud's defaults (basic auth off; measured on 9.1.1, § 10). Nextcloud and
+ownCloud are set up with `john` as their admin; a plain user does as well.
 
 ## App passwords
 
@@ -43,7 +44,9 @@ would and sign the client in with that:
   (`curl` must be on `PATH`). The account password is used to sign in to the web once.
 - **OpenCloud**: `POST /auth-app/tokens?expiry=72h` with the account's basic auth (the call behind its web
   UI's "App tokens"; on by default in 9.1.1) gives an app token, which is then the WebDAV password. The account
-  password is used for that one call, which is what the basic-auth switch above is on for.
+  password is used for that one call, which is what the basic-auth switch above is on for. The suite then asks
+  the Graph API for the personal space, as `login --kind opencloud` does, and syncs that
+  (`/remote.php/dav/spaces/<drive id>/`); `CRAFTCLOUD_TEST_DAV_URL` names another space.
 - **Plain WebDAV** (`rclone`, `apache`): the WebDAV password itself (§ 16, Q6).
 
 To hand one in instead (made in the server's settings), set `CRAFTCLOUD_TEST_APP_PASSWORD`.

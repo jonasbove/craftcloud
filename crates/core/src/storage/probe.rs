@@ -21,7 +21,7 @@
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 
-use super::{Capabilities, Checksum, DeleteGuard, FolderEtags, Guard, MissingParent, Mode, Quota, Trash, Versions, mode_for};
+use super::{Capabilities, Checksum, DeleteGuard, FolderEtags, Guard, Lowered, MissingParent, Mode, Quota, Trash, Versions, mode_for};
 use crate::api::dav;
 use crate::http::{HttpRequest, HttpResponse, Method};
 
@@ -419,11 +419,15 @@ pub trait ExtraCheck {
     fn confirmed(&self) -> bool;
 }
 
-/// What a known server's profile adds to the probe. Both `None` for a server nobody knows.
+/// What a known server's profile adds to the probe. All `None` for a server nobody knows.
 #[derive(Default)]
 pub struct Profile<'a> {
     pub trash: Option<&'a mut dyn ExtraCheck>,
     pub versions: Option<&'a mut dyn ExtraCheck>,
+    /// A ceiling on the mode from what the profile knows and the probe can't measure (§ 7.5,
+    /// "Atomicity"): recorded in the capabilities, so the saved check carries it, and only ever
+    /// lowering the mode measured (`mode_for`).
+    pub lowered: Option<Lowered>,
 }
 
 /// One row of "What was checked": a check and its result, in plain words.
@@ -481,7 +485,7 @@ pub fn checks(c: &Capabilities) -> Vec<Check> {
         Some(Checksum::Adler32) => "Adler-32",
         None => "none",
     };
-    vec![
+    let mut rows = vec![
         Check::new("Create only where nothing is (If-None-Match: *)", guard(c.create_if_absent, "a file was already there")),
         Check::new("Overwrite only the version last seen (If-Match)", guard(c.replace_if_match, "the version tag was stale")),
         Check::new(
@@ -545,7 +549,13 @@ pub fn checks(c: &Capabilities) -> Vec<Check> {
             },
         ),
         Check::new("Names the server can't take (left alone by the sync)", names_words(&c.names)),
-    ]
+    ];
+    // Only a known server's profile adds this row: a server nobody knows, and OxiCloud, print
+    // exactly the rows above.
+    if let Some(l) = &c.lowered {
+        rows.push(Check::new("Known about this kind of server", format!("{} at most: {}", l.to.words(), l.why)));
+    }
+    rows
 }
 
 fn names_words(n: &crate::names::NameRules) -> String {
@@ -1301,7 +1311,9 @@ impl<'a> Probe<'a> {
         if let Some(why) = refused_because {
             return Verdict { mode: Mode::Refused, capabilities: None, checks: Vec::new(), steps: self.steps.clone(), refused_because: Some(why) };
         }
-        let caps = self.caps.clone();
+        // The profile's ceiling goes into the capabilities themselves, so the saved check, the
+        // engine (`mode_for` on the driver's capabilities) and this verdict agree.
+        let caps = Capabilities { lowered: self.profile.lowered.clone(), ..self.caps.clone() };
         Verdict { mode: mode_for(&caps), checks: checks(&caps), capabilities: Some(caps), steps: self.steps.clone(), refused_because: None }
     }
 }

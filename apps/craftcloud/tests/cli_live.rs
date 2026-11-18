@@ -432,10 +432,12 @@ fn the_command_line_on_another_kind_of_server() {
     // check on connect runs and the answer says the mode.
     // Nextcloud signs in as itself (here with an app password and `--user`, since the browser's
     // Login Flow can't be driven headless; the flow's state machine is tested against a scripted
-    // server); the rest as "another WebDAV server".
+    // server); OpenCloud as itself with an app token and `--user` (its only sign-in); the rest as
+    // "another WebDAV server".
     let dav = server.base().url().to_owned();
-    let kind_word = if server.kind == kind::Kind::Nextcloud { "nextcloud" } else { "webdav" };
-    let address = if server.kind == kind::Kind::Nextcloud { server.url.clone() } else { dav.clone() };
+    let own_profile = matches!(server.kind, kind::Kind::Nextcloud | kind::Kind::Opencloud);
+    let kind_word = if own_profile { server.kind.as_str() } else { "webdav" };
+    let address = if own_profile { server.url.clone() } else { dav.clone() };
     let out = env.run(&["login", &address, "--kind", kind_word, "--user", &server.user, "--json"]);
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(out.status.success(), "login: {text}");
@@ -457,12 +459,19 @@ fn the_command_line_on_another_kind_of_server() {
     );
     let server_trash =
         check["checks"].as_array().unwrap().iter().any(|c| c["check"] == "Where a delete goes" && c["result"] == "the server's own trash");
-    assert_eq!(server_trash, server.kind == kind::Kind::Nextcloud, "the server's own trash only with a profile that confirmed it: {check}");
+    assert_eq!(server_trash, own_profile, "the server's own trash only with a profile that confirmed it: {check}");
     let steps = check["steps"].as_array().unwrap_or_else(|| panic!("{check}"));
     assert!(steps.len() >= 18 && steps.iter().all(|s| s["what"].is_string() && s["result"].is_string()), "{check}");
     assert!(!check["checks"].as_array().unwrap().is_empty(), "{check}");
     if server.mode == Mode::DownloadOnly {
         assert!(check["refused_because"].is_null(), "download only isn't a refusal: {check}");
+    }
+    // OpenCloud: download only whatever was measured, and the table says why (§ 16, Q1).
+    let known = check["checks"].as_array().unwrap().iter().find(|c| c["check"] == "Known about this kind of server").map(|c| c["result"].to_string());
+    if server.kind == kind::Kind::Opencloud {
+        assert!(known.as_deref().is_some_and(|k| k.contains("download only at most")), "{check}");
+    } else {
+        assert_eq!(known, None, "only a profile with a ceiling adds that row: {check}");
     }
 
     // Not available on this server: exit code 10, kind `unsupported`, for everything only
@@ -498,7 +507,13 @@ fn the_command_line_on_another_kind_of_server() {
     // signing out: on Nextcloud `logout` deletes the app password these requests use.
     let mut cloud = kind::Dav::new(&server);
     cloud.delete(&format!(".craftcloud/versions/{base}"), true);
-    if server_trash {
+    if server.kind == kind::Kind::Opencloud {
+        for (key, original, is_folder) in server.opencloud_trash().unwrap_or_default() {
+            if original == base || original.starts_with(&format!("{base}/")) {
+                server.purge_opencloud_trash_item(&key, is_folder);
+            }
+        }
+    } else if server_trash {
         let mut bin = kind::Dav::at(&server, &format!("{}/remote.php/dav/trashbin/{}/trash/", server.url, server.user));
         for entry in bin.list("").unwrap_or_default() {
             if entry.name().starts_with(&format!("{base}.d")) {

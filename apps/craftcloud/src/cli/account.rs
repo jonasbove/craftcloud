@@ -18,6 +18,7 @@ use craftcloud_native::session::{AppPasswordSession, Session};
 use craftcloud_native::settings::Prefs;
 use craftcloud_native::storage::probe::Limits;
 use craftcloud_native::storage::profile::nextcloud::{self, Nextcloud};
+use craftcloud_native::storage::profile::opencloud::{self, Opencloud};
 use craftcloud_native::storage::webdav::WebDav;
 use serde_json::json;
 
@@ -34,25 +35,30 @@ pub const APP_PASSWORD_VAR: &str = "CRAFTCLOUD_APP_PASSWORD";
 
 /// `login [server] [--kind KIND] [--user NAME]`: the device flow for CraftCloud's own server, as
 /// in the desktop client; with `--kind nextcloud`, Nextcloud's own browser sign-in (Login Flow v2,
-/// or an app password with `--user`); with `--kind webdav`, another WebDAV server with an app
-/// password. Without `--kind`, and with the opt-in, a server that says it is Nextcloud
-/// (`status.php`) is signed in to as one; detection only suggests the kind, the check on connect
-/// measures what it allows (docs/WEBDAV-STORAGE.md § 2, § 11).
+/// or an app password with `--user`); with `--kind opencloud`, an app token the person made in
+/// OpenCloud's web UI (`--user`); with `--kind webdav`, another WebDAV server with an app
+/// password. Without `--kind`, and with the opt-in, a server that says it is Nextcloud or
+/// OpenCloud (`status.php`) is signed in to as one; detection only suggests the kind, the check
+/// on connect measures what it allows (docs/WEBDAV-STORAGE.md § 2, § 11).
 pub fn login(ctx: &mut Ctx, server: Option<&str>, no_browser: bool, kind: Option<&str>, user: Option<&str>) -> Result<()> {
     let mut kind = match kind {
         None => Storage::Oxicloud,
-        Some(word) => Storage::parse(word).ok_or_else(|| CliError::usage(format!("--kind {word}: use oxicloud, nextcloud or webdav")))?,
+        Some(word) => Storage::parse(word).ok_or_else(|| CliError::usage(format!("--kind {word}: use oxicloud, nextcloud, opencloud or webdav")))?,
     };
     if kind == Storage::Oxicloud
         && experimental::experimental_webdav()
         && let Some(given) = server
         && let Ok(origin) = ServerUrl::parse(given)
-        && let Some(found) = nextcloud::detect(&origin.to_string())
     {
-        if !ctx.json {
-            eprintln!("{} at {origin}: signing in the way Nextcloud does.", found.words());
+        let detected = nextcloud::detect(&origin.to_string())
+            .map(|d| (d, Storage::Nextcloud))
+            .or_else(|| opencloud::detect(&origin.to_string()).map(|d| (d, Storage::Opencloud)));
+        if let Some((found, as_kind)) = detected {
+            if !ctx.json {
+                eprintln!("{} at {origin}: signing in the way {} does.", found.words(), as_kind.words());
+            }
+            kind = as_kind;
         }
-        kind = Storage::Nextcloud;
     }
     match kind {
         Storage::Oxicloud => {}
@@ -60,10 +66,11 @@ pub fn login(ctx: &mut Ctx, server: Option<&str>, no_browser: bool, kind: Option
         _ if !experimental::experimental_webdav() => return Err(CliError::usage(experimental::REFUSED)),
         Storage::Webdav => return login_webdav(ctx, server, user),
         Storage::Nextcloud => return login_nextcloud(ctx, server, user, no_browser),
-        Storage::Owncloud | Storage::Opencloud => return Err(CliError::usage(experimental::NOT_YET)),
+        Storage::Opencloud => return login_opencloud(ctx, server, user),
+        Storage::Owncloud => return Err(CliError::usage(experimental::NOT_YET)),
     }
     if user.is_some() {
-        return Err(CliError::usage("--user goes with --kind webdav or nextcloud; a CraftCloud server signs you in through the browser"));
+        return Err(CliError::usage("--user goes with --kind webdav, nextcloud or opencloud; a CraftCloud server signs you in through the browser"));
     }
     let server = match server {
         Some(s) => ServerUrl::parse(s).map_err(|e| CliError::usage(format!("{s}: {e}")))?,
@@ -294,6 +301,88 @@ fn login_nextcloud(ctx: &mut Ctx, server: Option<&str>, user: Option<&str>, no_b
     Ok(())
 }
 
+/// `login <server> --kind opencloud --user NAME`: an app token the person made in OpenCloud's web
+/// UI (Account › App Tokens › New), from [`APP_PASSWORD_VAR`] or a prompt, never an argument, as
+/// the password of Basic auth with the login name (docs/WEBDAV-STORAGE.md § 10: the token works
+/// whether or not the admin turned basic auth on; the client never sees the account password, and
+/// no OpenID Connect flow is built, since OpenCloud registers only its own clients). The Graph API
+/// names the user and the personal space (which also shows the token works), the WebDAV base is
+/// that space's URL, the sign-in is saved in the keychain, the settings set to OpenCloud, and the
+/// check on connect run with the OpenCloud profile and saved: download only (§ 16, Q1).
+fn login_opencloud(ctx: &mut Ctx, server: Option<&str>, user: Option<&str>) -> Result<()> {
+    let given = server
+        .ok_or_else(|| CliError::usage("Which server? Give its address: `craftcloud login cloud.example.org --kind opencloud --user NAME`."))?;
+    let origin = ServerUrl::parse(given).map_err(|e| CliError::usage(format!("{given}: {e}")))?;
+    let origin_base = Base::parse(&format!("{origin}/")).map_err(CliError::usage)?;
+    if origin_base.is_plain_http() && !origin_base.is_loopback() {
+        return Err(CliError::usage(format!("{origin} isn't https: a password is never sent over plain http to another computer")));
+    }
+    let user = user.map(str::trim).filter(|u| !u.is_empty()).ok_or_else(|| {
+        CliError::usage("--kind opencloud needs --user NAME (your login name) and an app token made in the server's web UI (Account › App Tokens)")
+    })?;
+    let secret = match std::env::var(APP_PASSWORD_VAR) {
+        Ok(s) if !s.is_empty() => s,
+        _ => {
+            super::read_secret(&format!("App token for {user} (made in the server's web UI under Account › App Tokens, not your account password)"))?
+        }
+    };
+    // Who is signed in and their personal space; this also shows the token works before anything is saved.
+    let mut probe = AppPasswordSession::new(origin_base, user, &secret).map_err(CliError::usage)?;
+    let (me, drive) = match opencloud::personal_space(&mut probe, &origin.to_string()) {
+        Ok(found) => found,
+        Err(_) if probe.signed_out => return Err(CliError::new(Fail::SignedOut, format!("{origin} refused the user name or app token (401)."))),
+        // No answer at all: the server can't be reached (exit code 8), not a wrong kind of server.
+        Err(e) if probe.offline.is_some() => return Err(CliError::transport(e)),
+        Err(e) => return Err(CliError::error(format!("{origin} doesn't answer like an OpenCloud server: {e}"))),
+    };
+    let profile = Opencloud::new(&origin.to_string(), &drive.id);
+    let base = Base::parse(&profile.files_base()).map_err(CliError::error)?;
+    let session = AppPasswordSession::new(base.clone(), user, &secret).map_err(CliError::usage)?;
+    ctx.tokens(&origin)
+        .save_credential(&Credential::AppPassword { user: user.to_owned(), secret })
+        .map_err(|e| CliError::error(format!("couldn't keep the sign-in: {e}")))?;
+    // The desktop client's server, when it has none yet (or this one); a different one stays.
+    let mut settings = ctx.settings();
+    let default = settings.server.is_empty() || settings.server == origin.to_string();
+    if default {
+        settings.server = origin.to_string();
+        settings.storage = Storage::Opencloud;
+        settings.dav_url = base.url().to_owned();
+        ctx.store.set(Prefs(settings));
+        ctx.store.flush().map_err(|e| CliError::error(format!("couldn't save the settings: {e}")))?;
+    }
+    // The check on connect, with the OpenCloud profile's trash and versions checks and its ceiling.
+    let dir = ctx.dir();
+    let (_, check) = WebDav::connect_with(session, Box::new(profile), &ctx.device(), dir.as_deref(), Limits::default());
+    if default && let Some(dir) = dir {
+        control::signed_in(&dir);
+    }
+    if ctx.json {
+        return print_json(&json!({
+            "signed_in": true,
+            "server": origin.to_string(),
+            "dav_url": base.url(),
+            "kind": "opencloud",
+            "username": user,
+            "user_id": me.id,
+            "space": drive.id,
+            "server_version": check.server_version,
+            "mode": check.mode.as_str(),
+            "refused_because": check.refused_because,
+            "default": default,
+        }));
+    }
+    println!("Signed in to {origin} as {user} (OpenCloud {}; the space \"{}\").", check.server_version, drive.name);
+    match &check.refused_because {
+        Some(why) => println!("Sync mode: {}: {why}. `craftcloud server check` says what was checked.", check.mode.words()),
+        None => println!("Sync mode: {} (`craftcloud server check` says what was checked).", check.mode.words()),
+    }
+    if !default {
+        println!("The desktop client uses another server; sign out of it first to use this one.");
+    }
+    Ok(())
+}
+
 /// `logout`: ends the sign-in on the server and forgets it here. It is forgotten here even when
 /// the server can't be told; then the output says so (`server_session_ended: false`) and the exit
 /// code is 8 (the server can't be reached) or 1 (it refused). On Nextcloud the app password is
@@ -345,7 +434,7 @@ pub fn logout(ctx: &mut Ctx) -> Result<()> {
             match &ended {
                 None => format!("Wasn't signed in to {server}."),
                 Some(Ok(())) if app_password => {
-                    format!("Signed out of {server} on this computer. The app password stays valid on the server until you remove it there.")
+                    format!("Signed out of {server} on this computer. The app password or token stays valid on the server until you remove it there.")
                 }
                 Some(Ok(())) => format!("Signed out of {server}."),
                 Some(Err(_)) => format!("Signed out of {server} on this computer."),

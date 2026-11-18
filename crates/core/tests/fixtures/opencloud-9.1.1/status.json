@@ -1,0 +1,12 @@
+{
+    "installed": true,
+    "maintenance": false,
+    "needsDbUpgrade": false,
+    "version": "0.1.0.0",
+    "versionstring": "0.1.0",
+    "edition": "stable",
+    "productname": "OpenCloud",
+    "product": "OpenCloud",
+    "productversion": "9.1.1",
+    "channel": ""
+}
