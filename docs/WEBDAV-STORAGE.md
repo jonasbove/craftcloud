@@ -613,7 +613,7 @@ and `profile/nextcloud.rs`, `crates/native/src/storage/{webdav,probe}.rs`, `apps
 - **The profile hook.** `storage::profile::ServerProfile` is what a known kind of server adds to the generic driver,
   every method with a default that adds nothing: the server's version string (`status.php`), the probe's
   known-server checks of steps 16 and 17, "verify writes by checksum" (`Option<Checksum>`, Q13), the server's own
-  trash (`trash_list`, `restore`), its versions (`list_versions`, `restore_version`) and its quota endpoint.
+  trash (`trash_list`, `restore`), its versions (`list_versions`, `version_download`) and its quota endpoint.
   `profile::for_kind(Storage, &Base)` gives the kind's profile (`Generic` for a server nobody knows);
   `WebDav::connect_with` and `WebDav::with_profile` take it. The driver asks the profile for the trash only where the
   check confirmed `Trash::Server` (a `DELETE` then lands in the server's trash: a file's with `If-Match`, a folder's
@@ -632,7 +632,7 @@ and `profile/nextcloud.rs`, `crates/native/src/storage/{webdav,probe}.rs`, `apps
 - **Nextcloud's profile** knows: the files base `/remote.php/dav/files/<user id>/` (the user id from
   `current-user-principal`; the login name can differ); the trash bin and its restore `MOVE`; the versions by file
   id (the listing names the current file among them, which `list_versions` leaves out by its modified time; a
-  restore is a `MOVE` to `restore/target`, and the server keeps the replaced file as a version itself); the OCS
+  restore is a guarded write, below); the OCS
   user endpoint's `quota.free` (`-3`: no limit); `status.php` for the version string; `missing_parent` 404
   (recorded by the probe as before). Step 16 deletes the probe's `d.txt`, finds it in the trash bin by its
   original location, restores it and reads it back; step 17 overwrites `c.txt` once more (in a later second) and
@@ -640,6 +640,15 @@ and `profile/nextcloud.rs`, `crates/native/src/storage/{webdav,probe}.rs`, `apps
   doesn't answer, both stay `Client`. The answers are recorded in `crates/core/tests/fixtures/nextcloud-31/`
   (status, Login Flow start and pending poll, OCS user, principal, a folder listing with checksums, a file
   written without one, versions, the trash bin; the finished poll is the public documentation's shape).
+- **A version restore is a guarded write, on every server.** A profile only names where a version's bytes are
+  read (`version_download`, a `GET`); the driver (`WebDav::restore_server_version`) reads the file's version tag,
+  reads the version, and writes it back with its guarded `replace` (`PUT` with `If-Match`, plus the checksum check
+  below). A change landing in between answers 412: nothing is restored, the newer file stays
+  (`Restored::Changed`; the command line exits with code 5, as it does for CraftCloud's own server). Nextcloud's
+  own restore (`MOVE` of the version to `…/versions/<user id>/restore/target`) is never sent: it names no version
+  of the file it replaces, so it is the unguarded write § 7.2 excludes, and since an overwrite within one second
+  leaves no version there (UPSTREAM.md E1) the bytes it replaced could be gone for good. The server keeps the
+  bytes the `PUT` replaces as a version itself. The ownCloud and OpenCloud profiles get the same path.
 - **The checksum check (Q13).** On a profile that asks for it, every `PUT` carries `OC-Checksum: SHA1:<hex>` (the
   `sha1` crate, RustCrypto, MIT OR Apache-2.0), and after a 2xx a depth-0 listing must show that checksum among
   `oc:checksums`; anything else is `Written::Conflict`, so the engine makes a conflict copy of the local bytes and

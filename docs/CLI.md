@@ -205,7 +205,8 @@ browser (Login Flow v2) or, with `--user`, with an app password made in Settings
 Nextcloud's own trash and versions once the check on connect has confirmed them with a round trip (a deleted
 probe file found in the trash bin and restored; an overwrite that left a version): a delete is then a WebDAV
 `DELETE` into Nextcloud's trash bin, `trash ls` and `trash restore` show and restore it, `versions` and
-`versions … restore` are Nextcloud's versions by file id (they follow renames), and `trash rm` and `trash empty`
+`versions … restore` are Nextcloud's versions by file id (they follow renames; a restore writes the version's
+bytes back only if the file is still the one last seen, else it restores nothing and exits with code 5), and `trash rm` and `trash empty`
 answer "not available on this server" (code 10), since CraftCloud never purges a person's trash; empty it on the
 web page. Nextcloud reuses a file's version tag when it is overwritten within the same second as the write before
 it, so every upload carries its SHA1 checksum (`OC-Checksum`) and is read back: a checksum that isn't the one
