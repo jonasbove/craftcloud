@@ -11,12 +11,14 @@ use craftcloud_core::ServerUrl;
 use craftcloud_core::api::auth::Tokens;
 use craftcloud_core::names::Platform;
 use craftcloud_core::reconcile::{Action, Known, State, Tree};
+use craftcloud_core::storage::{Capabilities, Guard};
 use craftcloud_core::sync::{ActivityEvent, ActivityKind, SyncPlan, SyncState};
 
 use super::{Deletes, Engine, Saved, local_meta, save_saved, synced_state};
 use crate::fake_server::{FakeServer, Reply, Seen, listing};
 use crate::session::Session;
 use crate::storage::oxicloud::OxiCloud;
+use crate::storage::{Download, Entry, MoveGuard, Moved, OwnPath, RemoteStorage, StorageError, TrashGuard, TrashItem, Trashed, Written};
 
 fn plan(server: &str, root: &Path, excluded: &[&str]) -> SyncPlan {
     SyncPlan {
@@ -404,4 +406,219 @@ fn a_token_that_runs_out_mid_scan_is_refreshed_once() {
     assert_eq!(server.count("POST", "/api/auth/refresh"), 1, "{:?}", server.seen());
     assert_eq!(engine.storage.session.tokens.access_token, "a2");
     assert!(!engine.storage.session.signed_out);
+}
+
+// --- Modes: what the engine does with a server that allows less --------------------------------
+
+/// OxiCloud's driver with other capabilities, so the engine's mode follows them (no server kind
+/// but OxiCloud reaches the engine yet).
+struct WithCapabilities {
+    inner: OxiCloud,
+    caps: Capabilities,
+}
+
+impl RemoteStorage for WithCapabilities {
+    fn capabilities(&self) -> &Capabilities {
+        &self.caps
+    }
+    fn begin_pass(&mut self) {
+        self.inner.begin_pass();
+    }
+    fn take_offline(&mut self) -> Option<String> {
+        self.inner.take_offline()
+    }
+    fn signed_out(&self) -> bool {
+        self.inner.signed_out()
+    }
+    fn list(&mut self, folder: &str) -> Result<Vec<Entry>, StorageError> {
+        self.inner.list(folder)
+    }
+    fn download(&mut self, path: &str, from: Option<u64>) -> Result<Download, StorageError> {
+        self.inner.download(path, from)
+    }
+    fn create(&mut self, path: &str, file: &Path) -> Result<Written, StorageError> {
+        self.inner.create(path, file)
+    }
+    fn replace(&mut self, path: &str, if_match: &str, file: &Path) -> Result<Written, StorageError> {
+        self.inner.replace(path, if_match, file)
+    }
+    fn make_folder(&mut self, path: &str) -> Result<(), StorageError> {
+        self.inner.make_folder(path)
+    }
+    fn move_to(&mut self, from: &str, to: &str, guard: MoveGuard) -> Result<Moved, StorageError> {
+        self.inner.move_to(from, to, guard)
+    }
+    fn trash(&mut self, path: &str, guard: TrashGuard) -> Result<Trashed, StorageError> {
+        self.inner.trash(path, guard)
+    }
+    fn trash_list(&mut self) -> Result<Vec<TrashItem>, StorageError> {
+        self.inner.trash_list()
+    }
+    fn restore(&mut self, item: &TrashItem) -> Result<(), StorageError> {
+        self.inner.restore(item)
+    }
+    fn keep_version(&mut self, path: &str) -> Result<(), StorageError> {
+        self.inner.keep_version(path)
+    }
+    fn move_versions(&mut self, from: &str, to: &str) -> Result<(), StorageError> {
+        self.inner.move_versions(from, to)
+    }
+    fn free_space(&mut self, needed: u64) -> Result<Option<u64>, StorageError> {
+        self.inner.free_space(needed)
+    }
+    fn purge_own(&mut self, path: &OwnPath) -> Result<(), StorageError> {
+        self.inner.purge_own(path)
+    }
+}
+
+/// [`engine`] over a server with these capabilities.
+fn engine_with(server: ServerUrl, root: &Path, caps: Capabilities) -> Engine<WithCapabilities> {
+    let Engine {
+        plan,
+        storage,
+        cancel,
+        device,
+        progress,
+        waker,
+        paused,
+        settled,
+        reported,
+        no_room,
+        refused,
+        no_folder_move,
+        platform,
+        parts_swept,
+        _watcher,
+    } = engine(server, root, &[]);
+    Engine {
+        plan,
+        storage: WithCapabilities { inner: storage, caps },
+        cancel,
+        device,
+        progress,
+        waker,
+        paused,
+        settled,
+        reported,
+        no_room,
+        refused,
+        no_folder_move,
+        platform,
+        parts_swept,
+        _watcher,
+    }
+}
+
+/// A server that ignores `If-None-Match: *` (as OpenCloud does, docs/WEBDAV-STORAGE.md Q1): the
+/// sync only downloads.
+fn download_only() -> Capabilities {
+    Capabilities { create_if_absent: Guard::Ignored, ..Capabilities::oxicloud() }
+}
+
+/// The local folder after a sync with the cloud holding `Docs/kept.txt` and `Docs/edited.txt`
+/// (both as last synced) and `Moved/a.txt`: since then, here, `edited.txt` was changed,
+/// `renamed.txt` is `old.txt` renamed, `new.txt` and the folder `Moved` (renamed from `Folder`)
+/// are new; in the cloud, `gone.txt` was deleted and `old.txt` and `Folder` are still there.
+fn download_only_scene(root: &Path) -> State {
+    let mut state = State::default();
+    for name in ["kept", "edited", "gone", "old"] {
+        let file = write(root, &format!("Docs/{name}.txt"), "abc");
+        state.files.insert(format!("Docs/{name}.txt"), as_synced(&file));
+    }
+    let moved = write(root, "Folder/a.txt", "abc");
+    state.files.insert("Folder/a.txt".into(), as_synced(&moved));
+    state.folders.extend(["Docs".to_owned(), "Folder".to_owned()]);
+    std::fs::write(root.join("Docs/edited.txt"), "abcd").unwrap();
+    std::fs::rename(root.join("Docs/old.txt"), root.join("Docs/renamed.txt")).unwrap();
+    std::fs::rename(root.join("Folder"), root.join("Moved")).unwrap();
+    write(root, "Docs/new.txt", "mine");
+    state
+}
+
+fn download_only_server() -> FakeServer {
+    FakeServer::start(|r| match r.path.trim_start_matches("/webdav/").trim_end_matches('/') {
+        "" => listing("", &[], &["Docs", "Folder"]),
+        "Docs" => listing("Docs", &[("kept.txt", Some("e1")), ("edited.txt", Some("e1")), ("old.txt", Some("e1"))], &[]),
+        "Folder" => listing("Folder", &[("a.txt", Some("e1"))], &[]),
+        _ => (404, String::new()),
+    })
+}
+
+/// Download only (docs/WEBDAV-STORAGE.md § 9), one whole cycle: nothing but listings reaches the
+/// server (no upload, folder, move or delete there, a folder renamed here included); the file
+/// deleted in the cloud is moved into the local `.craftcloud/trash/`, never deleted; a change
+/// made here, a file new here and a file renamed here stay as they are.
+#[test]
+fn download_only_writes_nothing_to_the_cloud_and_trashes_a_cloud_delete_here() {
+    let server = download_only_server();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let state = download_only_scene(root);
+    let gone_before = std::fs::read_to_string(root.join("Docs/gone.txt")).unwrap();
+    let mut engine = engine_with(server.server(), root, download_only());
+    save_saved(&engine.state_path(), &Saved { server: engine.plan.server.clone(), state, ..Saved::default() }).unwrap();
+    engine.cycle(Deletes::Hold);
+
+    let writes: Vec<String> = server.seen().iter().filter(|r| r.method != "PROPFIND").map(|r| format!("{} {}", r.method, r.path)).collect();
+    assert!(writes.is_empty(), "only listings reach the server: {writes:?}");
+    assert!(!root.join("Docs/gone.txt").exists(), "deleted in the cloud: not here any more");
+    let trashed: Vec<std::path::PathBuf> = walkdir(&root.join(".craftcloud/trash"));
+    assert_eq!(trashed.len(), 1, "{trashed:?}");
+    assert!(trashed[0].ends_with("Docs/gone.txt"), "{trashed:?}");
+    let place = trashed[0].strip_prefix(root.join(".craftcloud/trash")).unwrap();
+    let stamp = place.components().next().unwrap().as_os_str().to_string_lossy().into_owned();
+    assert!(stamp.ends_with("Z-Laptop") && stamp.len() == "20261117T143205Z-Laptop".len(), "<time>-<device>: {stamp}");
+    assert_eq!(std::fs::read_to_string(&trashed[0]).unwrap(), gone_before, "kept whole in the trash here");
+    assert_eq!(std::fs::read_to_string(root.join("Docs/edited.txt")).unwrap(), "abcd", "a change made here stays");
+    assert_eq!(std::fs::read_to_string(root.join("Docs/new.txt")).unwrap(), "mine", "a file new here stays");
+    assert!(root.join("Docs/renamed.txt").exists() && root.join("Moved/a.txt").exists(), "renamed here: stays");
+    let saved = synced_state(root);
+    assert!(!saved.files.contains_key("Docs/gone.txt"), "the trashed file is forgotten");
+    assert!(!saved.files.contains_key("Docs/old.txt"), "renamed here: forgotten, so it comes down again next cycle");
+    assert!(saved.files.contains_key("Docs/edited.txt"), "still synced as it was, the change not sent");
+}
+
+/// The same scene both ways (OxiCloud's capabilities): the contrast that shows the cut is what
+/// keeps the writes away. The folder renamed here is moved in the cloud first thing, and the
+/// file deleted in the cloud is removed here, not kept in a local trash.
+#[test]
+fn the_same_scene_both_ways_writes_to_the_cloud() {
+    let server = download_only_server();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let state = download_only_scene(root);
+    let mut engine = engine_with(server.server(), root, Capabilities::oxicloud());
+    save_saved(&engine.state_path(), &Saved { server: engine.plan.server.clone(), state, ..Saved::default() }).unwrap();
+    engine.cycle(Deletes::Hold);
+
+    assert!(server.seen().iter().any(|r| r.is("MOVE", "/webdav/Folder")), "the folder is moved in the cloud: {:?}", server.seen());
+    assert!(!root.join("Docs/gone.txt").exists());
+    assert!(!root.join(".craftcloud/trash").exists(), "both ways, the cloud's trash keeps it");
+}
+
+/// A server whose ETags don't change with the bytes is refused: nothing is listed, nothing
+/// changes here.
+#[test]
+fn a_refused_server_syncs_nothing() {
+    let server = download_only_server();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let state = download_only_scene(root);
+    let mut engine = engine_with(server.server(), root, Capabilities { etag_changes_on_write: false, ..Capabilities::oxicloud() });
+    save_saved(&engine.state_path(), &Saved { server: engine.plan.server.clone(), state, ..Saved::default() }).unwrap();
+    engine.cycle(Deletes::Hold);
+    assert!(server.seen().is_empty(), "{:?}", server.seen());
+    assert!(root.join("Docs/gone.txt").exists() && !root.join(".craftcloud/trash").exists());
+    assert!(matches!(engine.progress.lock().unwrap_or_else(PoisonError::into_inner).state, SyncState::Failed(_)));
+}
+
+/// Every file under `dir`.
+fn walkdir(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else { return out };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() { out.extend(walkdir(&path)) } else { out.push(path) }
+    }
+    out
 }
