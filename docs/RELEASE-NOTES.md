@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **ownCloud, experimental and off.** With `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, `craftcloud login cloud.example.org
+  --kind owncloud --user NAME` signs in to an ownCloud 10 with an app password you make in its Settings › Security ›
+  "App passwords / tokens" (your account password never reaches CraftCloud; ownCloud has no browser sign-in a client
+  can use without an admin), and the sync uses ownCloud's own trash bin and versions once the check on connect has
+  confirmed them: a delete lands in the trash bin, `trash ls|restore` and `versions` work on them, and `trash
+  rm|empty` answer "not available on this server" (CraftCloud never purges a person's trash). ownCloud reuses a
+  file's version tag when it is overwritten within the same second as the write before it (and keeps only one
+  version for two such writes), so every upload carries its checksum, which ownCloud checks, and is read back; a
+  write by someone else in that second is kept as a conflict copy, never overwritten. `logout` forgets the app
+  password and says where to revoke it. **A new kind of server: upgrade all devices together.** Every device that
+  syncs an account on an ownCloud must run this version or later: no earlier CraftCloud can sync with one (a generic
+  WebDAV sign-in to an ownCloud, made with an earlier build of this opt-in, keeps its client trash in
+  `.craftcloud/trash/`; sign in again with `--kind owncloud`).
 - **Nextcloud, experimental and off.** With `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, `craftcloud login cloud.example.org
   --kind nextcloud` signs in to a Nextcloud through the browser the way its own clients do (an app password is made
   for this computer; your account password never reaches CraftCloud; `--user NAME` takes an app password you made

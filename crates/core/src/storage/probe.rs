@@ -144,6 +144,10 @@ pub struct Request {
     /// the item came from. The runner allows the move only when that path is inside the probe's
     /// own folder, so a known-server check can never put back anything but the probe's file.
     pub restores: Option<String>,
+    /// For a request on another root whose `destination` is a cloud path under the **files base**
+    /// rather than under that root: a server whose trash restores by a `MOVE` to the file's old
+    /// place (ownCloud). The runner then allows the move only to `restores` itself.
+    pub destination_under_base: bool,
 }
 
 impl Request {
@@ -160,6 +164,7 @@ impl Request {
             settles: false,
             root: None,
             restores: None,
+            destination_under_base: false,
         }
     }
 
@@ -204,7 +209,8 @@ impl Request {
     }
 
     /// The HTTP request to send, with every path resolved under `base` (or under the request's
-    /// own root, when it has one).
+    /// own root, when it has one; the destination under the files base when
+    /// `destination_under_base` says so).
     pub fn to_http(&self, base: &Base) -> HttpRequest {
         let under = self.root.as_deref().unwrap_or(base.url());
         let mut req = HttpRequest::new(self.method, dav::url_under(under, &self.path, self.folder)).body(self.body.clone());
@@ -212,7 +218,8 @@ impl Request {
             req = req.header(name, value.clone());
         }
         if let Some((to, folder)) = &self.destination {
-            req = req.header("Destination", dav::url_under(under, to, *folder));
+            let dest_under = if self.destination_under_base { base.url() } else { under };
+            req = req.header("Destination", dav::url_under(dest_under, to, *folder));
         }
         req
     }

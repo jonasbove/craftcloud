@@ -51,6 +51,12 @@ impl Detected {
         self.product.eq_ignore_ascii_case("nextcloud")
     }
 
+    /// ownCloud 10 answers the same `status.php` (`productname` "ownCloud"); its profile is
+    /// [`super::owncloud`]'s.
+    pub fn is_owncloud(&self) -> bool {
+        self.product.eq_ignore_ascii_case("owncloud")
+    }
+
     /// "Nextcloud 31.0.14".
     pub fn words(&self) -> String {
         format!("{} {}", self.product, self.version_string).trim().to_owned()

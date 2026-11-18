@@ -79,13 +79,13 @@ impl Ctx {
     }
 
     /// Whether the commands go through the generic WebDAV driver (another kind of server: any
-    /// other WebDAV server, or Nextcloud with its profile).
+    /// other WebDAV server, or Nextcloud or ownCloud with its profile).
     pub fn is_webdav(&self) -> bool {
-        matches!(self.storage(), Storage::Webdav | Storage::Nextcloud)
+        matches!(self.storage(), Storage::Webdav | Storage::Nextcloud | Storage::Owncloud)
     }
 
     /// What the settings' kind of server adds to the driver (docs/WEBDAV-STORAGE.md § 7.4): the
-    /// Nextcloud profile, or the generic one.
+    /// Nextcloud or ownCloud profile, or the generic one.
     pub fn profile(&self) -> Result<Box<dyn ServerProfile>> {
         let settings = self.settings();
         let base = Base::parse(&settings.dav_url).map_err(|e| CliError::error(format!("the saved WebDAV address: {e}")))?;
@@ -107,6 +107,7 @@ impl Ctx {
         let credential = self.tokens(&server).load_credential().ok_or_else(|| {
             let how = match settings.storage {
                 Storage::Nextcloud => format!("craftcloud login {server} --kind nextcloud"),
+                Storage::Owncloud => format!("craftcloud login {server} --kind owncloud --user NAME"),
                 _ => format!("craftcloud login {} --kind webdav --user NAME", base.url()),
             };
             CliError::new(Fail::SignedOut, format!("Not signed in to {server}. Run `{how}`."))

@@ -189,13 +189,19 @@ impl Server {
     }
 
     /// What this kind of server adds to the generic driver (docs/WEBDAV-STORAGE.md § 7.4): the
-    /// Nextcloud profile (its trash, versions and quota, the probe's known-server checks); the
-    /// generic one for the rest until their profiles land (§ 14, rows 7 and 8).
+    /// Nextcloud or ownCloud profile (its trash, versions and quota, the probe's known-server
+    /// checks); the generic one for the rest until their profiles land (§ 14, row 8).
     pub fn profile(&self) -> Box<dyn ServerProfile> {
         match self.kind {
             Kind::Nextcloud => Box::new(profile::nextcloud::Nextcloud::new(&self.url, &self.user)),
+            Kind::Owncloud => Box::new(profile::owncloud::Owncloud::new(&self.url, &self.user)),
             _ => Box::new(profile::Generic),
         }
+    }
+
+    /// Whether this kind of server has a profile that uses its own trash and versions.
+    pub const fn has_profile(&self) -> bool {
+        matches!(self.kind, Kind::Nextcloud | Kind::Owncloud)
     }
 
     /// What the client signs in with: an app password, made once per test run the way a person

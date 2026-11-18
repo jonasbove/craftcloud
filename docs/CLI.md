@@ -64,6 +64,7 @@ one-line summary and at least one example (a test checks it).
 |---|---|
 | `login [SERVER] [--no-browser]` | Signs this computer in: prints a code and an address, opens the browser there, waits for you to approve the code. Without `SERVER`, the desktop client's server. If the desktop client has no server yet, this becomes its server, and the desktop client starts signed in (running already, it takes the sign-in at once): it asks which folders to sync, or syncs when a folder is set |
 | `login SERVER --kind nextcloud [--no-browser] [--user NAME]` | *Experimental, needs `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` until 0.3.0* ([Other servers](#other-servers-experimental)). Signs in to a Nextcloud the way its own clients do (Login Flow v2): opens the server's sign-in page in the browser (`--no-browser` prints the address), waits for you to approve this computer, and keeps the app password the server made for it (listed in your Nextcloud's Settings › Security as "CraftCloud on <computer>"); your account password never reaches CraftCloud. With `--user NAME` an app password you made in Settings › Security is used instead, from `CRAFTCLOUD_APP_PASSWORD` or asked for on the terminal. `SERVER` is the server's address (`cloud.example.org`); left out with `--kind`, a server that says it is Nextcloud is signed in to as one. Finds your user id, keeps the sign-in in the keychain, runs the check on connect (with Nextcloud's trash and versions) and prints the sync mode. `logout` deletes the app password on the server |
+| `login SERVER --kind owncloud --user NAME` | *Experimental, needs `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` until 0.3.0* ([Other servers](#other-servers-experimental)). Signs in to an ownCloud with an app password you made in its Settings › Security › "App passwords / tokens" (never your account password), from `CRAFTCLOUD_APP_PASSWORD` or asked for on the terminal; `--user` is required (ownCloud has no browser sign-in a client can use without an admin). `SERVER` is the server's address (`cloud.example.org`); left out with `--kind`, a server that says it is ownCloud is signed in to as one. Finds your user id, keeps the sign-in in the keychain, runs the check on connect (with ownCloud's trash and versions) and prints the sync mode. `logout` forgets the password and says where to revoke it |
 | `login WEBDAV-ADDRESS --kind webdav --user NAME` | *Experimental, needs `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` until 0.3.0* ([Other servers](#other-servers-experimental)). Signs in to any other WebDAV server with an app or WebDAV password you made there (never your account password), read from `CRAFTCLOUD_APP_PASSWORD` or asked for on the terminal, never an argument. `WEBDAV-ADDRESS` is the server's WebDAV base (`https://cloud.example.org/remote.php/dav/files/NAME/`); `https://` only, except to this computer. Checks the address with one listing, keeps the sign-in in the keychain, runs the check on connect and prints the sync mode it allows |
 | `logout` | Ends the sign-in on the server and forgets it here (the desktop client is signed out too). It is forgotten here even when the server can't end it; then it says so, and exits with code 8 (the server can't be reached) or 1 (the server refused): the sign-in may still be active on the server until it runs out. An app password is only forgotten here (remove it on the server yourself); this also makes the settings CraftCloud's own server's again |
 | `usage` | Storage used and the limit, and how much of it kept versions take (`1.1 GB of 10 GB used (200 MB in earlier versions)`). Sizes are decimal everywhere (1 MB = 1,000,000 bytes) |
@@ -208,8 +209,19 @@ answer "not available on this server" (code 10), since CraftCloud never purges a
 web page. Nextcloud reuses a file's version tag when it is overwritten within the same second as the write before
 it, so every upload carries its SHA1 checksum (`OC-Checksum`) and is read back: a checksum that isn't the one
 uploaded means someone else wrote the file in that second, and the sync keeps both as a conflict copy. Storage use
-comes from Nextcloud's OCS user endpoint. ownCloud and OpenCloud get their profiles in later pull requests; until
-then `--kind owncloud|opencloud` is refused.
+comes from Nextcloud's OCS user endpoint.
+
+**ownCloud** (10) has its own profile too: `craftcloud login cloud.example.org --kind owncloud --user john` signs in
+with an app password made in Settings › Security › "App passwords / tokens" (there is no browser sign-in a client
+can use without an admin, so `--user` is required and the command says where to make the password), and the sync
+uses ownCloud's own trash bin and versions once the check on connect has confirmed them with the same round trips:
+a delete is a WebDAV `DELETE` into the trash bin, `trash ls` shows each item by the path it had, `trash restore`
+moves it back (or to `--as PATH`; a taken name gets `NAME (restored).EXT`), `versions` and `versions … restore` are
+ownCloud's versions by file id (a restore copies the version over the file, and the server keeps the replaced file
+as a version), and `trash rm` and `trash empty` answer code 10, as on Nextcloud. ownCloud also reuses a file's
+version tag within one second, so every upload carries its SHA1 checksum, which ownCloud checks on receipt, and is
+read back. Storage use is WebDAV's quota property. `logout` forgets the app password here and says where to revoke
+it on the server. OpenCloud gets its profile in a later pull request; until then `--kind opencloud` is refused.
 
 ### Server administration (owners and admins)
 
@@ -317,7 +329,7 @@ exits 0 when the run ended up to date (with or without `waiting`), 3 when signed
 
 | Command | Prints |
 |---|---|
-| `login` | `{"user_code", "verification_uri", "expires_in"}`, then `{"signed_in": true, "server", "username", "default"}` (`default`: it is the desktop client's server). With `--kind webdav`: one line, `{"signed_in": true, "server", "dav_url", "kind": "webdav", "username", "mode", "refused_because", "default"}`. With `--kind nextcloud`: `{"login_url"}` while the browser sign-in waits (not with `--user`), then `{"signed_in": true, "server", "dav_url", "kind": "nextcloud", "username", "user_id", "server_version", "mode", "refused_because", "default"}` |
+| `login` | `{"user_code", "verification_uri", "expires_in"}`, then `{"signed_in": true, "server", "username", "default"}` (`default`: it is the desktop client's server). With `--kind webdav`: one line, `{"signed_in": true, "server", "dav_url", "kind": "webdav", "username", "mode", "refused_because", "default"}`. With `--kind nextcloud`: `{"login_url"}` while the browser sign-in waits (not with `--user`), then `{"signed_in": true, "server", "dav_url", "kind": "nextcloud", "username", "user_id", "server_version", "mode", "refused_because", "default"}`; with `--kind owncloud` the same line with `"kind": "owncloud"` |
 | `logout` | `{"signed_out": true, "server", "was_signed_in", "server_session_ended"}` (`server_session_ended`: the server ended the sign-in, or had already; `false` when it wasn't signed in here or the server couldn't end it, with exit code 8 or 1 in that last case) |
 | `usage` | `{"username", "used_bytes", "quota_bytes", "versions_bytes"}` (`quota_bytes` 0 = no limit; `versions_bytes`: what kept versions take, part of `used_bytes`) |
 | `get` | `{"path", "saved_to", "size"}` |
@@ -336,7 +348,7 @@ exits 0 when the run ended up to date (with or without `waiting`), 3 when signed
 | `versions … restore` | the restored version's fields, with `path` and `restored` (its `stamp`) |
 | `open` | `{"opened": local path}`, with `"with": "chooser"` when Windows had no app for the file's type and showed its "Open with" dialog instead |
 | `server info` | `{"server", "craftcloud", "version", "public_url", "web_apps", "initialized", "signed_in_as", "role"}` |
-| `server check` | `{"server", "kind": "oxicloud" \| "webdav" \| "nextcloud", "mode": "two_way" \| "download_only" \| "refused", "measured", "checks": [{"check", "result"}]}` (`measured`: `false` when the capabilities are known for the kind of server rather than probed; `checks`: one row per capability, in plain words). On another WebDAV server also `"server_version"`, `"checked_at"`, `"refused_because"` and `"steps": [{"step", "number", "what", "result", "ok"}]`, one per step of the check |
+| `server check` | `{"server", "kind": "oxicloud" \| "webdav" \| "nextcloud" \| "owncloud", "mode": "two_way" \| "download_only" \| "refused", "measured", "checks": [{"check", "result"}]}` (`measured`: `false` when the capabilities are known for the kind of server rather than probed; `checks`: one row per capability, in plain words). On another WebDAV server also `"server_version"`, `"checked_at"`, `"refused_because"` and `"steps": [{"step", "number", "what", "result", "ok"}]`, one per step of the check |
 | `server users ls` | `[{"username", "email", "role", "active", "used_bytes", "quota_bytes", "last_login_at", "id"}]` |
 | `server settings` | `{"web_apps", "disabled_apps", "bundled_apps"}` |
 

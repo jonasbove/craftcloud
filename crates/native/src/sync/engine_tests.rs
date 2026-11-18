@@ -1017,3 +1017,102 @@ fn walkdir(dir: &Path) -> Vec<std::path::PathBuf> {
     }
     out
 }
+
+/// The engine over the ownCloud profile (docs/WEBDAV-STORAGE.md § 14, row 7), with the server's
+/// trash and versions confirmed, on `server` (a scripted server answering like ownCloud).
+fn owncloud_engine(server: &FakeServer, root: &Path) -> Engine<WebDav> {
+    use crate::storage::profile::owncloud::Owncloud;
+    let caps = Capabilities { trash: craftcloud_core::storage::Trash::Server, versions: craftcloud_core::storage::Versions::Server, ..two_way() };
+    let mut engine = webdav_engine(server, root, caps.clone());
+    engine.storage = WebDav::new(webdav_session(server), caps, "Laptop").with_profile(Box::new(Owncloud::new(&server.url, "john")));
+    engine
+}
+
+/// One two-way cycle over the ownCloud profile, its request log: every `PUT` carries
+/// `OC-Checksum` and is read back once (Q13), the overwrite makes no `COPY` (the server keeps the
+/// version by file id), the file deleted here goes by one `DELETE` with `If-Match` into the
+/// server's trash (no `MOVE` into `.craftcloud/trash/`), and nothing is deleted outside the files
+/// base. OxiCloud's engine isn't touched by any of it: its golden logs stand.
+#[test]
+fn webdav_owncloud_cycle_writes_with_checksums_and_deletes_into_the_servers_trash() {
+    let (server, dav) = scripted(Flags { owncloud: true, ..Flags::default() });
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let state = webdav_scene(&server, &dav, root);
+    let mut engine = owncloud_engine(&server, root);
+    save_saved(&engine.state_path(), &Saved { server: engine.plan.server.clone(), state, ..Saved::default() }).unwrap();
+    engine.cycle(Deletes::Hold);
+
+    let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    assert_eq!(p.state, SyncState::UpToDate, "{:?}", p.activity);
+    assert_eq!(p.mode, Some(craftcloud_core::storage::Mode::TwoWay));
+    let seen = server.seen();
+    let puts: Vec<&Seen> = seen.iter().filter(|r| r.method == "PUT").collect();
+    assert_eq!(puts.len(), 2, "{:?}", writes(&server));
+    for r in &puts {
+        assert!(r.header("if-match").is_some() || r.header("if-none-match") == Some("*"), "an unguarded PUT: {r:?}");
+        assert!(r.header("oc-checksum").is_some_and(|c| c.starts_with("SHA1:")), "every PUT carries its checksum: {r:?}");
+        let read_back = seen.iter().filter(|s| s.method == "PROPFIND" && s.path == r.path && s.header("depth") == Some("0")).count();
+        assert_eq!(read_back, 1, "one read-back per write: {:?}", r.path);
+    }
+    assert!(seen.iter().all(|r| r.method != "COPY"), "no client version: {:?}", writes(&server));
+    assert!(seen.iter().all(|r| r.method != "MOVE"), "no client trash: {:?}", writes(&server));
+    let deletes: Vec<&Seen> = seen.iter().filter(|r| r.method == "DELETE").collect();
+    assert_eq!(deletes.len(), 1, "{:?}", writes(&server));
+    assert!(deletes[0].path.ends_with("/remote.php/dav/files/john/Docs/gone.txt") && deletes[0].header("if-match").is_some(), "{:?}", deletes[0]);
+    let dav = dav.lock().unwrap();
+    assert_eq!(dav.body("Docs/new.txt"), Some(b"mine".as_slice()));
+    assert_eq!(dav.body("Docs/edited.txt"), Some(b"abcd".as_slice()));
+    assert!(!dav.has("Docs/gone.txt"), "gone to the server's trash");
+    assert_eq!(dav.trashed().iter().map(|(_, from)| from.as_str()).collect::<Vec<_>>(), ["Docs/gone.txt"]);
+    assert_eq!(dav.versions_of("Docs/edited.txt"), 1, "the server kept the version");
+    assert!(dav.folders().iter().all(|f| !f.starts_with(".craftcloud/")), "nothing of CraftCloud's own on the server: {:?}", dav.folders());
+    let said: Vec<String> = p.activity.iter().map(|e| format!("{:?} {} {}", e.kind, e.path, e.detail)).collect();
+    assert!(said.iter().any(|s| s.starts_with("Deleted Docs/gone.txt")), "{said:?}");
+    assert!(said.iter().any(|s| s.starts_with("Up Docs/edited.txt")), "{said:?}");
+}
+
+/// Q13 over the ownCloud profile: the server lists a checksum for every file (its own, computed),
+/// so another client's write landing under our tag within the second shows as a checksum that
+/// isn't ours. Without the check the upload is taken as done while the cloud holds theirs; with
+/// the profile it is a conflict: theirs comes down, ours is kept as a conflict copy.
+#[test]
+fn webdav_owncloud_a_write_landing_under_our_tag_becomes_a_conflict_copy() {
+    let flags = Flags { owncloud: true, etag_reused_within_second: true, other_writes_after_put: Some(b"theirs".to_vec()), ..Flags::default() };
+    let caps = Capabilities { trash: craftcloud_core::storage::Trash::Server, versions: craftcloud_core::storage::Versions::Server, ..two_way() };
+    let scene = |server: &FakeServer, dav: &Arc<std::sync::Mutex<craftcloud_core::storage::probe::fake::FakeDav>>, root: &Path| {
+        let mut state = webdav_scene(server, dav, root);
+        state.files.remove("Docs/gone.txt");
+        std::fs::remove_file(root.join("Docs/new.txt")).unwrap();
+        state
+    };
+
+    // Without the check (no profile): "uploaded", and the cloud holds someone else's bytes.
+    let (server, dav) = scripted(flags.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let state = scene(&server, &dav, dir.path());
+    let mut engine = webdav_engine(&server, dir.path(), caps);
+    save_saved(&engine.state_path(), &Saved { server: engine.plan.server.clone(), state, ..Saved::default() }).unwrap();
+    engine.cycle(Deletes::Hold);
+    let said: Vec<String> =
+        engine.progress.lock().unwrap_or_else(PoisonError::into_inner).activity.iter().map(|e| format!("{:?} {}", e.kind, e.path)).collect();
+    assert!(said.contains(&"Up Docs/edited.txt".to_owned()) && !said.iter().any(|s| s.starts_with("Conflict")), "taken as done: {said:?}");
+    assert_eq!(dav.lock().unwrap().body("Docs/edited.txt"), Some(b"theirs".as_slice()), "but the cloud holds theirs");
+
+    // With the ownCloud profile: a conflict copy, both kept.
+    let (server, dav) = scripted(flags);
+    let dir = tempfile::tempdir().unwrap();
+    let state = scene(&server, &dav, dir.path());
+    let mut engine = owncloud_engine(&server, dir.path());
+    save_saved(&engine.state_path(), &Saved { server: engine.plan.server.clone(), state, ..Saved::default() }).unwrap();
+    engine.cycle(Deletes::Hold);
+    let events = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).activity.clone();
+    let conflict = events.iter().find(|e| e.kind == ActivityKind::Conflict).unwrap_or_else(|| panic!("{events:?}"));
+    assert_eq!(conflict.path, "Docs/edited.txt");
+    assert!(conflict.detail.starts_with("yours kept as "), "{conflict:?}");
+    assert_eq!(std::fs::read_to_string(dir.path().join("Docs/edited.txt")).unwrap(), "theirs", "theirs came down");
+    let names: Vec<String> =
+        std::fs::read_dir(dir.path().join("Docs")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    let copy = names.iter().find(|n| n.starts_with("edited (") && n.contains("Laptop")).unwrap_or_else(|| panic!("{names:?}"));
+    assert_eq!(std::fs::read_to_string(dir.path().join("Docs").join(copy)).unwrap(), "abcd", "ours kept whole");
+}
