@@ -21,6 +21,7 @@ pub mod dav;
 pub mod favorites;
 pub mod files;
 pub mod folders;
+pub mod nextcloud;
 pub mod oidc;
 pub mod resources;
 pub mod search;
@@ -101,7 +102,12 @@ pub(crate) mod fixtures {
     use std::path::PathBuf;
 
     pub fn read(name: &str) -> Vec<u8> {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/oxicloud-0.10.0").join(name);
+        read_from("oxicloud-0.10.0", name)
+    }
+
+    /// A recorded answer from another server's folder (`nextcloud-31`).
+    pub fn read_from(server: &str, name: &str) -> Vec<u8> {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(server).join(name);
         std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
     }
 }

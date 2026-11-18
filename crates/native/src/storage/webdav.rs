@@ -29,6 +29,16 @@
 //! `purge_own`, at most once a day per client. The engine calls it after a cycle, and re-runs the
 //! check and takes fresh capabilities ([`RemoteStorage::recheck`]) when the runtime watch (§ 7.5)
 //! sees the server misbehave.
+//!
+//! **A known server's profile** ([`super::profile::ServerProfile`], § 7.4) plugs in here: it
+//! supplies the probe's known-server checks (steps 16 and 17), the server's version string, and
+//! the server's own trash, versions and quota endpoint. The driver asks it for the trash only where
+//! the check confirmed `Trash::Server` (a `DELETE` then lands in the server's trash, a file's with
+//! `If-Match`, a folder's after `cloud_holds`, as § 8 says) and for the versions only where it
+//! confirmed `Versions::Server` (`keep_version` and `move_versions` are then no-ops: the server
+//! keeps them by file id). **Every write is verified by checksum where the profile asks for it**
+//! (§ 16, Q13): the `PUT` carries `OC-Checksum`, a depth-0 listing afterwards must show that same
+//! checksum, and anything else is [`Written::Conflict`], never a silent overwrite.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -40,10 +50,11 @@ use craftcloud_core::api::expect_ok;
 use craftcloud_core::api::versions::Version;
 use craftcloud_core::http::{HttpRequest, Method};
 use craftcloud_core::names;
-use craftcloud_core::storage::Capabilities;
-use craftcloud_core::storage::probe::{Base, Listed, PROPFIND_BODY, Profile, StoredCheck, older_than, parse_listing, server_seconds};
+use craftcloud_core::storage::probe::{Base, Listed, PROPFIND_BODY, Profile, StoredCheck, Verdict, older_than, parse_listing, server_seconds};
+use craftcloud_core::storage::{Capabilities, Checksum, Trash, Versions};
 
-use super::probe::{self, Limits, load_check, save_check};
+use super::probe::{self, Limits, Transport, load_check, save_check};
+use super::profile::{Generic, ServerProfile};
 use super::{Download, Entry, MoveGuard, Moved, OwnPath, RemoteStorage, StorageError, TrashGuard, TrashItem, Trashed, Written, versions};
 use crate::session::AppPasswordSession;
 
@@ -66,6 +77,9 @@ pub struct WebDav {
     limits: Limits,
     /// When this client last swept the client trash (a rate limit; `None` until the first sweep).
     last_trash_sweep: Option<Instant>,
+    /// What this kind of server adds (its trash, versions, quota, the probe's known-server checks);
+    /// [`Generic`] for a server nobody knows.
+    profile: Box<dyn ServerProfile>,
 }
 
 impl WebDav {
@@ -74,27 +88,59 @@ impl WebDav {
     /// [`WebDav::connect`]).
     pub fn new(session: AppPasswordSession, caps: Capabilities, device: &str) -> Self {
         let base = session.base().clone();
-        Self { session, base, caps, device: device.to_owned(), settings_dir: None, limits: Limits::default(), last_trash_sweep: None }
+        Self {
+            session,
+            base,
+            caps,
+            device: device.to_owned(),
+            settings_dir: None,
+            limits: Limits::default(),
+            last_trash_sweep: None,
+            profile: Box::new(Generic),
+        }
+    }
+
+    /// The same driver with a known server's profile.
+    pub fn with_profile(mut self, profile: Box<dyn ServerProfile>) -> Self {
+        self.profile = profile;
+        self
+    }
+
+    /// What this kind of server adds.
+    pub fn profile(&self) -> &dyn ServerProfile {
+        self.profile.as_ref()
+    }
+
+    /// [`WebDav::connect_with`] for a server nobody knows (the generic profile).
+    pub fn connect(session: AppPasswordSession, device: &str, settings_dir: Option<&Path>, limits: Limits) -> (Self, StoredCheck) {
+        Self::connect_with(session, Box::new(Generic), device, settings_dir, limits)
     }
 
     /// Connects (docs/WEBDAV-STORAGE.md § 7.5, "When"): the check saved in `settings_dir` for this
     /// base is reused while it is less than a day old and the server's version string hasn't
-    /// changed; otherwise the probe is run afresh and saved. A check that was refused leaves a
-    /// driver whose capabilities allow nothing (`Capabilities::unknown`), so the engine refuses to
-    /// sync and says why.
-    pub fn connect(mut session: AppPasswordSession, device: &str, settings_dir: Option<&Path>, limits: Limits) -> (Self, StoredCheck) {
+    /// changed; otherwise the probe is run afresh (with the profile's known-server checks) and
+    /// saved. A check that was refused leaves a driver whose capabilities allow nothing
+    /// (`Capabilities::unknown`), so the engine refuses to sync and says why.
+    pub fn connect_with(
+        mut session: AppPasswordSession,
+        profile: Box<dyn ServerProfile>,
+        device: &str,
+        settings_dir: Option<&Path>,
+        limits: Limits,
+    ) -> (Self, StoredCheck) {
         let base = session.base().clone();
         let saved = settings_dir.and_then(load_check).filter(|c| c.server == base.url());
-        // What the server calls itself now (plain WebDAV: its `Server` header, or nothing). A
-        // transport error leaves it unknown, and an unknown version never forces a re-check on its
-        // own, so a momentary blip doesn't throw away a good saved check.
+        // What the server calls itself now (a known server's own version, else a plain WebDAV
+        // server's `Server` header, or nothing). A transport error leaves it unknown, and an
+        // unknown version never forces a re-check on its own, so a momentary blip doesn't throw
+        // away a good saved check.
         let now = jiff::Timestamp::now();
-        let version = server_version(&mut session, &base);
+        let version = profile.version(&mut session).or_else(|| server_version(&mut session, &base));
         let reuse = saved.filter(|c| version.as_ref().is_none_or(|v| *v == c.server_version) && !cache_is_stale(&c.checked_at, now));
         let check = match reuse {
             Some(check) => check,
             None => {
-                let verdict = probe::run(&mut session, &base, &probe::folder_name(), Profile::default(), limits);
+                let verdict = run_probe(&mut session, &base, profile.as_ref(), limits);
                 let stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
                 let check = StoredCheck::from_verdict(&verdict, base.url(), version.as_deref().unwrap_or(""), &stamp);
                 if let Some(dir) = settings_dir
@@ -106,21 +152,38 @@ impl WebDav {
             }
         };
         let caps = check.capabilities.clone().unwrap_or_else(Capabilities::unknown);
-        let mut driver = Self::new(session, caps, device);
+        let mut driver = Self::new(session, caps, device).with_profile(profile);
         driver.settings_dir = settings_dir.map(Path::to_path_buf);
         driver.limits = limits;
         (driver, check)
     }
 
-    /// The kept versions of `path` (`.craftcloud/versions/<path>/`), newest first, read as the
+    /// Whether the check confirmed the server keeps its own versions (then the profile lists them).
+    fn server_versions(&self) -> bool {
+        self.caps.versions == Versions::Server
+    }
+
+    /// Whether the check confirmed the server's own trash (then a `DELETE` lands there).
+    fn server_trash(&self) -> bool {
+        self.caps.trash == Trash::Server
+    }
+
+    /// The earlier versions of `path`, newest first: the server's own where the check confirmed
+    /// them (by file id, through the profile), else `.craftcloud/versions/<path>/`, read as the
     /// OxiCloud driver reads them (one body of code, [`super::versions`]).
     pub fn list_versions(&mut self, path: &str) -> Result<Vec<Version>, StorageError> {
+        if self.server_versions() {
+            return self.profile.list_versions(&mut self.session, &self.base, path);
+        }
         Ok(versions::list(&mut self.session, &self.base, path)?)
     }
 
     /// Puts version `stamp` of `path` back, after keeping the current file as a version of its own
-    /// (so the restore can be undone), as the OxiCloud driver does.
+    /// (so the restore can be undone): the server does that itself for its own versions.
     pub fn restore_version(&mut self, path: &str, stamp: &str) -> Result<(), StorageError> {
+        if self.server_versions() {
+            return self.profile.restore_version(&mut self.session, &self.base, path, stamp);
+        }
         Ok(versions::restore(&mut self.session, &self.base, path, stamp)?)
     }
 
@@ -235,9 +298,24 @@ impl WebDav {
         }
     }
 
-    /// One guarded `PUT` of `file`.
+    /// One guarded `PUT` of `file`. Where the profile asks for it (§ 16, Q13), the `PUT` carries
+    /// the file's checksum and the result is read back: a server that reuses a version tag within
+    /// one second can't tell two writes apart, so a listed checksum that isn't ours means the
+    /// server holds someone else's write under our tag, and that is a conflict, never a silent
+    /// overwrite.
     fn upload(&mut self, path: &str, file: &Path, write: &Write) -> Result<Written, StorageError> {
-        let req = dav::upload_under(self.base.url(), path, Vec::new(), write);
+        let checksum = match self.profile.verify_writes() {
+            Some(Checksum::Sha1) => Some(format!("SHA1:{}", sha1_hex(file)?)),
+            Some(other) => {
+                log::warn!("verifying writes by {other:?} isn't supported; writes to {} go unverified", self.base.url());
+                None
+            }
+            None => None,
+        };
+        let mut req = dav::upload_under(self.base.url(), path, Vec::new(), write);
+        if let Some(sum) = &checksum {
+            req = req.header("OC-Checksum", sum.clone());
+        }
         let resp = self.session.upload(&req, file)?;
         if resp.status == 507 {
             return Err(StorageError::NoRoom);
@@ -255,12 +333,46 @@ impl WebDav {
         match dav::parse_upload(&resp).map_err(|e| e.to_string())? {
             Uploaded::Conflict => Ok(Written::Conflict),
             Uploaded::Saved { etag } => {
+                if let Some(sum) = &checksum
+                    && !self.holds_checksum(path, sum)?
+                {
+                    log::warn!(
+                        "{path}: the server lists another checksum than the one just uploaded (a write landed within the same second); kept as a conflict"
+                    );
+                    return Ok(Written::Conflict);
+                }
                 let etag = match etag {
                     Some(e) => e,
                     None => self.listed_etag(path)?,
                 };
                 Ok(Written::Saved { etag })
             }
+        }
+    }
+
+    /// Whether a depth-0 listing of `path` names `checksum` (`SHA1:…`, compared without regard to
+    /// case) among its `oc:checksums`. A listing that fails is an error: unknown, never "yes".
+    fn holds_checksum(&mut self, path: &str, checksum: &str) -> Result<bool, StorageError> {
+        let resp = self.session.call(&self.propfind(path, false, "0"))?;
+        let listed = parse_listing(&resp, &self.base).map_err(|e| format!("reading {path} back after the upload: {e}"))?;
+        let entry = listed.into_iter().find(|e| e.path == path.trim_matches('/'));
+        Ok(entry.is_some_and(|e| e.checksums.iter().flat_map(|c| c.split_whitespace()).any(|c| c.eq_ignore_ascii_case(checksum))))
+    }
+
+    /// `DELETE` into the server's own trash (only where the check on connect confirmed it lands
+    /// there): a file's with `If-Match` (412: changed meanwhile, it stays), a folder's after the
+    /// fresh listing the caller made.
+    fn delete_to_server_trash(&mut self, path: &str, folder: bool, if_match: Option<&str>) -> Result<Trashed, StorageError> {
+        let mut req = dav::delete_under(self.base.url(), path, folder);
+        if let Some(etag) = if_match {
+            req = req.header("If-Match", etag);
+        }
+        let resp = self.session.call(&req)?;
+        match resp.status {
+            412 => Ok(Trashed::Changed),
+            404 => Ok(Trashed::Done),
+            _ if resp.is_success() => Ok(Trashed::Done),
+            s => Err(StorageError::Failed(format!("deleting {path} into the server's trash: the server answered {s}"))),
         }
     }
 
@@ -311,9 +423,38 @@ impl WebDav {
     }
 }
 
+/// The check on connect run now, with the profile's known-server checks (steps 16 and 17) where it
+/// has them, and the server's version string as the profile (else the `Server` header) reads it:
+/// what `craftcloud server check` does on another WebDAV server.
+pub fn probe_with(transport: &mut AppPasswordSession, base: &Base, profile: &dyn ServerProfile, limits: Limits) -> (Verdict, Option<String>) {
+    let verdict = run_probe(transport, base, profile, limits);
+    let version = profile.version(transport).or_else(|| server_version(transport, base));
+    (verdict, version)
+}
+
+/// Runs the check on connect with the profile's known-server checks (steps 16 and 17), where it
+/// has them.
+fn run_probe(transport: &mut dyn Transport, base: &Base, profile: &dyn ServerProfile, limits: Limits) -> Verdict {
+    match profile.probe_checks() {
+        Some((mut trash, mut versions)) => {
+            probe::run(transport, base, &probe::folder_name(), Profile { trash: Some(trash.as_mut()), versions: Some(versions.as_mut()) }, limits)
+        }
+        None => probe::run(transport, base, &probe::folder_name(), Profile::default(), limits),
+    }
+}
+
+/// SHA1 of a file's bytes (hex), streamed.
+fn sha1_hex(file: &Path) -> Result<String, StorageError> {
+    use sha1::Digest;
+    let mut reader = std::fs::File::open(file).map_err(|e| StorageError::Failed(format!("can't read {}: {e}", file.display())))?;
+    let mut hasher = sha1::Sha1::new();
+    std::io::copy(&mut reader, &mut hasher).map_err(|e| StorageError::Failed(format!("can't read {}: {e}", file.display())))?;
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
 /// What the server calls itself now, for the check's re-run schedule (§ 7.5): a plain WebDAV
-/// server's `Server` header, or `None` when it sends none or doesn't answer. The profiles of
-/// pull requests 6–8 read a richer version (`status.php`); this is the fallback.
+/// server's `Server` header, or `None` when it sends none or doesn't answer. A known server's
+/// profile reads a richer version first (`status.php`); this is the fallback.
 fn server_version(session: &mut AppPasswordSession, base: &Base) -> Option<String> {
     let req = HttpRequest::new(Method::Propfind, dav::url_under(base.url(), "", true))
         .header("Depth", "0")
@@ -427,11 +568,17 @@ impl RemoteStorage for WebDav {
                     Some(Ok(false)) => return Ok(Trashed::Changed),
                     Some(Ok(true)) => {}
                 }
+                if self.server_trash() {
+                    return self.delete_to_server_trash(path, false, Some(&etag));
+                }
                 self.move_to_trash(path, false)?;
             }
             TrashGuard::Folder { files } => {
                 if !self.cloud_holds(path, &files)? {
                     return Ok(Trashed::Changed);
+                }
+                if self.server_trash() {
+                    return self.delete_to_server_trash(path, true, None);
                 }
                 self.move_to_trash(path, true)?;
             }
@@ -441,13 +588,20 @@ impl RemoteStorage for WebDav {
                     Ok(entries) if entries.is_empty() => {}
                     _ => return Ok(Trashed::Changed),
                 }
+                if self.server_trash() {
+                    return self.delete_to_server_trash(path, true, None);
+                }
                 self.move_to_trash(path, true)?;
             }
         }
         Ok(Trashed::Done)
     }
 
+    /// The server's own trash where the check confirmed it, else CraftCloud's `.craftcloud/trash/`.
     fn trash_list(&mut self) -> Result<Vec<TrashItem>, StorageError> {
+        if self.server_trash() {
+            return self.profile.trash_list(&mut self.session);
+        }
         let entries = match self.listing(dav::TRASH_DIR) {
             Ok(entries) => entries,
             Err(StorageError::NotFound(_)) => return Ok(Vec::new()),
@@ -465,6 +619,11 @@ impl RemoteStorage for WebDav {
     /// `names::restored_name`. The entry's folder goes (for good, inside `.craftcloud/`) once it
     /// holds nothing.
     fn restore(&mut self, item: &TrashItem) -> Result<(), StorageError> {
+        // An item of the server's own trash (its id is the server's name for it, never a path in
+        // CraftCloud's trash) goes back the way the profile knows.
+        if self.server_trash() && OwnPath::new(&item.id).is_none() {
+            return self.profile.restore(&mut self.session, item);
+        }
         // The entry's folder, `.craftcloud/trash/<time>-<device>`, from the item's trash path.
         let entry = item
             .id
@@ -502,17 +661,29 @@ impl RemoteStorage for WebDav {
         Ok(())
     }
 
+    /// A no-op where the check confirmed the server keeps its own versions (§ 8: they follow
+    /// renames by file id); else a `COPY` into `.craftcloud/versions/`.
     fn keep_version(&mut self, path: &str) -> Result<(), StorageError> {
+        if self.server_versions() {
+            return Ok(());
+        }
         Ok(versions::keep(&mut self.session, &self.base, path)?)
     }
 
     fn move_versions(&mut self, from: &str, to: &str) -> Result<(), StorageError> {
+        if self.server_versions() {
+            return Ok(());
+        }
         Ok(versions::follow_move(&mut self.session, &self.base, from, to)?)
     }
 
-    /// From WebDAV's `quota-available-bytes` on the base, where the server lists it; a negative
-    /// number (Nextcloud's `-3`) or none is unknown.
+    /// From the profile's endpoint where it has one (Nextcloud's OCS user endpoint), else WebDAV's
+    /// `quota-available-bytes` on the base, where the server lists it; a negative number
+    /// (Nextcloud's `-3`) or none is unknown.
     fn free_space(&mut self, _needed: u64) -> Result<Option<u64>, StorageError> {
+        if let Some(answer) = self.profile.free_space(&mut self.session) {
+            return answer;
+        }
         let resp = self.session.call(&self.propfind("", true, "0"))?;
         let listed = parse_listing(&resp, &self.base).map_err(|e| format!("listing the server: {e}"))?;
         Ok(listed.into_iter().find_map(|e| e.quota_available).and_then(|q| u64::try_from(q).ok()))
@@ -535,7 +706,8 @@ impl RemoteStorage for WebDav {
     /// nothing. Only inside `.craftcloud/trash/`, through [`RemoteStorage::purge_own`]; at most
     /// once a day per client.
     fn sweep_trash(&mut self) -> Result<(), StorageError> {
-        if self.last_trash_sweep.is_some_and(|at| at.elapsed() < SWEEP_EVERY) {
+        // A server with its own trash keeps to its own policy.
+        if self.server_trash() || self.last_trash_sweep.is_some_and(|at| at.elapsed() < SWEEP_EVERY) {
             return Ok(());
         }
         self.last_trash_sweep = Some(Instant::now());
@@ -557,9 +729,10 @@ impl RemoteStorage for WebDav {
     }
 
     fn recheck(&mut self) -> Option<craftcloud_core::storage::Mode> {
-        let verdict = probe::run(&mut self.session, &self.base, &probe::folder_name(), Profile::default(), self.limits);
+        let verdict = run_probe(&mut self.session, &self.base, self.profile.as_ref(), self.limits);
+        let version = self.profile.version(&mut self.session).or_else(|| server_version(&mut self.session, &self.base));
         let now = jiff::Timestamp::now().strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
-        let check = StoredCheck::from_verdict(&verdict, self.base.url(), "", &now);
+        let check = StoredCheck::from_verdict(&verdict, self.base.url(), version.as_deref().unwrap_or(""), &now);
         if let Some(dir) = &self.settings_dir
             && let Err(e) = save_check(dir, &check)
         {

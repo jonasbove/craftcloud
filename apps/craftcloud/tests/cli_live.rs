@@ -430,15 +430,20 @@ fn the_command_line_on_another_kind_of_server() {
 
     // Signing in: the WebDAV address, the user name, the password from the environment; the
     // check on connect runs and the answer says the mode.
+    // Nextcloud signs in as itself (here with an app password and `--user`, since the browser's
+    // Login Flow can't be driven headless; the flow's state machine is tested against a scripted
+    // server); the rest as "another WebDAV server".
     let dav = server.base().url().to_owned();
-    let out = env.run(&["login", &dav, "--kind", "webdav", "--user", &server.user, "--json"]);
+    let kind_word = if server.kind == kind::Kind::Nextcloud { "nextcloud" } else { "webdav" };
+    let address = if server.kind == kind::Kind::Nextcloud { server.url.clone() } else { dav.clone() };
+    let out = env.run(&["login", &address, "--kind", kind_word, "--user", &server.user, "--json"]);
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(out.status.success(), "login: {text}");
     assert!(!text.contains(&app_password), "the password never reaches the output");
     let signed: Value = serde_json::from_str(text.lines().find(|l| l.starts_with('{')).unwrap_or("null")).unwrap();
     assert_eq!(
         (signed["signed_in"].as_bool(), signed["kind"].as_str(), signed["username"].as_str(), signed["mode"].as_str()),
-        (Some(true), Some("webdav"), Some(server.user.as_str()), Some(server.mode.as_str())),
+        (Some(true), Some(kind_word), Some(server.user.as_str()), Some(server.mode.as_str())),
         "{signed}"
     );
     assert_eq!(signed["dav_url"].as_str(), Some(dav.as_str()));
@@ -447,9 +452,12 @@ fn the_command_line_on_another_kind_of_server() {
     let check = env.ok(&["server", "check"]);
     assert_eq!(
         (check["kind"].as_str(), check["mode"].as_str(), check["measured"].as_bool()),
-        (Some("webdav"), Some(server.mode.as_str()), Some(true)),
+        (Some(kind_word), Some(server.mode.as_str()), Some(true)),
         "{check}"
     );
+    let server_trash =
+        check["checks"].as_array().unwrap().iter().any(|c| c["check"] == "Where a delete goes" && c["result"] == "the server's own trash");
+    assert_eq!(server_trash, server.kind == kind::Kind::Nextcloud, "the server's own trash only with a profile that confirmed it: {check}");
     let steps = check["steps"].as_array().unwrap_or_else(|| panic!("{check}"));
     assert!(steps.len() >= 18 && steps.iter().all(|s| s["what"].is_string() && s["result"].is_string()), "{check}");
     assert!(!check["checks"].as_array().unwrap().is_empty(), "{check}");
@@ -480,25 +488,37 @@ fn the_command_line_on_another_kind_of_server() {
     let base = format!("cli-test-{}", std::process::id());
     std::fs::write(env.work.path().join("a.txt"), "version one").unwrap();
     match server.mode {
-        Mode::TwoWay => file_commands_through_the_trait(&env, &base),
+        Mode::TwoWay => file_commands_through_the_trait(&env, &base, server_trash),
         _ => writes_are_refused_under_download_only(&env, &base),
     }
     env.fails(6, &["status"]);
 
-    // Signing out forgets the app password (the server has no session to end for one).
-    let out = env.ok(&["logout"]);
-    assert_eq!(out["server_session_ended"], false, "{out}");
-    env.fails(3, &["ls"]);
-    // The kept versions of the test's files are CraftCloud's own leftovers in `.craftcloud/versions/`.
+    // The kept versions of the test's files are CraftCloud's own leftovers in `.craftcloud/versions/`;
+    // on a server with its own trash the test's folder sits there, and goes from there too. Before
+    // signing out: on Nextcloud `logout` deletes the app password these requests use.
     let mut cloud = kind::Dav::new(&server);
     cloud.delete(&format!(".craftcloud/versions/{base}"), true);
+    if server_trash {
+        let mut bin = kind::Dav::at(&server, &format!("{}/remote.php/dav/trashbin/{}/trash/", server.url, server.user));
+        for entry in bin.list("").unwrap_or_default() {
+            if entry.name().starts_with(&format!("{base}.d")) {
+                bin.delete(&entry.path, entry.is_folder);
+            }
+        }
+    }
+
+    // Signing out forgets the app password; on Nextcloud it is deleted on the server too.
+    let out = env.ok(&["logout"]);
+    assert_eq!(out["server_session_ended"], server.kind == kind::Kind::Nextcloud, "{out}");
+    env.fails(3, &["ls"]);
 }
 
 /// Two-way sync allowed: folders, upload (refused over an existing file, forced with a version
 /// kept), listing, a move that takes the versions along, download, a version restored, the trash
-/// (the client's own on this kind of server) and a restore from it, and the test folder trashed as
-/// one item and then deleted for good. `a.txt` in the work folder holds "version one".
-fn file_commands_through_the_trait(env: &Env, base: &str) {
+/// (the server's own where its profile confirmed it, else the client's) and a restore from it, and
+/// the test folder trashed as one item and then deleted for good (the client's trash only: a
+/// server's own is never purged by CraftCloud). `a.txt` in the work folder holds "version one".
+fn file_commands_through_the_trait(env: &Env, base: &str, server_trash: bool) {
     let docs = format!("{base}/Docs");
     let (a, b) = (format!("{docs}/a.txt"), format!("{docs}/b.txt"));
     env.ok(&["mkdir", "-p", &docs]);
@@ -507,6 +527,12 @@ fn file_commands_through_the_trait(env: &Env, base: &str) {
     assert_eq!((up["path"].as_str(), up["replaced"].as_bool()), (Some(a.as_str()), Some(false)));
     env.fails(5, &["put", "a.txt", &format!("{docs}/")]);
     std::fs::write(env.work.path().join("a.txt"), "version two!").unwrap();
+    if server_trash {
+        // Nextcloud names a version by its second: an overwrite within the same second as the write
+        // before it leaves no version on the server (docs/UPSTREAM.md E1). The sync never writes a
+        // file twice in one second; this test would.
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+    }
     assert_eq!(env.ok(&["put", "a.txt", &a, "--force"])["replaced"], true);
     let listed = env.ok(&["ls", &docs]);
     assert_eq!(paths(&listed), std::slice::from_ref(&a));
@@ -542,6 +568,12 @@ fn file_commands_through_the_trait(env: &Env, base: &str) {
     let inside = format!("{base}/");
     let items: Vec<&String> = listed.iter().filter(|p| *p == base || p.starts_with(&inside)).collect();
     assert!(!items.is_empty(), "{listed:?}");
+    if server_trash {
+        let e = env.fails(10, &["trash", "rm", items[0]]);
+        assert!(e["error"]["message"].as_str().unwrap_or_default().contains("server's own trash"), "{e}");
+        env.fails(10, &["trash", "empty", "--yes"]);
+        return;
+    }
     for item in items {
         env.ok(&["trash", "rm", item]);
     }

@@ -77,8 +77,20 @@ pub fn name_for(stamp: &str, modified: Option<&str>) -> String {
     }
 }
 
-/// `20261113T151013.123Z…` or `20261113T151013Z` → `2026-11-13T15:10:13Z`.
+/// A version named by its time in seconds since 1970 (a server's own versions, as Nextcloud names
+/// them): the time, when the name is nothing but digits.
+fn seconds_stamp(stamp: &str) -> Option<jiff::Timestamp> {
+    if stamp.is_empty() || stamp.len() > 11 || !stamp.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    jiff::Timestamp::from_second(stamp.parse().ok()?).ok()
+}
+
+/// `20261113T151013.123Z…` or `20261113T151013Z` → `2026-11-13T15:10:13Z`; a name in seconds too.
 fn rfc3339_of(stamp: &str) -> Option<String> {
+    if let Some(at) = seconds_stamp(stamp) {
+        return Some(at.strftime("%Y-%m-%dT%H:%M:%SZ").to_string());
+    }
     let b = stamp.as_bytes();
     let digits = |r: std::ops::Range<usize>| b.get(r.clone()).filter(|s| s.iter().all(u8::is_ascii_digit)).map(|_| &stamp[r]);
     if b.get(8) != Some(&b'T') {
@@ -205,6 +217,9 @@ pub fn restore_under(base: &str, path: &str, stamp: &str) -> HttpRequest {
 
 /// `20261113T151013.123Z` → `2026-11-13 15:10:13 UTC`.
 pub fn display_stamp(stamp: &str) -> Option<String> {
+    if let Some(at) = seconds_stamp(stamp) {
+        return Some(at.strftime("%Y-%m-%d %H:%M:%S UTC").to_string());
+    }
     let b = stamp.as_bytes();
     let digits = |r: std::ops::Range<usize>| b.get(r.clone()).filter(|s| s.iter().all(u8::is_ascii_digit)).map(|_| &stamp[r]);
     if b.get(8) != Some(&b'T') || !stamp.ends_with('Z') {

@@ -15,6 +15,7 @@ use craftcloud_native::session::{AppPasswordSession, Session};
 use craftcloud_native::settings::{self, Store};
 use craftcloud_native::storage::RemoteStorage;
 use craftcloud_native::storage::probe::Limits;
+use craftcloud_native::storage::profile::{self, ServerProfile};
 use craftcloud_native::storage::webdav::WebDav;
 
 use super::output::{CliError, Fail, Result};
@@ -77,9 +78,19 @@ impl Ctx {
         if self.server_override.is_some() && !self.uses_clients_server() { Storage::Oxicloud } else { self.settings().storage }
     }
 
-    /// Whether the commands go through the generic WebDAV driver (another kind of server).
+    /// Whether the commands go through the generic WebDAV driver (another kind of server: any
+    /// other WebDAV server, or Nextcloud with its profile).
     pub fn is_webdav(&self) -> bool {
-        self.storage() == Storage::Webdav
+        matches!(self.storage(), Storage::Webdav | Storage::Nextcloud)
+    }
+
+    /// What the settings' kind of server adds to the driver (docs/WEBDAV-STORAGE.md § 7.4): the
+    /// Nextcloud profile, or the generic one.
+    pub fn profile(&self) -> Result<Box<dyn ServerProfile>> {
+        let settings = self.settings();
+        let base = Base::parse(&settings.dav_url).map_err(|e| CliError::error(format!("the saved WebDAV address: {e}")))?;
+        profile::for_kind(settings.storage, &base)
+            .ok_or_else(|| CliError::error(format!("the saved WebDAV address {} isn't one a {} server has", base.url(), settings.storage.words())))
     }
 
     /// The device name in trash entries and conflict copies.
@@ -94,7 +105,11 @@ impl Ctx {
         let base = Base::parse(&settings.dav_url).map_err(|e| CliError::error(format!("the saved WebDAV address: {e}")))?;
         let server = self.server()?;
         let credential = self.tokens(&server).load_credential().ok_or_else(|| {
-            CliError::new(Fail::SignedOut, format!("Not signed in to {server}. Run `craftcloud login {} --kind webdav --user NAME`.", base.url()))
+            let how = match settings.storage {
+                Storage::Nextcloud => format!("craftcloud login {server} --kind nextcloud"),
+                _ => format!("craftcloud login {} --kind webdav --user NAME", base.url()),
+            };
+            CliError::new(Fail::SignedOut, format!("Not signed in to {server}. Run `{how}`."))
         })?;
         let Credential::AppPassword { user, secret } = credential else {
             return Err(CliError::new(Fail::SignedOut, format!("The sign-in saved for {server} isn't an app password. Sign in again.")));
@@ -106,7 +121,15 @@ impl Ctx {
     /// fresh one when none is saved for this address).
     pub fn webdav(&self) -> Result<(WebDav, StoredCheck)> {
         let session = self.app_password_session()?;
-        Ok(WebDav::connect(session, &self.device(), self.dir().as_deref(), Limits::default()))
+        Ok(WebDav::connect_with(session, self.profile()?, &self.device(), self.dir().as_deref(), Limits::default()))
+    }
+
+    /// [`Self::webdav`] as a closure for the sync thread (the check on connect may take a while).
+    pub fn webdav_connect(&self) -> Result<craftcloud_native::sync::Connect> {
+        let session = self.app_password_session()?;
+        let profile = self.profile()?;
+        let (device, dir) = (self.device(), self.dir());
+        Ok(Box::new(move || Ok(WebDav::connect_with(session, profile, &device, dir.as_deref(), Limits::default()))))
     }
 
     /// [`Self::webdav`] for a command that writes to the server: only where the check on connect

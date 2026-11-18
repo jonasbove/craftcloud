@@ -773,6 +773,64 @@ fn webdav_download_only_writes_nothing_and_says_so_once() {
     assert!(root.join("Docs/gone.txt").exists(), "and it came back down");
 }
 
+/// Q13 (docs/WEBDAV-STORAGE.md § 16): on a server that reuses a file's version tag within one
+/// second, another client's write right behind ours lands under our tag. Without the checksum
+/// check the engine records our upload as done while the cloud holds theirs (and our next edit
+/// would overwrite it). With the Nextcloud profile the write is a conflict: theirs comes down,
+/// ours is kept as a conflict copy, nothing is lost, and the activity list says so.
+#[test]
+fn webdav_a_write_landing_under_our_tag_becomes_a_conflict_copy_with_the_checksum_check() {
+    use crate::storage::profile::nextcloud::Nextcloud;
+    let flags = Flags { nextcloud: true, etag_reused_within_second: true, other_writes_after_put: Some(b"theirs".to_vec()), ..Flags::default() };
+    let caps = Capabilities { trash: craftcloud_core::storage::Trash::Server, versions: craftcloud_core::storage::Versions::Server, ..two_way() };
+    // The scene: Docs/edited.txt synced, then changed here (the other files play no part).
+    let scene = |server: &FakeServer, dav: &Arc<std::sync::Mutex<craftcloud_core::storage::probe::fake::FakeDav>>, root: &Path| {
+        let mut state = webdav_scene(server, dav, root);
+        state.files.remove("Docs/gone.txt");
+        std::fs::remove_file(root.join("Docs/new.txt")).unwrap();
+        state
+    };
+
+    // Without the check: "uploaded", and the cloud holds someone else's bytes under our tag.
+    let (server, dav) = scripted(flags.clone());
+    dav.lock().unwrap().origin = server.url.clone();
+    let dir = tempfile::tempdir().unwrap();
+    let state = scene(&server, &dav, dir.path());
+    let mut engine = webdav_engine(&server, dir.path(), caps.clone());
+    save_saved(&engine.state_path(), &Saved { server: engine.plan.server.clone(), state, ..Saved::default() }).unwrap();
+    engine.cycle(Deletes::Hold);
+    let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let said: Vec<String> = p.activity.iter().map(|e| format!("{:?} {}", e.kind, e.path)).collect();
+    assert!(said.contains(&"Up Docs/edited.txt".to_owned()) && !said.iter().any(|s| s.starts_with("Conflict")), "taken as done: {said:?}");
+    assert_eq!(dav.lock().unwrap().body("Docs/edited.txt"), Some(b"theirs".as_slice()), "but the cloud holds theirs");
+    assert_eq!(std::fs::read_to_string(dir.path().join("Docs/edited.txt")).unwrap(), "abcd", "and nothing here knows");
+
+    // With it: a conflict copy, both kept.
+    let (server, dav) = scripted(flags);
+    dav.lock().unwrap().origin = server.url.clone();
+    let dir = tempfile::tempdir().unwrap();
+    let state = scene(&server, &dav, dir.path());
+    let mut engine = webdav_engine(&server, dir.path(), caps);
+    engine.storage = WebDav::new(webdav_session(&server), engine.storage.capabilities().clone(), "Laptop")
+        .with_profile(Box::new(Nextcloud::new(&server.url, "john")));
+    save_saved(&engine.state_path(), &Saved { server: engine.plan.server.clone(), state, ..Saved::default() }).unwrap();
+    engine.cycle(Deletes::Hold);
+    let events = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).activity.clone();
+    let conflict = events.iter().find(|e| e.kind == ActivityKind::Conflict).unwrap_or_else(|| panic!("{events:?}"));
+    assert_eq!(conflict.path, "Docs/edited.txt");
+    assert!(conflict.detail.starts_with("yours kept as "), "{conflict:?}");
+    assert_eq!(std::fs::read_to_string(dir.path().join("Docs/edited.txt")).unwrap(), "theirs", "theirs came down");
+    let names: Vec<String> =
+        std::fs::read_dir(dir.path().join("Docs")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    let copy = names.iter().find(|n| n.starts_with("edited (") && n.contains("Laptop")).unwrap_or_else(|| panic!("{names:?}"));
+    assert_eq!(std::fs::read_to_string(dir.path().join("Docs").join(copy)).unwrap(), "abcd", "ours kept whole");
+    for r in &server.seen() {
+        if r.method == "PUT" {
+            assert!(r.header("oc-checksum").is_some_and(|c| c.starts_with("SHA1:")), "every PUT carries its checksum: {r:?}");
+        }
+    }
+}
+
 /// The guards before a trash hold over the generic driver too: a file whose version tag moved
 /// since the plan stays, a folder that gained a file stays, and a folder whose listing fails is
 /// unknown (an error, nothing moved).

@@ -21,7 +21,7 @@ docker compose -p craftcloud-others logs -f nextcloud  # until it says it is rea
 
 | Service | Port | User | What the sync is expected to get | Why |
 |---|---|---|---|---|
-| `nextcloud` | 8111 | `john` | two-way | every guard honoured; its own trash and versions |
+| `nextcloud` | 8111 | `john` | two-way | every guard honoured; its own trash and versions, used through its profile (the suite connects with `--kind nextcloud`'s profile, and the command line's test signs in with `login --kind nextcloud --user john`, the app password from the environment, since the browser's Login Flow can't be driven headless) |
 | `owncloud` | 8112 | `john` | two-way | the same |
 | `opencloud` | 8113 | `admin` | download only | ignores `If-None-Match: *` on `PUT` (§ 16, Q1) |
 | `rclone` | 8114 | `john` | download only | ignores `If-Match` and `If-None-Match` on `PUT` (golang/go#44492; § 16, Q2) |

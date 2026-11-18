@@ -10,6 +10,7 @@ use std::io::Write as _;
 use std::path::Path;
 
 use craftcloud_core::api::dav;
+use craftcloud_core::storage::Trash;
 use craftcloud_native::storage::{Entry, MoveGuard, Moved, OwnPath, RemoteStorage, StorageError, TrashGuard, TrashItem, Trashed, Written};
 use serde_json::json;
 
@@ -368,9 +369,16 @@ fn entry_folder(id: &str) -> Option<OwnPath> {
     OwnPath::new(&format!("{}/{entry}", dav::TRASH_DIR))
 }
 
-/// `trash ls|restore|rm|empty` on another WebDAV server: CraftCloud's own trash in
-/// `.craftcloud/trash/` on the server, through the storage trait (docs/WEBDAV-STORAGE.md § 11).
-/// `ls` reads; the rest write, so they need two-way sync (`webdav_for_writes`).
+/// What `trash rm` and `trash empty` say on a server with a trash of its own (Nextcloud): purging
+/// the person's trash is a permanent delete outside `.craftcloud/`, which CraftCloud never sends
+/// (docs/WEBDAV-STORAGE.md § 16, Q8).
+const SERVER_TRASH_KEPT: &str = "deleting from this server's own trash for good (empty it on the server's web page)";
+
+/// `trash ls|restore|rm|empty` on another WebDAV server, through the storage trait
+/// (docs/WEBDAV-STORAGE.md § 11): the server's own trash where the check on connect confirmed it
+/// (Nextcloud), else CraftCloud's own in `.craftcloud/trash/` on the server. `ls` reads; the rest
+/// write, so they need two-way sync (`webdav_for_writes`). `rm` and `empty` purge CraftCloud's
+/// trash only, never a server's own.
 pub fn trash(ctx: &Ctx, cmd: TrashCmd) -> Result<()> {
     match cmd {
         TrashCmd::Ls { all: _ } => {
@@ -396,6 +404,9 @@ pub fn trash(ctx: &Ctx, cmd: TrashCmd) -> Result<()> {
         }
         TrashCmd::Rm { item } => {
             let (mut storage, _) = ctx.webdav_for_writes()?;
+            if storage.capabilities().trash == Trash::Server {
+                return Err(CliError::unsupported(SERVER_TRASH_KEPT));
+            }
             let all = storage.trash_list().map_err(cli)?;
             let found = pick(&all, &item)?.clone();
             let entry = entry_folder(&found.id).ok_or_else(|| CliError::error(format!("{}: not a trash item", found.id)))?;
@@ -407,6 +418,9 @@ pub fn trash(ctx: &Ctx, cmd: TrashCmd) -> Result<()> {
                 confirm("Delete everything in the trash for good?")?;
             }
             let (mut storage, _) = ctx.webdav_for_writes()?;
+            if storage.capabilities().trash == Trash::Server {
+                return Err(CliError::unsupported(SERVER_TRASH_KEPT));
+            }
             let entries = match storage.list(dav::TRASH_DIR) {
                 Ok(entries) => entries,
                 Err(StorageError::NotFound(_)) => Vec::new(),
@@ -422,7 +436,8 @@ pub fn trash(ctx: &Ctx, cmd: TrashCmd) -> Result<()> {
     }
 }
 
-/// `versions <path> [restore <n>]` on another WebDAV server: the kept versions in
+/// `versions <path> [restore <n>]` on another WebDAV server: the server's own versions where the
+/// check on connect confirmed them (Nextcloud, by file id), else the kept versions in
 /// `.craftcloud/versions/<path>/`, read and restored through the same code OxiCloud uses. Listing
 /// reads; a restore writes, so it needs two-way sync.
 pub fn versions(ctx: &Ctx, path: &str, restore: bool, n: Option<usize>) -> Result<()> {
