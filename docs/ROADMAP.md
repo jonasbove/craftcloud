@@ -213,7 +213,7 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   by file id, a restore a `MOVE` to the item's original path under the files base with `Overwrite: F` (the server
   would take any destination, so the probe's runner gained a general hook, `destination_under_base`, and allows on
   the trash root only that one move of the probe's own file); versions are `meta/<file id>/v/<seconds>` without the
-  current file (step 17 lists before and after), a restore a `COPY` over the file; the quota WebDAV's property with
+  current file (step 17 lists before and after), a restore the driver's guarded `PUT` of the version's bytes (never the server's unguarded `COPY`); the quota WebDAV's property with
   `-3` as no limit. Measured and recorded in UPSTREAM.md G1: two writes within one second share the ETag and keep
   only one version (the later bytes), so Q13's checksum check applies, and ownCloud verifies `OC-Checksum` on
   receipt. The scripted server got an ownCloud flavour; the profile, the probe's round trips, the driver and two

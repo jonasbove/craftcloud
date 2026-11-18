@@ -24,9 +24,10 @@
 //!   file untouched; without the header the server overwrites). A missing parent answers 409.
 //! - **Versions** are `/remote.php/dav/meta/<file id>/v/<seconds>`, by id, so they follow renames;
 //!   each is named by the modified time (in seconds) of the file it was, and the current file is
-//!   **not** among them. Restoring one is a `COPY` of the version to the file's own URL; the server
-//!   keeps the file it replaces as a version itself. `Overwrite: F` answers 412 there, so the copy
-//!   says `Overwrite: T`, as the generic driver's own version restore does.
+//!   **not** among them. A `GET` of one gives its bytes. The server's own restore is a `COPY` of
+//!   the version to the file's URL, which has no precondition on the file it replaces (and with
+//!   two writes in one second the replaced bytes' version can be lost), so CraftCloud never sends
+//!   it: the driver reads the version's bytes and writes them with a guarded `PUT`.
 //! - **Quota** is WebDAV's `quota-available-bytes` on the base; `-3` means no limit.
 //! - **Checksums**: the server computes `oc:checksums` (SHA1, MD5, ADLER32) for every file and
 //!   lists them always; an `OC-Checksum` sent with a `PUT` is checked against the bytes received
@@ -150,13 +151,11 @@ pub fn parse_versions(resp: &HttpResponse, root: &Base) -> Result<Vec<super::ver
     Ok(out)
 }
 
-/// `COPY` version `stamp` (under `meta_root`) over the current file at `path` under `files_base`.
-/// `Overwrite: T`: the point is to replace the file, and the server keeps the file it replaces as
-/// a version of its own (measured on 10.15; `Overwrite: F` answers 412 there).
-pub fn version_restore(meta_root: &str, stamp: &str, files_base: &str, path: &str) -> HttpRequest {
-    HttpRequest::new(Method::Copy, crate::api::dav::url_under(meta_root, &format!("v/{stamp}"), false))
-        .header("Destination", crate::api::dav::url_under(files_base, path, false))
-        .header("Overwrite", "T")
+/// `GET` version `stamp` (under `meta_root`): its bytes. A restore is the driver's guarded `PUT`
+/// of them over the file; the server's own restore (a `COPY` of the version over the file) carries
+/// no precondition on the file it replaces, so it is never sent.
+pub fn version_download(meta_root: &str, stamp: &str) -> HttpRequest {
+    HttpRequest::new(Method::Get, crate::api::dav::url_under(meta_root, &format!("v/{stamp}"), false))
 }
 
 /// The free bytes from WebDAV's `quota-available-bytes` as ownCloud lists it: a count, `u64::MAX`
@@ -280,10 +279,9 @@ mod tests {
         // The collection itself, listed as a file by a confused server, never counts as a version.
         let odd = br#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/remote.php/dav/meta/1660/v/</d:href><d:propstat><d:prop><d:resourcetype/><d:getetag>"x"</d:getetag></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#;
         assert!(parse_versions(&HttpResponse::new(207, odd.to_vec()), &root).unwrap().is_empty());
-        let restore = version_restore(root.url(), &versions[1].stamp, &files_base(ORIGIN, "john"), "Docs/a.txt");
-        assert_eq!(restore.method, Method::Copy);
-        assert_eq!(restore.url, "https://cloud.example.org/remote.php/dav/meta/1660/v/1795006694");
-        assert_eq!(restore.header_value("Destination"), Some("https://cloud.example.org/remote.php/dav/files/john/Docs/a.txt"));
-        assert_eq!(restore.header_value("Overwrite"), Some("T"));
+        let read = version_download(root.url(), &versions[1].stamp);
+        assert_eq!(read.method, Method::Get);
+        assert_eq!(read.url, "https://cloud.example.org/remote.php/dav/meta/1660/v/1795006694");
+        assert_eq!(read.header_value("Overwrite"), None);
     }
 }

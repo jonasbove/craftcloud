@@ -10,8 +10,8 @@
 //!   taken name gets `names::restored_name`); the probe's step 16 confirms the round trip before
 //!   `Trash::Server` is granted, and until then deletes go to CraftCloud's own trash;
 //! - versions are `/remote.php/dav/meta/<file id>/v/<seconds>`, by id, so they follow renames, and
-//!   the current file isn't among them; a restore is a `COPY` of the version over the file, which
-//!   the server keeps as a version itself; step 17 confirms an overwrite leaves one more version
+//!   the current file isn't among them; a version's bytes are read by `GET` and restored by the driver's
+//!   guarded `PUT` (never the server's own `COPY`, which has no precondition); step 17 confirms an overwrite leaves one more version
 //!   before `Versions::Server` is granted, and only then are `keep_version` and `move_versions`
 //!   no-ops;
 //! - the quota is WebDAV's `quota-available-bytes` on the base, `-3` meaning no limit;
@@ -202,20 +202,16 @@ impl ServerProfile for Owncloud {
         Ok(oc::parse_versions(&resp, &root)?)
     }
 
-    /// `COPY` the version over the file; the server keeps the current file as a version itself.
-    /// Only a stamp a fresh listing names: the versions collection is never copied by mistake.
-    fn restore_version(&self, transport: &mut dyn Transport, base: &Base, path: &str, stamp: &str) -> Result<(), StorageError> {
+    /// Where a version's bytes are read: `GET /remote.php/dav/meta/<file id>/v/<stamp>`. The driver
+    /// restores by a guarded `PUT` of those bytes over the file (never the server's own `COPY`,
+    /// which carries no precondition on the file it replaces). Only a stamp a fresh listing names.
+    fn version_download(&self, transport: &mut dyn Transport, base: &Base, path: &str, stamp: &str) -> Result<HttpRequest, StorageError> {
         let versions = self.list_versions(transport, base, path)?;
         if !versions.iter().any(|v| v.stamp == stamp) {
             return Err(StorageError::NotFound(format!("{path} has no version {stamp}")));
         }
         let id = self.file_id(transport, base, path)?;
-        let resp = transport.call(&oc::version_restore(&self.meta_root(&id), stamp, base.url(), path))?;
-        if resp.is_success() {
-            Ok(())
-        } else {
-            Err(StorageError::Failed(format!("restoring version {stamp} of {path}: the server answered {}", resp.status)))
-        }
+        Ok(oc::version_download(&self.meta_root(&id), stamp))
     }
 
     /// WebDAV's `quota-available-bytes` on the base, `-3` read as no limit.
@@ -411,7 +407,7 @@ mod tests {
     use crate::storage::probe::Limits;
     use crate::storage::webdav::WebDav;
     use crate::storage::webdav::tests::two_way;
-    use crate::storage::{MoveGuard, Moved, RemoteStorage, TrashGuard, Trashed, Written};
+    use crate::storage::{MoveGuard, Moved, RemoteStorage, Restored, TrashGuard, Trashed, Written};
 
     const BASE_PATH: &str = "/remote.php/dav/files/john";
 
@@ -609,7 +605,7 @@ mod tests {
 
     /// With the server's versions confirmed, `keep_version` and `move_versions` send nothing; the
     /// versions are listed by file id (the current file isn't among them), follow a rename, and one
-    /// is restored by a `COPY` over the file, which the server keeps as a version itself. With the
+    /// is restored by a guarded `PUT` of its bytes, and the server keeps the replaced file as a version. With the
     /// client's versions (unconfirmed) a rename moves the history.
     #[test]
     fn versions_are_the_servers_and_follow_renames_by_id() {
@@ -635,11 +631,14 @@ mod tests {
         s.move_versions("Docs/a.txt", "Docs/b.txt").unwrap();
         assert_eq!(server.seen().len(), before, "a no-op: the server keeps them by id");
         assert_eq!(s.list_versions("Docs/b.txt").unwrap().len(), 2, "the history followed the rename");
-        s.restore_version("Docs/b.txt", &versions[1].stamp).unwrap();
+        assert_eq!(s.restore_version("Docs/b.txt", &versions[1].stamp).unwrap(), Restored::Done);
         assert_eq!(dav.lock().unwrap().body("Docs/b.txt"), Some(b"v0".as_slice()));
         assert_eq!(s.list_versions("Docs/b.txt").unwrap().len(), 3, "the replaced file was kept by the server");
-        let copy = server.seen().into_iter().find(|r| r.method == "COPY").unwrap();
-        assert!(copy.path.contains("/remote.php/dav/meta/") && copy.header("destination").is_some_and(|d| d.ends_with("/Docs/b.txt")), "{copy:?}");
+        let seen = server.seen();
+        assert!(seen.iter().any(|r| r.method == "GET" && r.path.contains("/remote.php/dav/meta/")), "the version's bytes were read");
+        assert!(seen.iter().all(|r| r.method != "COPY" && r.header("overwrite") != Some("T")), "never the server's unguarded restore: {seen:?}");
+        let restore_put = seen.iter().rev().find(|r| r.method == "PUT").unwrap();
+        assert!(restore_put.header("if-match").is_some() && restore_put.header("oc-checksum").is_some(), "{restore_put:?}");
         assert!(matches!(s.restore_version("Docs/b.txt", "1").unwrap_err(), StorageError::NotFound(_)), "never a stamp the listing doesn't name");
         // Unconfirmed (client versions): the same server, the history is CraftCloud's and moves by MOVE.
         let mut client = WebDav::new(session(&server), two_way(), "Laptop").with_profile(profile(&server));
@@ -647,6 +646,48 @@ mod tests {
         assert!(server.seen().iter().any(|r| r.method == "COPY" && r.path.contains(BASE_PATH)));
         client.move_versions("Docs/b.txt", "Docs/c.txt").unwrap();
         assert!(server.seen().iter().any(|r| r.method == "MOVE" && r.path.contains("/.craftcloud/versions/Docs/b.txt")));
+    }
+
+    /// A version restore is a guarded write: a change landing between the look at the file and the
+    /// write is never overwritten. The newer file stays, nothing is restored, and the driver says
+    /// so ([`Restored::Changed`], exit code 5 on the command line). ownCloud's own restore (`COPY`
+    /// of the version over the file, `Overwrite: T`) has no precondition and would have overwritten
+    /// it; it is never sent.
+    #[test]
+    fn a_change_landing_during_a_version_restore_is_never_overwritten() {
+        let dav = Arc::new(Mutex::new(FakeDav::new(BASE_PATH, Flags { owncloud: true, ..Flags::default() })));
+        let racing = Arc::clone(&dav);
+        let server = FakeServer::start_full(move |seen: &Seen| {
+            let mut dav = racing.lock().unwrap_or_else(PoisonError::into_inner);
+            let resp = dav.answer(&seen.method, &seen.path, &seen.headers, seen.body.as_bytes());
+            // Another client writes the file right after the version's bytes were read.
+            if seen.method == "GET" && seen.path.contains("/remote.php/dav/meta/") {
+                let theirs = dav.answer("PUT", &format!("{BASE_PATH}/Docs/a.txt"), &[], b"changed meanwhile");
+                assert!(theirs.is_success());
+            }
+            let mut answer = Answer::new(resp.status, String::from_utf8_lossy(&resp.body).into_owned());
+            for (name, value) in resp.headers {
+                answer = answer.header(&name, value);
+            }
+            answer
+        });
+        dav.lock().unwrap().origin = server.url.clone();
+        dav.lock().unwrap().add_folder("Docs", None);
+        let dir = tempfile::tempdir().unwrap();
+        let a = file(dir.path(), "a.txt", "v0");
+        let mut s = driver(&server);
+        let Written::Saved { etag } = s.create("Docs/a.txt", &a).unwrap() else { panic!() };
+        std::fs::write(&a, "v1").unwrap();
+        assert!(matches!(s.replace("Docs/a.txt", &etag, &a).unwrap(), Written::Saved { .. }));
+        let versions = s.list_versions("Docs/a.txt").unwrap();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(s.restore_version("Docs/a.txt", &versions[0].stamp).unwrap(), Restored::Changed);
+        assert_eq!(dav.lock().unwrap().body("Docs/a.txt"), Some(b"changed meanwhile".as_slice()), "the newer file stays");
+        let seen = server.seen();
+        assert!(seen.iter().all(|r| r.method != "COPY"), "never the server's restore COPY: {seen:?}");
+        assert!(seen.iter().all(|r| r.header("overwrite") != Some("T")), "never Overwrite: T: {seen:?}");
+        let last_put = seen.iter().rev().find(|r| r.method == "PUT").unwrap();
+        assert!(last_put.header("if-match").is_some(), "the restore's PUT carried its guard: {last_put:?}");
     }
 
     /// Free space is WebDAV's `quota-available-bytes` on the base: a count, or no limit (`-3`).
