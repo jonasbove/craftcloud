@@ -202,7 +202,7 @@ impl WebDav {
 
     /// A fresh trash entry's folder (`.craftcloud/trash/<time>-<device>`, made now), with the
     /// parents of `path` made inside it: where `path` goes.
-    fn trash_place(&mut self, path: &str) -> Result<String, StorageError> {
+    fn trash_place(&mut self, path: &str) -> Result<(String, String), StorageError> {
         self.make_folders(dav::TRASH_DIR)?;
         let now = jiff::Timestamp::now().strftime(TRASH_STAMP).to_string();
         for n in 1..1000 {
@@ -213,7 +213,8 @@ impl WebDav {
                     if let Some((parent, _)) = path.rsplit_once('/') {
                         self.make_folders(&format!("{entry}/{parent}"))?;
                     }
-                    return Ok(format!("{entry}/{path}"));
+                    let dest = format!("{entry}/{path}");
+                    return Ok((entry, dest));
                 }
                 // Taken (the same second, device and name): the next number.
                 405 => {}
@@ -225,13 +226,32 @@ impl WebDav {
 
     /// `MOVE` `path` into a fresh trash entry, never onto an existing name. A 412 (the place was
     /// taken meanwhile) is an error, tried again next pass with a new entry; nothing is forced.
+    /// A 404 (gone meanwhile) is done, and the entry just made for it, which holds nothing, is
+    /// removed again (see [`Self::purge_empty_entry`]).
     fn move_to_trash(&mut self, path: &str, folder: bool) -> Result<(), StorageError> {
-        let dest = self.trash_place(path)?;
+        let (entry, dest) = self.trash_place(path)?;
         let resp = self.session.call(&dav::move_to_under(self.base.url(), path, &dest, folder))?;
-        if resp.is_success() || resp.status == 404 {
-            Ok(())
-        } else {
-            Err(StorageError::Failed(format!("moving {path} to the trash: the server answered {}", resp.status)))
+        match resp.status {
+            404 => {
+                self.purge_empty_entry(&entry);
+                Ok(())
+            }
+            _ if resp.is_success() => Ok(()),
+            status => Err(StorageError::Failed(format!("moving {path} to the trash: the server answered {status}"))),
+        }
+    }
+
+    /// Removes a trash entry's folder (`.craftcloud/trash/<time>-<device>`) once it holds nothing:
+    /// after a restore emptied it, or when the `MOVE` into a fresh one found the file gone. It is
+    /// deleted for good, so only through `purge_own` (an `OwnPath`, inside `.craftcloud/`), and only
+    /// after a fresh listing of every level answered and showed no file: a listing that failed is
+    /// unknown, and the entry stays (a stray empty folder costs nothing; a wrong delete can't be
+    /// undone). A failed purge is left for the retention sweep.
+    fn purge_empty_entry(&mut self, entry: &str) {
+        if self.holds_nothing(entry)
+            && let Some(own) = OwnPath::new(entry)
+        {
+            let _ = self.purge_own(&own);
         }
     }
 
@@ -501,11 +521,11 @@ impl RemoteStorage for WebDav {
         if !restored {
             return Err(StorageError::Failed(format!("restoring {}: every name next to it is taken; it stays in the trash", item.path)));
         }
-        if let Some(entry) = entry
-            && self.holds_nothing(&entry)
-            && let Some(own) = OwnPath::new(&entry)
-        {
-            let _ = self.purge_own(&own);
+        // The restored item left its entry's folder (and the parents made in it) behind. It is
+        // CraftCloud's own, inside `.craftcloud/trash/`, and holds nothing now, so it goes for
+        // good; `purge_empty_entry` lists it first and keeps it if the listing fails or shows a file.
+        if let Some(entry) = entry {
+            self.purge_empty_entry(&entry);
         }
         Ok(())
     }
@@ -1019,6 +1039,53 @@ pub(crate) mod tests {
         assert_eq!(dav.lock().unwrap().body("Docs/a.txt"), Some(b"v0".as_slice()), "the version is back");
         assert_eq!(s.list_versions("Docs/a.txt").unwrap().len(), 4, "the replaced file is kept as a new version, so the restore can be undone");
         assert!(s.restore_version("Docs/a.txt", "20200101T000000.000Z").unwrap_err().to_string().contains("no version"));
+    }
+
+    /// A `MOVE` into a fresh trash entry that finds the file gone (404) is done, and the entry just
+    /// made (holding nothing) is removed again through `purge_own`, after a listing that worked
+    /// showed it empty. When that listing fails, the entry stays: unknown is never deleted.
+    #[test]
+    fn a_trash_entry_whose_move_found_the_file_gone_is_removed_unless_its_listing_fails() {
+        let (server, dav) = scripted(Flags::default());
+        dav.lock().unwrap().add_folder("Docs", None);
+        let mut s = driver(&server);
+        s.move_to_trash("Docs/gone.txt", false).unwrap();
+        {
+            let dav = dav.lock().unwrap();
+            assert!(dav.folders().iter().all(|f| !f.starts_with(".craftcloud/trash/")), "the fresh entry is gone again: {:?}", dav.folders());
+            assert!(dav.has(".craftcloud/trash"), "the trash folder itself stays");
+        }
+        let deletes: Vec<String> = server.seen().iter().filter(|r| r.method == "DELETE").map(|r| r.path.clone()).collect();
+        assert_eq!(deletes.len(), 1, "{deletes:?}");
+        assert!(deletes[0].contains("/.craftcloud/trash/") && deletes[0].ends_with('/'), "{deletes:?}");
+        let listed_first = server.seen().iter().position(|r| r.method == "PROPFIND" && r.path.contains("/.craftcloud/trash/"));
+        let deleted_at = server.seen().iter().position(|r| r.method == "DELETE");
+        assert!(listed_first < deleted_at, "listed before purged: {:?}", server.seen());
+
+        // The entry's listing fails: unknown, so the entry stays and nothing is deleted.
+        let (ok_server, ok_dav) = scripted(Flags::default());
+        ok_dav.lock().unwrap().add_folder("Docs", None);
+        let inner = Arc::clone(&ok_dav);
+        let failing = FakeServer::start_full(move |seen: &Seen| {
+            if seen.method == "PROPFIND" && seen.path.contains("/.craftcloud/trash/") {
+                return Answer::new(500, "");
+            }
+            let mut dav = inner.lock().unwrap_or_else(PoisonError::into_inner);
+            let resp = dav.answer(&seen.method, &seen.path, &seen.headers, seen.body.as_bytes());
+            let mut answer = Answer::new(resp.status, String::from_utf8_lossy(&resp.body).into_owned());
+            for (name, value) in resp.headers {
+                answer = answer.header(&name, value);
+            }
+            answer
+        });
+        drop(ok_server);
+        let mut s = driver(&failing);
+        s.move_to_trash("Docs/gone.txt", false).unwrap();
+        let dav = ok_dav.lock().unwrap();
+        let entries =
+            dav.folders().into_iter().filter(|f| f.starts_with(".craftcloud/trash/") && !f[".craftcloud/trash/".len()..].contains('/')).count();
+        assert_eq!(entries, 1, "the entry stays (with the parent made in it): {:?}", dav.folders());
+        assert!(failing.seen().iter().all(|r| r.method != "DELETE"), "nothing deleted on a failed listing: {:?}", failing.seen());
     }
 
     /// Apache's mod_dav answers 301 to a folder URL without its trailing slash. The driver never

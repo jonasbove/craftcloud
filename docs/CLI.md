@@ -187,7 +187,9 @@ changes made here stay here and are listed as `not synced … (not uploaded)`; a
 `.craftcloud/trash/` in the local folder), refused where a file's version tag can't be trusted. `ls`, `get`, `put`,
 `save`, `mkdir`, `mv`, `rm`, `files`, `open`, `sync`, `daemon`, `status`, `server check`, `trash` (`ls`, `restore`,
 `rm`, `empty`) and `versions` work through the storage trait; `share`, `star`, `starred`, `recent`, `search`,
-`usage`, `cp` and `server info|users|settings` answer "not available on this server" (code 10). The client trash
+`usage`, `cp` and `server info|users|settings` answer "not available on this server" (code 10), and so does every
+command that would write (`put`, `mkdir`, `mv`, `rm`, `save`, `trash restore|rm|empty`, `versions … restore`) on a
+server whose check measured download only: nothing is written to such a server, by the sync or by hand. The client trash
 keeps an entry 30 days by the **server's** clock (never this computer's); only `trash empty` clears it sooner, and
 `trash restore` renames a restored item (`NAME (restored).EXT`) when its old place is taken. The check on connect
 re-runs by itself when the saved result is more than a day old or the server's version string changed, and on

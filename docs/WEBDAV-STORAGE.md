@@ -513,9 +513,12 @@ As built (pull request 4b, the second of two under § 14's row 4; `crates/native
   trash is therefore a count of entries' innermost single items, not of what was trashed, and `trash restore` or
   `trash rm` of such a folder take that inner path (seen by hand: `trash rm <folder>` answers "isn't in the trash"
   while `trash rm <folder>/<file>` removes the entry).
-- **Left as is (the maintainer decides):** 4a's command line refuses CLI writes (exit code 10) on a download-only
-  server (`webdav_for_writes`), beyond what § 11 lists; a trashed item's restored path isn't echoed back when a
-  clash renamed it (the generic `restore` reports the original path).
+- **CLI writes on a download-only server stay refused** (exit code 10, `webdav_for_writes`): decided 2026-11-18 and
+  written into § 11. A trash entry's folder made for a `MOVE` that found the file gone (404) is removed again
+  through `purge_own` after a listing that worked shows it empty (a failed listing leaves it), as a restore's
+  emptied entry is.
+- **Left as is:** a trashed item's restored path isn't echoed back when a clash renamed it (the generic `restore`
+  reports the original path).
 
 ## 8. How each non-negotiable is met
 
@@ -619,6 +622,11 @@ local side:
 - `ls`, `put`, `mv`, `rm`, `trash`, `versions`, `restore`, `sync`, `files`, `open` go through the trait.
 - `share`, `server users`, `server info`'s OxiCloud fields, `starred`, `recent`, `search` answer "not available on
   this server" with a new exit code 10 and JSON kind `unsupported` (an addition; existing codes keep their meaning).
+- **On a server whose check measured download only, the command line writes nothing either** (decided 2026-11-18):
+  `put`, `mkdir`, `mv`, `rm`, a direct `save`, `trash restore`, `trash rm`, `trash empty` and `versions … restore`
+  answer "not available on this server" (exit code 10, kind `unsupported`), with the mode and a pointer to
+  `server check`. A guard the sync won't rely on must not be exercised by hand either: nothing is ever written to
+  such a server, by the engine or by the command line.
 
 ## 12. Migration and "upgrade all devices together"
 
