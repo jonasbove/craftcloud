@@ -21,6 +21,10 @@ pub fn server_check(ctx: &Ctx) -> Result<()> {
     let status = execute(&auth::status(&server)).map_err(CliError::transport)?;
     auth::parse_status(&status)
         .map_err(|_| CliError::error(format!("{server} doesn't answer like a CraftCloud server (status {})", status.status)))?;
+    // Until another kind of server can be signed in to (docs/WEBDAV-STORAGE.md § 14, pull request
+    // 4), every server here is OxiCloud. From then on the kind comes from the settings
+    // (`storage`), and for any other kind this runs the probe and reports what it measured;
+    // the "known, not measured" answer below stays OxiCloud's only.
     let capabilities = Capabilities::oxicloud();
     let mode = mode_for(&capabilities);
     let rows = checks(&capabilities);
