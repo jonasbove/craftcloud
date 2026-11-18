@@ -238,11 +238,20 @@ impl OwnPath {
 pub struct Download {
     resp: ureq::http::Response<ureq::Body>,
     cancel: Arc<AtomicBool>,
+    /// The version tag the driver gives this download instead of the answer's bare `ETag` (a
+    /// driver whose tags carry more than the ETag, docs/WEBDAV-STORAGE.md § 16, Q13).
+    etag: Option<String>,
 }
 
 impl Download {
     pub(crate) fn new(resp: ureq::http::Response<ureq::Body>, cancel: Arc<AtomicBool>) -> Self {
-        Self { resp, cancel }
+        Self { resp, cancel, etag: None }
+    }
+
+    /// The same download, its `ETag` read as `tag`: the driver's version tag for these bytes.
+    pub(crate) fn with_etag(mut self, tag: String) -> Self {
+        self.etag = Some(tag);
+        self
     }
 
     pub fn status(&self) -> u16 {
@@ -251,6 +260,11 @@ impl Download {
 
     /// A response header, when it is there and readable.
     pub fn header(&self, name: &str) -> Option<&str> {
+        if name.eq_ignore_ascii_case("etag")
+            && let Some(tag) = &self.etag
+        {
+            return Some(tag);
+        }
         self.resp.headers().get(name).and_then(|v| v.to_str().ok())
     }
 

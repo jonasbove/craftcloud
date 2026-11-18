@@ -386,9 +386,21 @@ impl Live {
                 assert!(execute(&tokens.authorize(folders::trash(server, &id))).unwrap().is_success());
             }
             Cloud::Dav { .. } => {
-                let files: Vec<(String, String)> =
-                    self.other().list_all(path).into_iter().filter(|e| !e.is_folder).map(|e| (e.path, e.etag.unwrap_or_default())).collect();
-                let done = self.driver().trash(path, TrashGuard::Folder { files }).unwrap_or_else(|e| panic!("trashing {path}: {e}"));
+                // The guard takes the driver's version tags (on Nextcloud the ETag plus the listed
+                // checksum), so the files are listed through the driver, every level.
+                let mut driver = self.driver();
+                let mut files: Vec<(String, String)> = Vec::new();
+                let mut level = vec![path.to_owned()];
+                while let Some(folder) = level.pop() {
+                    for e in driver.list(&folder).unwrap_or_else(|e| panic!("listing {folder}: {e}")) {
+                        if e.is_folder {
+                            level.push(e.path);
+                        } else {
+                            files.push((e.path, e.etag.unwrap_or_default()));
+                        }
+                    }
+                }
+                let done = driver.trash(path, TrashGuard::Folder { files }).unwrap_or_else(|e| panic!("trashing {path}: {e}"));
                 assert_eq!(done, Trashed::Done);
             }
         }
@@ -1401,6 +1413,54 @@ fn a_deleted_nested_or_renamed_folder_is_one_trash_item() {
     sync(&a);
     assert!(live.in_trash(&live.p("t9/fold-ren")).is_some());
     assert!(live.in_trash(&live.p("t9/fold-ren/f1")).is_none());
+}
+
+/// Q13, the other direction (docs/WEBDAV-STORAGE.md § 16), on a real Nextcloud: another client
+/// overwrites a file within the same second as this client's upload of it, so the file keeps the
+/// ETag this client saved. The next sync must still bring that write down (the version tag is the
+/// ETag plus the listed checksum, which the write cleared), and nothing is lost on the way.
+#[test]
+fn a_write_under_an_unchanged_etag_still_comes_down() {
+    let Some(live) = Live::two_way("sametag") else { return };
+    if live.kind() != Kind::Nextcloud {
+        eprintln!("skipped: only Nextcloud's profile verifies writes by checksum so far ({})", live.server);
+        return;
+    }
+    let root = live.local("A");
+    let a = live.computer(&root, "Alpha");
+    let dir = live.p("Tag");
+    write(&root.join(&dir).join("seed.txt"), "seed");
+    sync(&a);
+    for n in 0..10 {
+        let path = format!("{dir}/f{n}.txt");
+        write(&root.join(&path), "ours");
+        a.send(Command::SyncNow);
+        // The moment the upload is listed (with our checksum), the other client writes.
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let ours = loop {
+            let listed = live.other().list(&dir).ok().and_then(|l| l.into_iter().find(|e| e.path == path && !e.checksums.is_empty()));
+            if let Some(e) = listed {
+                break e;
+            }
+            assert!(Instant::now() < deadline, "{path} was never uploaded");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        // The same size as ours: this branch's runtime watch (§ 7.5) still compares a write with the
+        // next listing, and another client's write of another size right behind ours trips it.
+        assert!(matches!(live.other().put(&path, b"THEM"), 200..=299));
+        let theirs = live.other().list(&dir).unwrap().into_iter().find(|e| e.path == path).unwrap();
+        sync(&a);
+        sync(&a);
+        assert_eq!(read(&root.join(&path)), "THEM", "their write came down ({})", if theirs.etag == ours.etag { "same ETag" } else { "new ETag" });
+        assert_eq!(live.other().get(&path).as_deref(), Some(b"THEM".as_slice()), "and stays in the cloud");
+        if theirs.etag == ours.etag {
+            assert!(theirs.checksums.is_empty(), "the write cleared the listed checksum: {theirs:?}");
+            eprintln!("staged at try {n}: two writes within one second, one ETag");
+            return;
+        }
+        // A later second: an ordinary change (a new ETag). Try again.
+    }
+    panic!("ten tries and the two writes never shared a second");
 }
 
 #[test]

@@ -503,6 +503,41 @@ mod tests {
         assert_eq!(calm.seen().iter().filter(|r| r.method == "PROPFIND" && r.path.ends_with("/Docs/a.txt")).count(), 2, "one read-back per write");
     }
 
+    /// On this profile a file's version tag is its ETag plus the SHA1 the server lists: what a
+    /// write answers, what a listing shows and what a download carries are the same tag; the bare
+    /// ETag goes into `If-Match`; and a write by someone else under the same ETag (within the same
+    /// second, without a checksum) changes the listed tag, so guards on the old tag don't hold.
+    #[test]
+    fn a_version_tag_is_the_etag_and_the_listed_checksum() {
+        let (server, dav) = nextcloud(Flags { etag_reused_within_second: true, ..Flags::default() });
+        dav.lock().unwrap().add_folder("Docs", None);
+        let dir = tempfile::tempdir().unwrap();
+        let a = file(dir.path(), "a.txt", "mine");
+        let mut s = driver(&server);
+        let Written::Saved { etag: tag } = s.create("Docs/a.txt", &a).unwrap() else { panic!("not saved") };
+        assert!(tag.ends_with(";sha1:8034c43d15bb7ef42e2cc24255217acfc5f4b2f4"), "{tag}");
+        let listed = |s: &mut WebDav| s.list("Docs").unwrap().into_iter().find(|e| e.path == "Docs/a.txt").unwrap().etag.unwrap();
+        assert_eq!(listed(&mut s), tag, "the listing shows the tag the write answered");
+        assert_eq!(s.download("Docs/a.txt", None).unwrap().header("ETag"), Some(tag.as_str()), "and so does a download");
+        // Another client's write within the same second: the same ETag, no checksum.
+        let theirs = dav.lock().unwrap().answer("PUT", &format!("{BASE_PATH}/Docs/a.txt"), &[], b"theirs");
+        let bare = tag.split(";sha1:").next().unwrap().to_owned();
+        assert_eq!(theirs.header("ETag"), Some(bare.as_str()), "the ETag was reused");
+        assert_eq!(listed(&mut s), bare, "the listed tag changed all the same");
+        assert_eq!(s.download("Docs/a.txt", None).unwrap().header("ETag"), Some(bare.as_str()));
+        assert_eq!(s.trash("Docs/a.txt", TrashGuard::File { etag: tag.clone() }).unwrap(), Trashed::Changed, "a guard on the old tag doesn't hold");
+        assert_eq!(s.move_to("Docs/a.txt", "Docs/b.txt", MoveGuard::File { etag: tag.clone() }).unwrap(), Moved::Changed);
+        assert_eq!(dav.lock().unwrap().body("Docs/a.txt"), Some(b"theirs".as_slice()));
+        // An overwrite from the listed tag sends the bare ETag in `If-Match`.
+        std::thread::sleep(Duration::from_millis(1100));
+        let now = listed(&mut s);
+        let Written::Saved { etag: next } = s.replace("Docs/a.txt", &now, &a).unwrap() else { panic!("not saved") };
+        assert!(next.contains(";sha1:") && next != tag, "{next}");
+        let seen = server.seen();
+        let put = seen.iter().rev().find(|r| r.method == "PUT").unwrap();
+        assert_eq!(put.header("if-match"), Some(bare.as_str()), "{put:?}");
+    }
+
     /// A delete goes into the server's trash by `DELETE` (a file's with `If-Match`; a stale tag
     /// keeps it), the trash lists it by its original path, a restore brings it back, a folder goes
     /// whole; the client trash's sweep sends nothing.

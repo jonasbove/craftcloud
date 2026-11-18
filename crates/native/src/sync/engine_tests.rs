@@ -832,6 +832,103 @@ fn webdav_a_write_landing_under_our_tag_becomes_a_conflict_copy_with_the_checksu
     }
 }
 
+/// A Nextcloud-shaped scripted server that reuses a file's ETag within one second, holding
+/// `Docs/f.txt` as this client uploaded it ("ours", synced), over which another client then wrote
+/// "theirs!" within the same second, without a checksum: the ETag is the one this client saved.
+/// The engine (with the Nextcloud profile, or the generic one for `verified` false), its folder
+/// and the server.
+fn same_second_scene(
+    verified: bool,
+) -> (Engine<WebDav>, tempfile::TempDir, FakeServer, Arc<std::sync::Mutex<craftcloud_core::storage::probe::fake::FakeDav>>) {
+    use crate::storage::profile::nextcloud::Nextcloud;
+    let (server, dav) = scripted(Flags { nextcloud: true, etag_reused_within_second: true, ..Flags::default() });
+    dav.lock().unwrap().origin = server.url.clone();
+    dav.lock().unwrap().add_folder("Docs", None);
+    let dir = tempfile::tempdir().unwrap();
+    let caps = Capabilities { trash: craftcloud_core::storage::Trash::Server, versions: craftcloud_core::storage::Versions::Server, ..two_way() };
+    let mut engine = webdav_engine(&server, dir.path(), caps);
+    if verified {
+        engine.storage = WebDav::new(webdav_session(&server), engine.storage.capabilities().clone(), "Laptop")
+            .with_profile(Box::new(Nextcloud::new(&server.url, "john")));
+    }
+    let file = write(dir.path(), "Docs/f.txt", "ours");
+    let an_hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+    std::fs::File::options().write(true).open(&file).unwrap().set_modified(an_hour_ago).unwrap();
+    let Written::Saved { etag } = engine.storage.create("Docs/f.txt", &file).unwrap() else { panic!("not saved") };
+    // Another client, right behind us: the same second, so the same ETag; no checksum.
+    let theirs = dav.lock().unwrap().answer("PUT", "/remote.php/dav/files/john/Docs/f.txt", &[], b"theirs!");
+    assert_eq!(
+        theirs.header("ETag").map(|e| e.trim_matches('"')),
+        Some(crate::storage::webdav::tests::bare_etag(&etag).trim_matches('"')),
+        "the ETag was reused"
+    );
+    let mut state = State::default();
+    state.files.insert("Docs/f.txt".into(), Known { etag, ..as_synced(&file) });
+    state.folders.insert("Docs".into());
+    save_saved(&engine.state_path(), &Saved { server: engine.plan.server.clone(), state, ..Saved::default() }).unwrap();
+    (engine, dir, server, dav)
+}
+
+/// Q13, the other direction (docs/WEBDAV-STORAGE.md § 16): another client's write that landed
+/// within the same second as ours sits under the ETag this client saved. With no local change, a
+/// sync must still bring it down: on a profile that verifies writes the file's version tag is its
+/// ETag plus the listed checksum, which that write changed (cleared). Without it (the generic
+/// profile on the same server) the cloud looks unchanged and the write never arrives.
+#[test]
+fn webdav_a_write_under_our_etag_comes_down_when_nothing_changed_here() {
+    let (mut blind, dir, _server, _dav) = same_second_scene(false);
+    blind.cycle(Deletes::Hold);
+    assert_eq!(std::fs::read_to_string(dir.path().join("Docs/f.txt")).unwrap(), "ours", "bare ETags: the write is never seen");
+
+    let (mut engine, dir, server, dav) = same_second_scene(true);
+    let before = server.seen().len();
+    engine.cycle(Deletes::Hold);
+    let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    assert_eq!(p.state, SyncState::UpToDate, "{:?}", p.activity);
+    assert_eq!(std::fs::read_to_string(dir.path().join("Docs/f.txt")).unwrap(), "theirs!", "their bytes came down");
+    assert!(p.activity.iter().any(|e| e.kind == ActivityKind::Down && e.path == "Docs/f.txt"), "{:?}", p.activity);
+    assert_eq!(dav.lock().unwrap().body("Docs/f.txt"), Some(b"theirs!".as_slice()));
+    assert!(server.seen()[before..].iter().all(|r| r.method != "PUT"), "nothing was written: {:?}", &server.seen()[before..]);
+    // And it settles: the next pass downloads nothing again.
+    let before = server.seen().len();
+    engine.cycle(Deletes::Hold);
+    assert!(server.seen()[before..].iter().all(|r| r.method != "GET" && r.method != "PUT"), "{:?}", &server.seen()[before..]);
+}
+
+/// The same with a local edit: a conflict copy, never an overwrite. Their bytes stay in the cloud
+/// and come down, ours are kept under the conflict copy's name, and no `PUT` lands on their
+/// version. Without the tag (the generic profile) our `If-Match` on the reused ETag passes and
+/// their bytes are overwritten.
+#[test]
+fn webdav_a_write_under_our_etag_with_a_local_edit_is_a_conflict_copy() {
+    let edit = |dir: &Path| {
+        let file = dir.join("Docs/f.txt");
+        std::fs::write(&file, "ours, edited").unwrap();
+        std::fs::File::options().write(true).open(&file).unwrap().set_modified(std::time::SystemTime::now() - Duration::from_secs(1800)).unwrap();
+    };
+    let (mut blind, dir, _server, dav) = same_second_scene(false);
+    edit(dir.path());
+    blind.cycle(Deletes::Hold);
+    assert_eq!(dav.lock().unwrap().body("Docs/f.txt"), Some(b"ours, edited".as_slice()), "bare ETags: their bytes are overwritten");
+
+    let (mut engine, dir, server, dav) = same_second_scene(true);
+    edit(dir.path());
+    let before = server.seen().len();
+    engine.cycle(Deletes::Hold);
+    let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    assert_eq!(p.state, SyncState::UpToDate, "{:?}", p.activity);
+    assert_eq!(dav.lock().unwrap().body("Docs/f.txt"), Some(b"theirs!".as_slice()), "their bytes stay in the cloud");
+    assert_eq!(std::fs::read_to_string(dir.path().join("Docs/f.txt")).unwrap(), "theirs!", "and came down");
+    let conflict = p.activity.iter().find(|e| e.kind == ActivityKind::Conflict).unwrap_or_else(|| panic!("{:?}", p.activity));
+    assert!(conflict.path == "Docs/f.txt" && conflict.detail.starts_with("yours kept as "), "{conflict:?}");
+    let names: Vec<String> =
+        std::fs::read_dir(dir.path().join("Docs")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    let copy = names.iter().find(|n| n.starts_with("f (") && n.contains("Laptop")).unwrap_or_else(|| panic!("{names:?}"));
+    assert_eq!(std::fs::read_to_string(dir.path().join("Docs").join(copy)).unwrap(), "ours, edited", "ours kept whole");
+    let puts: Vec<String> = server.seen()[before..].iter().filter(|r| r.method == "PUT").map(|r| r.path.clone()).collect();
+    assert!(puts.iter().all(|p| !p.ends_with("/Docs/f.txt")), "no PUT landed on their version: {puts:?}");
+}
+
 /// The guards before a trash hold over the generic driver too: a file whose version tag moved
 /// since the plan stays, a folder that gained a file stays, and a folder whose listing fails is
 /// unknown (an error, nothing moved).

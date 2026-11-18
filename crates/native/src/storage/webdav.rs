@@ -38,7 +38,13 @@
 //! confirmed `Versions::Server` (`keep_version` and `move_versions` are then no-ops: the server
 //! keeps them by file id). **Every write is verified by checksum where the profile asks for it**
 //! (§ 16, Q13): the `PUT` carries `OC-Checksum`, a depth-0 listing afterwards must show that same
-//! checksum, and anything else is [`Written::Conflict`], never a silent overwrite.
+//! checksum, and anything else is [`Written::Conflict`], never a silent overwrite. On such a profile
+//! **a file's version tag is its ETag plus the checksum the server lists** ([`WebDav::version_tag`]):
+//! a server that reuses an ETag within one second would otherwise hide another client's write
+//! behind the tag this client last saw, and the next overwrite's `If-Match` would pass. With the
+//! checksum in the tag, that write is a cloud change like any other (downloaded, or a conflict copy
+//! when the local file changed too). The bare ETag goes into `If-Match`; everything the engine sees
+//! and saves is the tag. A profile that doesn't verify writes keeps bare ETags.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -60,6 +66,15 @@ use crate::session::AppPasswordSession;
 
 /// How a trash entry's time is written in its folder's name (UTC, whole seconds).
 const TRASH_STAMP: &str = "%Y%m%dT%H%M%SZ";
+
+/// What joins a file's ETag and its listed SHA1 in a version tag (`"<etag>";sha1:<hex>`), on a
+/// profile that verifies writes by checksum.
+const SUM_MARK: &str = ";sha1:";
+
+/// The ETag a version tag was made from: what `If-Match` takes.
+fn server_etag(tag: &str) -> &str {
+    tag.rsplit_once(SUM_MARK).map_or(tag, |(etag, _)| etag)
+}
 
 /// How often one client sweeps the client trash at most (a rate limit on this computer's
 /// monotonic clock only; which entries go is decided by the server's clock, never this one).
@@ -237,8 +252,30 @@ impl WebDav {
             .body(PROPFIND_BODY.as_bytes().to_vec())
     }
 
-    /// One folder's listing, read against the base; the folder itself left out. A 404 is
-    /// [`StorageError::NotFound`]; anything else that isn't a readable 207 fails it.
+    /// A file's version tag: its ETag, and on a profile that verifies writes by checksum (§ 16,
+    /// Q13) the SHA1 the server lists for it too. Nextcloud reuses a file's ETag when it is
+    /// overwritten within the same second as the write before it, but it lists the checksum only
+    /// of a `PUT` that carried one, and clears it on any other write: so the pair changes when
+    /// another client's write lands under an unchanged ETag, whether that write carried a checksum
+    /// (another one) or none (the web page). Without a listed checksum, or on any other profile,
+    /// the tag is the bare ETag.
+    fn version_tag(&self, etag: &str, checksums: &[String]) -> String {
+        if self.profile.verify_writes() != Some(Checksum::Sha1) {
+            return etag.to_owned();
+        }
+        let sha1 = checksums.iter().flat_map(|c| c.split_whitespace()).find_map(|c| {
+            let (kind, hex) = c.split_once(':')?;
+            (kind.eq_ignore_ascii_case("SHA1") && !hex.is_empty()).then(|| hex.to_ascii_lowercase())
+        });
+        match sha1 {
+            Some(hex) => format!("{etag}{SUM_MARK}{hex}"),
+            None => etag.to_owned(),
+        }
+    }
+
+    /// One folder's listing, read against the base; the folder itself left out, every file's
+    /// `etag` its version tag ([`Self::version_tag`]). A 404 is [`StorageError::NotFound`];
+    /// anything else that isn't a readable 207 fails it.
     fn listing(&mut self, folder: &str) -> Result<Vec<Listed>, StorageError> {
         let resp = self.session.call(&self.propfind(folder, true, "1"))?;
         if resp.status == 404 {
@@ -247,6 +284,11 @@ impl WebDav {
         let me = folder.trim_matches('/');
         let mut entries = parse_listing(&resp, &self.base).map_err(|e| format!("listing {folder:?}: {e}"))?;
         entries.retain(|e| e.path != me);
+        for e in &mut entries {
+            if let Some(etag) = e.etag.take() {
+                e.etag = Some(self.version_tag(&etag, &e.checksums));
+            }
+        }
         Ok(entries)
     }
 
@@ -367,7 +409,7 @@ impl WebDav {
             }
             None => None,
         };
-        let mut req = dav::upload_under(self.base.url(), path, Vec::new(), write);
+        let mut req = dav::upload_under(self.base.url(), path, Vec::new(), &bare(write));
         if let Some(sum) = &checksum {
             req = req.header("OC-Checksum", sum.clone());
         }
@@ -385,7 +427,7 @@ impl WebDav {
             }
             _ => None,
         };
-        let mut req = dav::upload_under(self.base.url(), path, bytes, write);
+        let mut req = dav::upload_under(self.base.url(), path, bytes, &bare(write));
         if let Some(sum) = &checksum {
             req = req.header("OC-Checksum", sum.clone());
         }
@@ -419,9 +461,12 @@ impl WebDav {
                     );
                     return Ok(Written::Conflict);
                 }
-                let etag = match etag {
-                    Some(e) => e,
-                    None => self.listed_etag(path)?,
+                // The tag of what was just written: the answer's ETag with our checksum (which
+                // the read-back above showed the server lists), or the listing's tag.
+                let etag = match (etag, checksum) {
+                    (Some(e), Some(sum)) => self.version_tag(&e, &[sum.to_owned()]),
+                    (Some(e), None) => e,
+                    (None, _) => self.listed_etag(path)?,
                 };
                 Ok(Written::Saved { etag })
             }
@@ -443,7 +488,7 @@ impl WebDav {
     fn delete_to_server_trash(&mut self, path: &str, folder: bool, if_match: Option<&str>) -> Result<Trashed, StorageError> {
         let mut req = dav::delete_under(self.base.url(), path, folder);
         if let Some(etag) = if_match {
-            req = req.header("If-Match", etag);
+            req = req.header("If-Match", server_etag(etag));
         }
         let resp = self.session.call(&req)?;
         match resp.status {
@@ -513,6 +558,15 @@ impl WebDav {
             }
         }
         true
+    }
+}
+
+/// The same write with the bare ETag in its guard (a version tag's checksum part isn't the
+/// server's).
+fn bare(write: &Write) -> Write {
+    match write {
+        Write::Create => Write::Create,
+        Write::Replace { etag } => Write::Replace { etag: server_etag(etag).to_owned() },
     }
 }
 
@@ -633,7 +687,15 @@ impl RemoteStorage for WebDav {
             req = req.header("Range", format!("bytes={from}-"));
         }
         let resp = self.session.open(&req)?;
-        Ok(Download::new(resp, Arc::clone(&self.session.cancel)))
+        // The tag of the bytes coming down, from the same answer (never a second look, which could
+        // show a later write): its ETag and, where writes are verified, its `OC-Checksum`.
+        let header = |name: &str| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);
+        let tag = header("etag").map(|etag| self.version_tag(&etag, &header("oc-checksum").into_iter().collect::<Vec<_>>()));
+        let download = Download::new(resp, Arc::clone(&self.session.cancel));
+        Ok(match tag {
+            Some(tag) => download.with_etag(tag),
+            None => download,
+        })
     }
 
     fn create(&mut self, path: &str, file: &Path) -> Result<Written, StorageError> {
@@ -1126,6 +1188,32 @@ pub(crate) mod tests {
         assert_eq!(deletes.len(), 2, "the two oldest versions were pruned: {:?}", server.seen());
         let versions_of_a = format!("{BASE_PATH}/.craftcloud/versions/Docs/a.txt/2026");
         assert!(deletes.iter().all(|p| p.starts_with(&versions_of_a)), "a prune deletes only inside the file's own versions folder: {deletes:?}");
+    }
+
+    /// The ETag a version tag was made from (for tests of a profile whose tags carry a checksum).
+    pub(crate) fn bare_etag(tag: &str) -> &str {
+        super::server_etag(tag)
+    }
+
+    /// The generic profile keeps bare ETags, even where the server lists checksums (the scripted
+    /// server does by default): nothing but a profile that verifies writes gets the longer tag, so
+    /// a plain WebDAV server's saved state and its requests are what they were.
+    #[test]
+    fn the_generic_profile_keeps_bare_etags() {
+        let (server, dav) = scripted(Flags::default());
+        dav.lock().unwrap().add_folder("Docs", None);
+        let dir = tempfile::tempdir().unwrap();
+        let a = file(dir.path(), "a.txt", "one");
+        let mut s = driver(&server);
+        let Written::Saved { etag } = s.create("Docs/a.txt", &a).unwrap() else { panic!("not saved") };
+        let listed = s.list("Docs").unwrap();
+        assert!(listed[0].checksum.is_some(), "the server lists a checksum");
+        assert_eq!(listed[0].etag.as_deref(), Some(etag.as_str()));
+        assert!(!etag.contains("sha1") && etag.starts_with('"') && etag.ends_with('"'), "{etag}");
+        assert_eq!(s.download("Docs/a.txt", None).unwrap().header("etag"), Some(etag.as_str()));
+        assert!(server.seen().iter().all(|r| r.header("oc-checksum").is_none()), "and sends none");
+        assert_eq!(super::server_etag("\"e1\";sha1:abc"), "\"e1\"");
+        assert_eq!(super::server_etag("\"e1\""), "\"e1\"");
     }
 
     /// Free space comes from `quota-available-bytes` where the server lists it; a negative number

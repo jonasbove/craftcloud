@@ -505,6 +505,11 @@ impl FakeDav {
         match self.files.get(&self.key(path)) {
             Some(f) => {
                 let resp = self.done(200, f.body.clone());
+                // As Nextcloud does: the checksum the last `PUT` carried comes with the bytes.
+                let resp = match &f.checksum {
+                    Some(sum) => resp.with_header("OC-Checksum", sum),
+                    None => resp,
+                };
                 if self.flags.no_file_etags { resp } else { resp.with_header("ETag", &f.etag) }
             }
             None => self.done(404, ""),

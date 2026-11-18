@@ -395,7 +395,13 @@ profile is `crates/native/src/storage/profile/nextcloud.rs`. Nothing below is fi
 > within a second (a cycle lists first); `craftcloud put --force` right after `put` would, and the version it
 > loses is the bytes the person just uploaded.
 >
-> CraftCloud works around the ETag part (docs/WEBDAV-STORAGE.md § 16, Q13): every `PUT` carries `OC-Checksum: SHA1:…`, the
+> It cuts both ways. A write right behind ours hides under our tag (above). And a write right behind one we
+> already synced hides under the tag we saved: a listing shows the same ETag, so a sync client sees no change,
+> never downloads it, and its own next overwrite passes `If-Match`.
+>
+> CraftCloud works around the ETag part (docs/WEBDAV-STORAGE.md § 16, Q13). For the second direction it reads a
+> file's version as its ETag plus the checksum the server lists (a write without `OC-Checksum` clears the listed
+> checksum even when the ETag stays, and a `GET` answers the stored one). For the first, every `PUT` carries `OC-Checksum: SHA1:…`, the
 > file is read back afterwards, and a listed checksum that isn't ours is taken as someone else's write and kept
 > as a conflict copy. That costs one `PROPFIND` per write and relies on the server storing the checksum it was
 > sent (which it does, without checking it: a wrong `OC-Checksum` is accepted and listed as given).
