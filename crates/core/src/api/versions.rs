@@ -93,6 +93,12 @@ pub fn list(server: &ServerUrl, path: &str) -> HttpRequest {
     dav::list(server, &versions_folder(path))
 }
 
+/// [`list`] under any WebDAV base (`dav::url_under`): the generic driver keeps versions the same
+/// way under its own base.
+pub fn list_under(base: &str, path: &str) -> HttpRequest {
+    dav::list_under(base, &versions_folder(path))
+}
+
 /// The versions, newest first. A file that never had an earlier version has no versions folder
 /// (404): that is an empty list, not an error.
 pub fn parse_list(resp: &HttpResponse) -> Result<Vec<Version>, ApiError> {
@@ -111,6 +117,11 @@ pub fn parse_list(resp: &HttpResponse) -> Result<Vec<Version>, ApiError> {
 /// `COPY path → .craftcloud/versions/<path>/<stamp>`, never overwriting.
 pub fn snapshot(server: &ServerUrl, path: &str, stamp: &str) -> HttpRequest {
     dav::copy(server, path, &version_path(path, stamp))
+}
+
+/// [`snapshot`] under any WebDAV base.
+pub fn snapshot_under(base: &str, path: &str, stamp: &str) -> HttpRequest {
+    dav::copy_under(base, path, &version_path(path, stamp))
 }
 
 /// Whether a snapshot answer is fine: copied, or nothing there to keep (404).
@@ -148,6 +159,11 @@ pub fn move_history(server: &ServerUrl, from: &str, to: &str) -> HttpRequest {
     dav::move_to(server, &versions_folder(from), &versions_folder(to), true)
 }
 
+/// [`move_history`] under any WebDAV base.
+pub fn move_history_under(base: &str, from: &str, to: &str) -> HttpRequest {
+    dav::move_to_under(base, &versions_folder(from), &versions_folder(to), true)
+}
+
 /// Everything that takes `from`'s history along to `to` after a rename or move (a file, or a
 /// folder with its files' histories), in order (T-050): `MKCOL` each of [`history_parents`] (201,
 /// or 405 when it is there), then [`move_history`] (404: there was none). Send them one after the
@@ -170,6 +186,11 @@ pub fn drop_history(server: &ServerUrl, path: &str) -> HttpRequest {
 /// `DELETE` an old version.
 pub fn delete(server: &ServerUrl, path: &str, stamp: &str) -> HttpRequest {
     dav::delete(server, &version_path(path, stamp), false)
+}
+
+/// [`delete`] under any WebDAV base.
+pub fn delete_under(base: &str, path: &str, stamp: &str) -> HttpRequest {
+    dav::delete_under(base, &version_path(path, stamp), false)
 }
 
 /// `COPY .craftcloud/versions/<path>/<stamp> → path`, replacing the file.
@@ -196,6 +217,11 @@ pub fn is_version_path(path: &str) -> bool {
 /// Requests to make the folders for `path`'s versions, parent first.
 pub fn make_folders(server: &ServerUrl, path: &str) -> Vec<HttpRequest> {
     folders_for(path).iter().map(|f| HttpRequest::new(Method::Mkcol, dav::url(server, f, true))).collect()
+}
+
+/// [`make_folders`] under any WebDAV base.
+pub fn make_folders_under(base: &str, path: &str) -> Vec<HttpRequest> {
+    folders_for(path).iter().map(|f| dav::create_folder_under(base, f)).collect()
 }
 
 #[cfg(test)]

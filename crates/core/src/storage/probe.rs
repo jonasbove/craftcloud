@@ -220,6 +220,28 @@ impl Base {
         &self.path
     }
 
+    /// Whether requests to this base go unencrypted (`http://`).
+    pub fn is_plain_http(&self) -> bool {
+        self.url.starts_with("http://")
+    }
+
+    /// Whether the base is this computer itself (`127.0.0.1`, `::1`, `localhost`): the one place a
+    /// password may travel over plain http (docs/WEBDAV-STORAGE.md § 10).
+    pub fn is_loopback(&self) -> bool {
+        match url::Url::parse(&self.url).ok().and_then(|u| u.host().map(|h| h.to_owned())) {
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
+            None => false,
+        }
+    }
+
+    /// The server's address without the WebDAV path (`https://cloud.example.org`), what the
+    /// settings and the keychain key a sign-in by.
+    pub fn origin(&self) -> String {
+        url::Url::parse(&self.url).map(|u| u.origin().ascii_serialization()).unwrap_or_default()
+    }
+
     /// The cloud path an href names, relative to this base: `None` when it lies outside it (or
     /// isn't UTF-8), which fails a listing.
     pub fn relative(&self, href: &str) -> Option<String> {
@@ -249,6 +271,11 @@ pub struct Listed {
     pub file_id: Option<String>,
     /// `oc:checksums`, e.g. `SHA1:… MD5:…`.
     pub checksums: Vec<String>,
+    /// `getcontentlength`; 0 for a folder or when the server lists none.
+    pub size: u64,
+    /// `quota-available-bytes`, where the server lists it (a negative number means unknown or
+    /// unlimited, as Nextcloud's `-3`).
+    pub quota_available: Option<i64>,
 }
 
 impl Listed {
@@ -257,7 +284,8 @@ impl Listed {
     }
 }
 
-const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns"><d:prop><d:resourcetype/><d:getetag/><d:getlastmodified/><oc:fileid/><oc:checksums/></d:prop></d:propfind>"#;
+/// What the probe (and the generic driver) ask a listing for.
+pub const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns"><d:prop><d:resourcetype/><d:getetag/><d:getcontentlength/><d:getlastmodified/><d:quota-available-bytes/><oc:fileid/><oc:checksums/></d:prop></d:propfind>"#;
 
 /// Reads a `PROPFIND` answer. A status other than 207, a body that isn't a multistatus, or an
 /// href outside the base is an error (in words).
@@ -270,13 +298,16 @@ pub fn parse_listing(resp: &HttpResponse, base: &Base) -> Result<Vec<Listed>, St
         .map(|response| {
             let href = craft_dav::href(response).ok_or_else(|| "a listing entry without a path".to_owned())?;
             let path = base.relative(&href).ok_or_else(|| format!("a listing named a path outside the server's base: {href}"))?;
-            let mut e = Listed { path, is_folder: false, etag: None, modified: None, file_id: None, checksums: Vec::new() };
+            let mut e =
+                Listed { path, is_folder: false, etag: None, modified: None, file_id: None, checksums: Vec::new(), size: 0, quota_available: None };
             for prop in craft_dav::properties(response) {
                 let text = || Some(prop.text().trim().to_owned()).filter(|t| !t.is_empty());
                 match prop.name.as_str() {
                     "d:resourcetype" => e.is_folder = prop.child("d:collection").is_some(),
                     "d:getetag" => e.etag = text(),
+                    "d:getcontentlength" => e.size = prop.text().trim().parse().unwrap_or(0),
                     "d:getlastmodified" => e.modified = text(),
+                    "d:quota-available-bytes" => e.quota_available = prop.text().trim().parse().ok(),
                     "oc:fileid" => e.file_id = text(),
                     "oc:checksums" => {
                         e.checksums = prop.children("oc:checksum").map(|c| c.text().trim().to_owned()).filter(|c| !c.is_empty()).collect()

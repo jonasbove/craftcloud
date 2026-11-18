@@ -46,6 +46,9 @@ fn done(ctx: &Ctx, value: serde_json::Value, human: &str) -> Result<()> {
 pub fn ls(ctx: &Ctx, path: &str, all: bool, app: Option<&str>) -> Result<()> {
     let app = craft::pick_app(app)?;
     let path = clean(path)?;
+    if ctx.is_webdav() {
+        return super::webdav::ls(ctx, &path, all, app);
+    }
     let mut remote = ctx.remote()?;
     let folder = match remote.resolve(&path)? {
         Resource::Folder(f) => f,
@@ -77,6 +80,9 @@ fn refused(mut resp: ureq::http::Response<ureq::Body>) -> CliError {
 /// `get <remote> [local]`.
 pub fn get(ctx: &Ctx, remote_path: &str, local: Option<&str>, force: bool) -> Result<()> {
     let path = clean(remote_path)?;
+    if ctx.is_webdav() {
+        return super::webdav::get(ctx, &path, local, force);
+    }
     let mut remote = ctx.remote()?;
     let entry = remote.stat(&path)?.ok_or_else(|| CliError::not_found(format!("{path}: no such file or folder")))?;
     let (name, req) = if entry.is_folder {
@@ -115,7 +121,7 @@ pub fn get(ctx: &Ctx, remote_path: &str, local: Option<&str>, force: bool) -> Re
 }
 
 /// Where a download goes: the current folder, into a folder, or a file name.
-fn target(local: Option<&str>, name: &str) -> PathBuf {
+pub(super) fn target(local: Option<&str>, name: &str) -> PathBuf {
     match local {
         None => PathBuf::from(name),
         Some(l) if Path::new(l).is_dir() || l.ends_with('/') || l.ends_with(std::path::MAIN_SEPARATOR) => Path::new(l).join(name),
@@ -150,6 +156,9 @@ pub fn content_type(name: &str) -> &'static str {
 
 /// `put <local> [remote]`.
 pub fn put(ctx: &Ctx, local: &str, remote_path: Option<&str>, force: bool) -> Result<()> {
+    if ctx.is_webdav() {
+        return super::webdav::put(ctx, local, remote_path, force);
+    }
     let file = Path::new(local);
     let meta = std::fs::metadata(file).map_err(|e| CliError::not_found(format!("{local}: {e}")))?;
     if !meta.is_file() {
@@ -203,6 +212,9 @@ pub(super) fn upload_to(remote: &mut Remote, file: &Path, path: &str, existing: 
 
 /// `mkdir [-p] <path>`.
 pub fn mkdir(ctx: &Ctx, path: &str, parents: bool) -> Result<()> {
+    if ctx.is_webdav() {
+        return super::webdav::mkdir(ctx, path, parents);
+    }
     let path = clean(path)?;
     if path.is_empty() {
         return Err(CliError::usage("which folder?"));
@@ -234,6 +246,10 @@ pub(super) fn make_folder(remote: &mut Remote, path: &str, parents: bool) -> Res
 
 /// `mv` and `cp`: into a folder when the destination is one, else to that name.
 pub fn move_or_copy(ctx: &Ctx, from: &str, to: &str, copy: bool) -> Result<()> {
+    if ctx.is_webdav() {
+        // The storage trait has no copy (the sync never copies); `cp` is CraftCloud's server's.
+        return if copy { Err(CliError::unsupported("copying on the server")) } else { super::webdav::mv(ctx, from, to) };
+    }
     let (from, to_clean) = (clean(from)?, clean(to)?);
     if from.is_empty() {
         return Err(CliError::usage("the top of the cloud can't be moved or copied"));
@@ -266,6 +282,9 @@ pub fn move_or_copy(ctx: &Ctx, from: &str, to: &str, copy: bool) -> Result<()> {
 
 /// `rm <path>…`: to the trash.
 pub fn rm(ctx: &Ctx, paths: &[String]) -> Result<()> {
+    if ctx.is_webdav() {
+        return super::webdav::rm(ctx, paths);
+    }
     let mut remote = ctx.remote()?;
     let mut trashed = Vec::new();
     for p in paths {
@@ -325,6 +344,11 @@ fn trash_item(i: &TrashItem) -> Item {
 
 /// `trash ls|restore|rm|empty`.
 pub fn trash(ctx: &Ctx, cmd: TrashCmd) -> Result<()> {
+    if ctx.is_webdav() {
+        // CraftCloud's own trash on the server (`.craftcloud/trash/`) is listed, restored and
+        // emptied through the trait in a later pull request (docs/WEBDAV-STORAGE.md § 14, 4b).
+        return Err(CliError::unsupported("the trash commands"));
+    }
     let mut remote = ctx.remote()?;
     match cmd {
         TrashCmd::Ls { all } => {
@@ -448,6 +472,9 @@ pub fn confirm(question: &str) -> Result<()> {
 /// `star` / `unstar`.
 pub fn star(ctx: &Ctx, path: &str, on: bool) -> Result<()> {
     let path = clean(path)?;
+    if ctx.is_webdav() {
+        return Err(CliError::unsupported("stars"));
+    }
     let mut remote = ctx.remote()?;
     let found = remote.resolve(&path)?;
     let req =
@@ -463,6 +490,9 @@ pub fn star(ctx: &Ctx, path: &str, on: bool) -> Result<()> {
 /// `starred [--app]`.
 pub fn starred(ctx: &Ctx, all: bool, app: Option<&str>) -> Result<()> {
     let app = craft::pick_app(app)?;
+    if ctx.is_webdav() {
+        return Err(CliError::unsupported("stars"));
+    }
     let mut remote = ctx.remote()?;
     let mut items = Vec::new();
     let mut cursor: Option<String> = None;
@@ -484,6 +514,9 @@ pub fn starred(ctx: &Ctx, all: bool, app: Option<&str>) -> Result<()> {
 /// `recent [--clear] [--app]`.
 pub fn recent(ctx: &Ctx, clear: bool, all: bool, app: Option<&str>) -> Result<()> {
     let app = craft::pick_app(app)?;
+    if ctx.is_webdav() {
+        return Err(CliError::unsupported("the recent list"));
+    }
     let mut remote = ctx.remote()?;
     if clear {
         remote.ask(&favorites::clear_recent(remote.server()), expect_ok)?;
@@ -514,6 +547,9 @@ pub struct SearchArgs<'a> {
 pub fn search(ctx: &Ctx, args: &SearchArgs) -> Result<()> {
     let SearchArgs { query, kind, within, limit, all, app } = *args;
     let app = craft::pick_app(app)?;
+    if ctx.is_webdav() {
+        return Err(CliError::unsupported("search"));
+    }
     let kind = match kind {
         None => None,
         Some(k) => Some(TypeFilter::parse(k).ok_or_else(|| {

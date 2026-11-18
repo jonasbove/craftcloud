@@ -30,6 +30,8 @@ use serde::{Deserialize, Serialize};
 use crate::http::Waker;
 pub use crate::session::Session;
 use crate::storage::oxicloud::OxiCloud;
+use crate::storage::probe::StoredCheck;
+use crate::storage::webdav::WebDav;
 use crate::storage::{MoveGuard, Moved, RemoteStorage, StorageError, TrashGuard, TrashItem, Trashed, Written};
 
 /// What the sync says while the server can't be reached (the error itself goes to the log).
@@ -140,19 +142,68 @@ pub fn start(plan: SyncPlan, tokens: Tokens, device: String, on_tokens: TokenSin
 }
 
 /// Starts syncing on its own thread with the caller's session (e.g. [`Session::shared`], so the
-/// command line and the desktop client share one sign-in).
+/// command line and the desktop client share one sign-in): CraftCloud's own server, through the
+/// OxiCloud driver.
 pub fn start_with(plan: SyncPlan, session: Session, device: String, waker: Waker) -> Handle {
+    let cancel = Arc::clone(&session.cancel);
+    let storage = OxiCloud::new(session);
+    start_storage(plan, cancel, device, waker, move |_| Ok(storage))
+}
+
+/// Connects to another WebDAV server (docs/WEBDAV-STORAGE.md § 7.4): the driver and the check it
+/// read or ran (§ 7.5), or why it couldn't.
+pub type Connect = Box<dyn FnOnce() -> Result<(WebDav, StoredCheck), String> + Send>;
+
+/// Starts syncing with another WebDAV server on its own thread. `connect` runs on that thread
+/// (the check on connect may take a while, and nothing slow runs before the window's first
+/// frame); until it answers the sync says it is checking the server, and if it fails the sync
+/// says why and does nothing. Only with the opt-in (`crate::experimental`), which the caller
+/// asks before calling this.
+pub fn start_webdav(plan: SyncPlan, connect: Connect, device: String, waker: Waker) -> Handle {
+    start_storage(plan, Arc::default(), device, waker, move |cancel| {
+        let (mut driver, check) = connect()?;
+        driver.session().cancel = cancel;
+        log::info!("connected to {} ({}, {})", driver.base().url(), check.mode.words(), if check.measured { "measured" } else { "known" });
+        Ok(driver)
+    })
+}
+
+/// Starts the engine on its own thread over the storage `make` gives it there (`cancel` stops a
+/// transfer under way from outside; the storage's own transfers must share it).
+fn start_storage<S: RemoteStorage + 'static>(
+    plan: SyncPlan,
+    cancel: Arc<AtomicBool>,
+    device: String,
+    waker: Waker,
+    make: impl FnOnce(Arc<AtomicBool>) -> Result<S, String> + Send + 'static,
+) -> Handle {
     let progress: Progress = Arc::default();
     let (to_engine, inbox) = channel();
-    let cancel = Arc::clone(&session.cancel);
     let commands = Commands::new(to_engine.clone(), Arc::clone(&cancel));
     let shared = Arc::clone(&progress);
     let to_self = to_engine;
     let spawned = std::thread::Builder::new().name("craftcloud-sync".into()).spawn(move || {
+        {
+            let mut p = shared.lock().unwrap_or_else(PoisonError::into_inner);
+            p.state = SyncState::Scanning;
+            p.current = "checking the server".into();
+        }
+        waker();
+        let storage = match make(Arc::clone(&cancel)) {
+            Ok(storage) => storage,
+            Err(why) => {
+                let mut p = shared.lock().unwrap_or_else(PoisonError::into_inner);
+                p.current.clear();
+                p.state = SyncState::Failed(why);
+                drop(p);
+                waker();
+                return;
+            }
+        };
         let watcher = watch(Path::new(&plan.local_folder), to_self);
         let mut engine = Engine {
             plan,
-            storage: OxiCloud::new(session),
+            storage,
             cancel,
             device,
             progress: shared,
@@ -442,6 +493,7 @@ impl<S: RemoteStorage> Engine<S> {
         // What this server allows (docs/WEBDAV-STORAGE.md § 7.3): every plan below is cut to it.
         // OxiCloud's capabilities give two-way sync, which cuts nothing.
         let mode = mode_for(self.storage.capabilities());
+        self.update(|p| p.mode = Some(mode));
         if mode == Mode::Refused {
             return Err(Stop::Error("this server can't show when a file changed, so nothing is synced with it".into()));
         }
@@ -484,7 +536,6 @@ impl<S: RemoteStorage> Engine<S> {
                 (u.path.clone(), why)
             }))
             .collect();
-        let not_synced: Vec<String> = left_out.keys().cloned().collect();
         let waiting = mid_save(&unreadable);
         self.move_folders(&root, &mut state, &mut local, &mut remote, &kept_conflicts, &unreadable)?;
         let (actions, held) = match reconcile::reconcile(&state, &local, &remote, confirm == Deletes::Confirm) {
@@ -529,8 +580,14 @@ impl<S: RemoteStorage> Engine<S> {
                 }
             }
         };
-        // Cut to the mode before the holds below, which only take actions out.
+        // Cut to the mode before the holds below, which only take actions out. Under download
+        // only the uploads the cut takes out are said once, and listed as not uploaded (§ 9).
+        let not_uploaded = if mode == Mode::DownloadOnly { uploads_in(&actions) } else { Vec::new() };
         let actions = reconcile::restrict(actions, mode);
+        self.report_not_uploaded(&not_uploaded, &local);
+        let left_out: BTreeMap<String, LeftOut> =
+            left_out.into_iter().chain(not_uploaded.iter().map(|(p, _)| (p.clone(), LeftOut::NotUploaded))).collect();
+        let not_synced: Vec<String> = left_out.keys().cloned().collect();
         let actions = self.hold_moved_out(&root, &state, actions);
         let actions = self.hold_no_room(&local, actions);
         let actions = hold_unreadable(actions, &unreadable);
@@ -758,6 +815,25 @@ impl<S: RemoteStorage> Engine<S> {
         kept
     }
 
+    /// Says once (per version of each file) that a file new or changed here isn't uploaded: the
+    /// server only syncs downwards (download only, docs/WEBDAV-STORAGE.md § 9).
+    fn report_not_uploaded(&mut self, not_uploaded: &[(String, bool)], local: &Tree<LocalFile>) {
+        let mut notes = Vec::new();
+        for (path, new) in not_uploaded {
+            let key = match local.files.get(path) {
+                Some(f) => format!("not-uploaded:{path}:{}:{}", f.size, f.mtime),
+                None => format!("not-uploaded:{path}"),
+            };
+            if self.reported.insert(key) {
+                let why = if *new { "new on this computer" } else { "changed on this computer" };
+                notes.push(event(ActivityKind::Skipped, path, None, format!("{why}, not uploaded: this server only syncs downwards")));
+            }
+        }
+        if !notes.is_empty() {
+            self.update(|p| notes.into_iter().for_each(|e| p.record(e)));
+        }
+    }
+
     /// Says once (per run and place) that part of the folder can't be read, so it isn't synced.
     fn report_unreadable(&mut self, unreadable: &[Unreadable]) {
         let mut notes = Vec::new();
@@ -785,7 +861,8 @@ impl<S: RemoteStorage> Engine<S> {
     /// computer can't keep apart (see the free [`screen_names`]), and says so once.
     fn screen_names(&mut self, state: &mut State, local: &mut Tree<LocalFile>, remote: &mut Tree<RemoteFile>) -> Vec<String> {
         let rules = self.storage.capabilities().names;
-        let (notes, left_out) = screen_names(state, local, remote, self.platform, &rules, &mut self.reported);
+        let cloud_case_insensitive = self.storage.capabilities().case_insensitive;
+        let (notes, left_out) = screen_names(state, local, remote, self.platform, &rules, cloud_case_insensitive, &mut self.reported);
         if !notes.is_empty() {
             self.update(|p| notes.into_iter().for_each(|e| p.record(e)));
         }
@@ -1430,6 +1507,18 @@ enum Deletes {
     Discard,
 }
 
+/// The uploads in a plan (path, whether the file is new here): what download only leaves out.
+fn uploads_in(actions: &[Action]) -> Vec<(String, bool)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::UploadNew(p) => Some((p.clone(), true)),
+            Action::UploadChange { path, .. } => Some((path.clone(), false)),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Whether an action deletes something.
 fn is_delete(action: &Action) -> bool {
     matches!(
@@ -1579,10 +1668,11 @@ fn screen_names(
     remote: &mut Tree<RemoteFile>,
     platform: Platform,
     server: &NameRules,
+    cloud_case_insensitive: bool,
     reported: &mut BTreeSet<String>,
 ) -> (Vec<ActivityEvent>, Vec<String>) {
     let mut notes = Vec::new();
-    let left_out = leave_out_names(state, local, remote, platform, server);
+    let left_out = leave_out_names(state, local, remote, platform, server, cloud_case_insensitive);
     for (place, (why, file)) in &left_out {
         let key = match file {
             Some(f) => format!("refused:{place}:{}:{}", f.size, f.mtime),
@@ -1623,13 +1713,17 @@ fn name_trouble<'a>(path: &'a str, platform: Platform, server: &NameRules) -> Op
 
 /// Takes the places [`screen_names`] leaves out out of both sides and the state (the top-most
 /// such place of each path: `a\b/c.txt` leaves out all of `a\b`), and returns them with why
-/// (and the local file, if it is one, to say it once per version).
+/// (and the local file, if it is one, to say it once per version). On a server that can't keep
+/// names apart by case (`cloud_case_insensitive`, docs/WEBDAV-STORAGE.md § 8), two local names
+/// that differ only in case get the same rule the other way round: the one the cloud has keeps
+/// syncing, the other stays here.
 fn leave_out_names(
     state: &mut State,
     local: &mut Tree<LocalFile>,
     remote: &mut Tree<RemoteFile>,
     platform: Platform,
     server: &NameRules,
+    cloud_case_insensitive: bool,
 ) -> BTreeMap<String, (String, Option<LocalFile>)> {
     let mut out: BTreeMap<String, (String, Option<LocalFile>)> = BTreeMap::new();
     for path in local.files.keys().chain(&local.folders).chain(remote.files.keys()).chain(&remote.folders) {
@@ -1648,6 +1742,18 @@ fn leave_out_names(
         );
         let file = local.files.get(&place).copied();
         out.entry(place).or_insert((why, file));
+    }
+    if cloud_case_insensitive {
+        let left = |p: &str| out.keys().any(|place| within(place, p));
+        let here: Vec<&str> = local.files.keys().chain(&local.folders).map(String::as_str).filter(|p| !left(p)).collect();
+        let in_cloud = |p: &str| remote.files.contains_key(p) || remote.folders.contains(p);
+        for (place, other) in names::clashes(here, in_cloud, Platform::Windows) {
+            let why = format!(
+                "the server can't keep it apart from {other} (the names differ only in upper and lower case); it stays on this computer until one is renamed"
+            );
+            let file = local.files.get(&place).copied();
+            out.entry(place).or_insert((why, file));
+        }
     }
     for place in out.keys() {
         local.files.retain(|p, _| !within(place, p));
@@ -1816,11 +1922,9 @@ fn hold_unreadable(actions: Vec<Action>, unreadable: &[Unreadable]) -> Vec<Actio
 /// there.
 fn local_trash_place(root: &Path, rel: &Path, device: &str) -> Result<PathBuf, String> {
     let trash = root.join(dav::CRAFTCLOUD_DIR).join("trash");
-    let device: String = device.chars().map(|c| if matches!(c, '/' | '\\') { '-' } else { c }).collect();
-    let stamp = format!("{}-{device}", jiff::Timestamp::now().strftime("%Y%m%dT%H%M%SZ"));
+    let time = jiff::Timestamp::now().strftime("%Y%m%dT%H%M%SZ").to_string();
     for n in 1..1000 {
-        let dir = if n == 1 { trash.join(&stamp) } else { trash.join(format!("{stamp}-{n}")) };
-        let dest = dir.join(rel);
+        let dest = trash.join(dav::trash_entry_name(&time, device, n)).join(rel);
         if std::fs::symlink_metadata(&dest).is_err() {
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -1966,7 +2070,7 @@ mod tests {
         let mut remote: Tree<RemoteFile> = Tree::default();
         remote.files.insert(path.clone(), RemoteFile { etag: "e".into(), size: 1 });
         remote.folders.insert("Docs".into());
-        let out = leave_out_names(&mut state, &mut local, &mut remote, Platform::current(), &NameRules::oxicloud());
+        let out = leave_out_names(&mut state, &mut local, &mut remote, Platform::current(), &NameRules::oxicloud(), false);
         assert_eq!(out.keys().collect::<Vec<_>>(), [&path]);
         let plan = reconcile::reconcile(&state, &local, &remote, false).unwrap();
         assert!(!plan.iter().any(super::is_delete), "{plan:?}");
@@ -2492,7 +2596,7 @@ mod tests {
         platform: Platform,
         reported: &mut BTreeSet<String>,
     ) -> (Vec<Action>, Vec<craftcloud_core::sync::ActivityEvent>) {
-        let (notes, _) = super::screen_names(state, local, remote, platform, &NameRules::oxicloud(), reported);
+        let (notes, _) = super::screen_names(state, local, remote, platform, &NameRules::oxicloud(), false, reported);
         drop_skipped(state, local, remote, platform, &NameRules::oxicloud());
         (reconcile::reconcile(state, local, remote, false).unwrap(), notes)
     }
@@ -2565,6 +2669,40 @@ mod tests {
         // Elsewhere both sync.
         let (actions, _) = plan_pass(&mut state, &mut local, &mut remote, Platform::Other, &mut BTreeSet::new());
         assert!(actions.contains(&Action::Download("Docs/report.txt".into())), "{actions:?}");
+    }
+
+    /// On a server that can't keep names apart by case (docs/WEBDAV-STORAGE.md § 8), two local
+    /// names that differ only in case get the clash rule the other way round: the one the cloud
+    /// has keeps syncing, the other stays here and is said once; on a case-sensitive server both
+    /// go up. Names this computer can't have still follow this computer's rule, not Windows's.
+    #[test]
+    fn local_names_a_case_insensitive_server_cant_keep_apart_are_held() {
+        let mut state = State::default();
+        state.folders.insert("Docs".into());
+        let mut local: Tree<LocalFile> = Tree::default();
+        local.folders.insert("Docs".into());
+        local.files.insert("Docs/Report.txt".into(), LocalFile { size: 1, mtime: 1 });
+        local.files.insert("Docs/report.txt".into(), LocalFile { size: 2, mtime: 1 });
+        local.files.insert("Docs/a:b.txt".into(), LocalFile { size: 3, mtime: 1 });
+        let mut remote: Tree<RemoteFile> = Tree::default();
+        remote.folders.insert("Docs".into());
+        remote.files.insert("Docs/report.txt".into(), RemoteFile { etag: "\"r\"".into(), size: 2 });
+        let (mut s, mut l, mut r) = (state.clone(), local.clone(), remote.clone());
+        let out = leave_out_names(&mut s, &mut l, &mut r, Platform::Other, &NameRules::oxicloud(), true);
+        assert_eq!(out.keys().collect::<Vec<_>>(), ["Docs/Report.txt"], "{out:?}");
+        assert!(out["Docs/Report.txt"].0.contains("the server can't keep it apart from Docs/report.txt"), "{out:?}");
+        assert!(l.files.contains_key("Docs/a:b.txt"), "a name Windows can't have still syncs from Linux");
+        let actions = reconcile::reconcile(&s, &l, &r, false).unwrap();
+        assert!(!actions.iter().any(|a| super::action_paths(a).contains(&"Docs/Report.txt")), "{actions:?}");
+        assert!(actions.contains(&Action::UploadNew("Docs/a:b.txt".into())), "{actions:?}");
+        // The same server kept apart by case: both go up.
+        let out = leave_out_names(&mut state, &mut local, &mut remote, Platform::Other, &NameRules::oxicloud(), false);
+        assert!(out.is_empty(), "{out:?}");
+        // Download only leaves the uploads out and names them once (§ 9).
+        let plan = reconcile::reconcile(&state, &local, &remote, false).unwrap();
+        let mut not_uploaded = super::uploads_in(&plan);
+        not_uploaded.sort();
+        assert_eq!(not_uploaded, [("Docs/Report.txt".to_owned(), true), ("Docs/a:b.txt".to_owned(), true)]);
     }
 
     /// A download that can't be put in place leaves no part file behind (seen as

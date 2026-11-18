@@ -102,6 +102,11 @@ pub struct Status {
     /// saving them); the next pass syncs them. Doesn't change `state` or the exit code.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub waiting: Vec<String>,
+    /// What the sync may do with this server: `two_way`, `download_only` or `refused`
+    /// (docs/WEBDAV-STORAGE.md § 7.3); empty until the engine's first pass, or from a client that
+    /// doesn't say.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mode: String,
     /// The latest activity, oldest first.
     pub activity: Vec<Activity>,
 }
@@ -247,6 +252,7 @@ impl Status {
             no_room: p.no_room.clone(),
             failed: p.unsynced.iter().filter(|(_, s)| **s == craftcloud_core::sync::FileStatus::Error).map(|(path, _)| path.clone()).collect(),
             waiting: p.waiting.clone(),
+            mode: p.mode.map(|m| m.as_str().to_owned()).unwrap_or_default(),
             activity: p.activity[skip..].iter().map(Activity::from).collect(),
         }
     }
@@ -511,6 +517,12 @@ pub fn claim_folder(local_folder: &Path) -> Result<FolderLock, String> {
     if !local_folder.is_dir() {
         return Ok(FolderLock(None));
     }
+    if let Some(database) = other_sync_client_database(local_folder) {
+        return Err(format!(
+            "Another sync program already syncs {} (it keeps {database} there); two sync engines on one folder fight over it. Choose another folder.",
+            local_folder.display()
+        ));
+    }
     let dir = local_folder.join(craftcloud_core::api::dav::CRAFTCLOUD_DIR);
     std::fs::create_dir_all(&dir).map_err(|e| format!("can't use {}: {e}", dir.display()))?;
     let path = dir.join("engine.lock");
@@ -527,6 +539,22 @@ pub fn claim_folder(local_folder: &Path) -> Result<FolderLock, String> {
         }
         Err(std::fs::TryLockError::Error(e)) => Err(format!("can't lock {}: {e}", path.display())),
     }
+}
+
+/// The database another sync client (Nextcloud's or ownCloud's desktop client) keeps at the top
+/// of `local_folder`, if there is one: `.sync_*.db`, `.owncloudsync.log` or `.csync_journal.db`
+/// (docs/WEBDAV-STORAGE.md § 12). Such a folder is never synced by CraftCloud too.
+pub fn other_sync_client_database(local_folder: &Path) -> Option<String> {
+    let entries = std::fs::read_dir(local_folder).ok()?;
+    let mut names: Vec<String> =
+        entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| is_other_sync_database(n)).collect();
+    names.sort();
+    names.into_iter().next()
+}
+
+/// Whether a file name is another sync client's database or journal.
+pub fn is_other_sync_database(name: &str) -> bool {
+    (name.starts_with(".sync_") && name.ends_with(".db")) || name == ".owncloudsync.log" || name == ".csync_journal.db"
 }
 
 /// Whether a desktop client or daemon answers on this settings folder's control channel.
@@ -802,6 +830,25 @@ mod tests {
         assert!(second.contains("already syncing"), "{second}");
         drop(first);
         assert!(super::claim_folder(dir.path()).is_ok(), "free again once the first lets go");
+    }
+
+    /// A folder another sync client keeps its database in is refused (docs/WEBDAV-STORAGE.md
+    /// § 12): two engines on one folder fight; nothing is made in it.
+    #[test]
+    fn a_folder_another_sync_client_syncs_is_refused() {
+        for database in [".sync_1a2b3c4d.db", ".owncloudsync.log", ".csync_journal.db"] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join(database), "x").unwrap();
+            let refused = super::claim_folder(dir.path()).err().unwrap_or_else(|| panic!("{database}: claimed"));
+            assert!(refused.contains("Another sync program") && refused.contains(database), "{refused}");
+            assert!(!dir.path().join(".craftcloud").exists(), "{database}: nothing was made");
+        }
+        for fine in ["sync_notes.db", ".sync_x.txt", "owncloudsync.log", "notes.db"] {
+            assert!(!super::is_other_sync_database(fine), "{fine}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("report.db"), "mine").unwrap();
+        assert!(super::claim_folder(dir.path()).is_ok());
     }
 
     #[test]

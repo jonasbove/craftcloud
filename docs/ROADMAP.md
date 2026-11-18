@@ -3,7 +3,7 @@
 **Stage: early alpha** · version 0.2.0 (share links and version history on the web, the Windows fixes, server hardening)
 
 > **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-18 · **Change:** minor (version 0.2.0; M9 moves to
-> 0.3.0; M9 pull requests 1 to 3, the sync engine behind a storage trait, sync modes, and the check on connect with `craftcloud server check`); on Linux the tray counts as up only while a tray
+> 0.3.0; M9 pull requests 1 to 4a, the sync engine behind a storage trait, sync modes, the check on connect with `craftcloud server check`, and the generic WebDAV driver behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in); on Linux the tray counts as up only while a tray
 > host is on the bus, so closing the window on stock GNOME quits instead of leaving an invisible client; a start at
 > login stays in the tray on Windows and X11, and opens the window where there is no tray; an offline desktop window waits before asking who is signed in again; the
 > release checklist and the Release workflow check the Craft web app pins; an idle window uses next to no CPU; trace
@@ -33,7 +33,7 @@ backup of anything you sync with it.
 | Web file browser (upload, download, rename, move, delete, trash, versions, details, recent, starred, search) | done | [design-notes/pass-2.md](design-notes/pass-2.md) |
 | Share links | done: public share page, CLI, the web's "Share link" sheet and "Your share links" page | [CLI.md › Share links](CLI.md#share-links) |
 | Admin (users, server settings, Craft web apps on or off) | done, on the web and in the CLI | [CLI.md](CLI.md#server-administration-owners-and-admins) |
-| Command line | done; on Windows through `craftcloud.com` (untried on Windows); `server check` says what the server guarantees the sync | [CLI.md](CLI.md) |
+| Command line | done; on Windows through `craftcloud.com` (untried on Windows); `server check` says what the server guarantees the sync; behind `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, `login --kind webdav` and the file and sync commands on any other WebDAV server | [CLI.md](CLI.md) |
 | Craft apps through the sync folder | done (every app) | [CRAFT-INTEGRATION.md § 1](CRAFT-INTEGRATION.md#1-the-sync-folder-works-today-every-app) |
 | `craftcloud://` deep links | done on Linux and Windows; macOS needs an Apple Event handler | [CRAFT-INTEGRATION.md § 2](CRAFT-INTEGRATION.md#2-deep-links-craftcloud) |
 | Integration contract (`craftcloud apps`, `files`, `save`) | done | [CRAFT-INTEGRATION.md § 3](CRAFT-INTEGRATION.md#3-the-integration-contract-the-craftcloud-command) |
@@ -56,7 +56,7 @@ backup of anything you sync with it.
 | M6 Files on demand | Placeholders that download when opened (Windows, Linux, macOS) | Design only |
 | M7 Signed desktop builds | Signed and notarized macOS builds, signed Windows builds | Not started; v1 is unsigned |
 | M8 Native NixOS deployment | OxiCloud, Caddy and craftcloud-admin as NixOS services without Docker, with the Craft web apps built by Nix from `apps.toml` | Not started; the NixOS module runs the Docker image today |
-| M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Planned for 0.3.0, on `main` behind an opt-in until the release; the storage trait with OxiCloud as its first driver, the sync modes (two-way, download only, refused) with the plan cut to each, and the check on connect (the probe's steps and verdict in `core`, its runner in `native`, `craftcloud server check`) are in; the only thing a person sees so far is `server check`, which reports CraftCloud's own server's known capabilities |
+| M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Planned for 0.3.0, on `main` behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in until the release; the storage trait with OxiCloud as its first driver, the sync modes (two-way, download only, refused) with the plan cut to each, the check on connect (the probe's steps and verdict in `core`, its runner in `native`, `craftcloud server check`) and the generic WebDAV driver (an app-password sign-in, the client's own trash by `MOVE` and versions by `COPY`, the command line's file and sync commands through the trait) are in; without the opt-in a person sees only `server check`, which reports CraftCloud's own server's known capabilities. Next: the trash's retention and the trash and version commands through the trait (4b), the live suite against Nextcloud, ownCloud and OpenCloud (5), their profiles (6 to 8), the desktop's Connect sheet (10) |
 | M10 No Python in the tree | The operator scripts without Python (sh and curl) and the packaging icons in Rust (0.3.0), then the design build (`design/tools`, FigCraft) as `cargo xtask design` | 0.3.0: scripts and icons in progress; the design build later |
 
 ## Current focus
@@ -116,6 +116,32 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-18: Sync (M9, pull request 4a of [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14, the first of two under its
+  row 4): any WebDAV server, with the client's own trash and versions, behind the opt-in. The opt-in
+  (`CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, read in `native::experimental` and asked by the command line, the daemon
+  and the desktop client): without it `--kind` is hidden and `--kind webdav` a usage error, and a settings file
+  naming another kind of server is refused with one message, nothing written (tests on the built program with the
+  variable unset, `0`, `true`, `yes` and `1`). `Credential` (`Bearer` or `AppPassword`; OxiCloud's keychain entries
+  keep 0.2.0's exact bytes) and `AppPasswordSession` (Basic auth, a 401 is signed out, never a password over plain
+  http to another computer). The settings gain `storage` and `dav_url` (a 0.2.0 file reads as `oxicloud`). The
+  generic driver (`storage::webdav`): listings read against its base, guarded creates and overwrites, `still_at`
+  and `cloud_holds` before a move or trash, the trash by `MOVE` into `.craftcloud/trash/<time>-<device>/<path>`
+  (a folder as one `MOVE`), versions by `COPY` through the code OxiCloud's driver now shares (`storage::versions`),
+  free space from the quota props, `DELETE` only through `purge_own`; `WebDav::connect` reads the saved check or
+  runs the probe. The engine builds it on its sync thread (`sync::start_webdav`), says the mode (`SyncProgress.mode`,
+  `status --json`'s `mode`, "Download only" in the desktop's words), says once what download only doesn't upload
+  and lists it as `not_uploaded`, and holds local names a case-insensitive server can't keep apart. The command
+  line: `login <WebDAV address> --kind webdav --user NAME` (the password from `CRAFTCLOUD_APP_PASSWORD` or a
+  prompt), `server check` runs the probe on such a server, `ls`/`get`/`put`/`save`/`mkdir`/`mv`/`rm`/`files`/`sync`
+  through the trait, exit code 10 (`unsupported`) for what CraftCloud's server alone has. A sync folder holding
+  another sync client's database is refused (code 5). The desktop client says to use the command line for such a
+  server until pull request 10. Tests: the driver and the engine over it against the scripted WebDAV server (every
+  write's guard and the password, hrefs outside the base, the trash and restore round trip, a folder whole,
+  versions kept, pruned and moved, free space, the refused password, connect probing once, a two-way cycle, a
+  download-only cycle that writes nothing and says so once, the trash guards, a failed listing), the credential's
+  bytes, the opt-in on the binary, the clash rule, the folder refusal, exit code 10. The 15 golden logs are
+  unchanged. Left to 4b: the trash's retention and `trash empty`, `trash`/`versions` through the trait, the probe's
+  re-run schedule, the runtime watch.
 - 2026-11-18: Sync (M9, pull request 3 of [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14): the server check. The check
   on connect is a state machine in `core::storage::probe` (§ 7.5's twenty steps as request/expectation pairs, every
   write with its guard, the verdict as `Capabilities` plus each step in plain words, `Mode` through `mode_for`; a
@@ -512,3 +538,4 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 | 2026-11-17 | minor | M9 pull request 1: the sync engine behind a storage trait, OxiCloud its first driver; no change for a person. |
 | 2026-11-17 | minor | M9 pull request 2: sync modes, and the plan cut to download only; no change for a person. |
 | 2026-11-18 | minor | M9 pull request 3: the server check (the probe in core, its runner, `craftcloud server check`); OxiCloud syncs as before. |
+| 2026-11-18 | minor | M9 pull request 4a: the generic WebDAV driver, `Credential`, `login --kind webdav`, exit code 10, behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in; OxiCloud syncs as before. |

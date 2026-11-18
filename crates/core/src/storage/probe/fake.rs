@@ -43,6 +43,8 @@ pub struct Flags {
     /// The server's clock, as an RFC 1123 time: the `Date` header on every answer, and the
     /// `getlastmodified` of every folder made from now on.
     pub date: Option<String>,
+    /// `quota-available-bytes` listed on the base (none without it; Nextcloud says `-3`).
+    pub quota_available: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -234,8 +236,12 @@ impl FakeDav {
         let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('"', "&quot;");
         if let Some(folder) = self.folders.get(key) {
             let modified = folder.modified.as_deref().map(|m| format!("<d:getlastmodified>{}</d:getlastmodified>", esc(m))).unwrap_or_default();
+            let quota = match self.flags.quota_available {
+                Some(q) if key.is_empty() => format!("<d:quota-available-bytes>{q}</d:quota-available-bytes>"),
+                _ => String::new(),
+            };
             return format!(
-                "<d:response><d:href>{}</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype><d:getetag>{}</d:getetag>{modified}</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>",
+                "<d:response><d:href>{}</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype><d:getetag>{}</d:getetag>{modified}{quota}</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>",
                 self.href(&folder.path, true),
                 esc(&folder.etag)
             );
@@ -250,9 +256,12 @@ impl FakeDav {
                 file.id, file.id, file.id
             )
         };
+        let modified = self.flags.date.as_deref().unwrap_or("Mon, 16 Nov 2026 10:00:00 GMT");
         format!(
-            "<d:response><d:href>{}</d:href><d:propstat><d:prop><d:resourcetype/>{etag}{ids}<d:getlastmodified>Mon, 16 Nov 2026 10:00:00 GMT</d:getlastmodified></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>",
-            self.href(&file.path, false)
+            "<d:response><d:href>{}</d:href><d:propstat><d:prop><d:resourcetype/>{etag}{ids}<d:getcontentlength>{}</d:getcontentlength><d:getlastmodified>{}</d:getlastmodified></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>",
+            self.href(&file.path, false),
+            file.body.len(),
+            esc(modified)
         )
     }
 
@@ -318,9 +327,12 @@ impl FakeDav {
             return self.done(405, "");
         }
         let Some(to) = destination.and_then(|d| self.relative(d)) else { return self.done(400, "no destination") };
-        let Some(file) = self.files.get(&self.key(from)).cloned() else { return self.done(404, "") };
         let exists = self.has(&to);
         let no_overwrite = overwrite.is_some_and(|o| o.eq_ignore_ascii_case("F"));
+        if self.folders.contains_key(&self.key(from)) && !from.is_empty() {
+            return self.relocate_folder(is_move, from, &to, exists && no_overwrite);
+        }
+        let Some(file) = self.files.get(&self.key(from)).cloned() else { return self.done(404, "") };
         if exists && no_overwrite && !(is_move && self.flags.move_overwrites) {
             return self.done(412, "");
         }
@@ -341,6 +353,46 @@ impl FakeDav {
         self.touch_parents(from);
         self.touch_parents(&to);
         self.done(if exists { 204 } else { 201 }, "")
+    }
+
+    /// `MOVE` or `COPY` of a whole folder (its files and folders keep their places below it).
+    fn relocate_folder(&mut self, is_move: bool, from: &str, to: &str, refused: bool) -> HttpResponse {
+        if refused {
+            return self.done(412, "");
+        }
+        if !self.parent_exists(to) {
+            return self.done(409, "");
+        }
+        let from_key = self.key(from);
+        let prefix = format!("{from_key}/");
+        let below = |k: &str| k == from_key || k.starts_with(&prefix);
+        let moved_path = |p: &str| format!("{to}{}", &p[from.trim_matches('/').len()..]);
+        let folders: Vec<Folder> = self.folders.iter().filter(|(k, _)| below(k)).map(|(_, f)| f.clone()).collect();
+        let files: Vec<File> = self.files.iter().filter(|(k, _)| below(k)).map(|(_, f)| f.clone()).collect();
+        if is_move {
+            self.folders.retain(|k, _| !below(k));
+            self.files.retain(|k, _| !below(k));
+        }
+        for f in folders {
+            let path = moved_path(&f.path);
+            let etag = if is_move { f.etag } else { self.fresh_etag("f") };
+            self.folders.insert(self.key(&path), Folder { path, etag, modified: f.modified });
+        }
+        for f in files {
+            let path = moved_path(&f.path);
+            let (etag, id) = if is_move {
+                (f.etag, f.id)
+            } else {
+                let etag = self.fresh_etag("e");
+                let id = self.next;
+                self.next += 1;
+                (etag, id)
+            };
+            self.files.insert(self.key(&path), File { path, etag, body: f.body, id });
+        }
+        self.touch_parents(from);
+        self.touch_parents(to);
+        self.done(201, "")
     }
 
     fn delete(&mut self, path: &str, if_match: Option<String>) -> HttpResponse {

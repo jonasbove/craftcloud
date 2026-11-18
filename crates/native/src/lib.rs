@@ -2,6 +2,7 @@
 //! through craft-settings, and the sync transfers. Only the desktop client depends on it.
 
 pub mod control;
+pub mod experimental;
 #[cfg(test)]
 mod fake_server;
 pub mod http;
