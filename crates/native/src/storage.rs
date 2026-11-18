@@ -289,6 +289,17 @@ pub trait RemoteStorage: Send {
             .ok_or_else(|| StorageError::Failed(format!("{path}: no ETag after upload")))
     }
 
+    /// What the cloud has at `path` right now (`None`: nothing). The default lists the parent; a
+    /// driver may answer with one depth-0 request. The runtime watch uses it right after a write.
+    fn stat(&mut self, path: &str) -> Result<Option<Entry>, StorageError> {
+        let (parent, _) = path.rsplit_once('/').unwrap_or(("", path));
+        match self.list(parent) {
+            Ok(entries) => Ok(entries.into_iter().find(|e| e.path == path)),
+            Err(StorageError::NotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Starts a download of `path`, from byte `from` on when given (the caller checks the answer
     /// is that version from that byte on before using it).
     fn download(&mut self, path: &str, from: Option<u64>) -> Result<Download, StorageError>;
@@ -320,6 +331,30 @@ pub trait RemoteStorage: Send {
     /// Deletes for good, only inside CraftCloud's own `.craftcloud/` (probe files, old client
     /// trash, pruned versions). Gone already is fine.
     fn purge_own(&mut self, path: &OwnPath) -> Result<(), StorageError>;
+
+    /// Removes client-trash entries past their retention, where the driver keeps the trash itself
+    /// (the generic WebDAV driver; docs/WEBDAV-STORAGE.md § 16, Q5: 30 days, by the server's clock,
+    /// through [`RemoteStorage::purge_own`], at most once a day). A server with its own trash keeps
+    /// to its own policy: this is a no-op. Called after a cycle; a failure never fails the cycle.
+    fn sweep_trash(&mut self) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    /// Whether this server's capabilities were **measured** by the check on connect rather than
+    /// known for its kind. The runtime watch (docs/WEBDAV-STORAGE.md § 7.5) applies only to measured
+    /// servers: a server whose guards are known (OxiCloud, checked by its live suite) is never
+    /// dropped to download only on a heuristic, so nothing changes for CraftCloud's own server.
+    fn measured(&self) -> bool {
+        false
+    }
+
+    /// Re-runs the check on connect after the runtime watch saw this server misbehave
+    /// (docs/WEBDAV-STORAGE.md § 7.5), saves it, and takes the fresh capabilities. The new mode is
+    /// for the record; the engine has already dropped two-way sync for the rest of the run. A
+    /// driver whose capabilities are known rather than measured (OxiCloud) never probes: `None`.
+    fn recheck(&mut self) -> Option<craftcloud_core::storage::Mode> {
+        None
+    }
 }
 
 #[cfg(test)]

@@ -65,6 +65,38 @@ pub fn list(transport: &mut dyn Transport, base: &Base, path: &str) -> Result<Ve
     Ok(out)
 }
 
+/// Puts version `stamp` of `path` back under `base`: the current file is kept as a version of its
+/// own first (so the restore can be undone), then the version's bytes are written over the file
+/// **with `If-Match`** on the version tag read at the start, so a change landing meanwhile is never
+/// silently overwritten (a 412 restores nothing and says so). A guarded `PUT` rather than OxiCloud's
+/// `COPY` with `Overwrite: T`: a `COPY`'s precondition can't name the destination's version. The
+/// version must be one of the kept ones; its bytes pass through memory (the HTTP layer reads at
+/// most 64 MB, which bounds it).
+pub fn restore(transport: &mut dyn Transport, base: &Base, path: &str, stamp: &str) -> Result<(), String> {
+    if !list(transport, base, path)?.iter().any(|v| v.stamp == stamp) {
+        return Err(format!("{path} has no version {stamp}"));
+    }
+    let current = transport.call(&dav::stat_under(base.url(), path))?;
+    if current.status == 404 {
+        return Err(format!("{path} isn't there any more; nothing restored"));
+    }
+    let etag = parse_listing(&current, base)?
+        .into_iter()
+        .next()
+        .and_then(|e| e.etag)
+        .ok_or_else(|| format!("{path} is listed without a version tag, so a restore can't be guarded; nothing restored"))?;
+    keep(transport, base, path)?;
+    let bytes = transport.call(&dav::download_under(base.url(), &versions::version_path(path, stamp)))?;
+    if !bytes.is_success() {
+        return Err(format!("reading version {stamp} of {path}: the server answered {}", bytes.status));
+    }
+    let resp = transport.call(&dav::upload_under(base.url(), path, bytes.body, &dav::Write::Replace { etag }))?;
+    match dav::parse_upload(&resp).map_err(|e| format!("restoring {path} failed: {e}"))? {
+        dav::Uploaded::Saved { .. } => Ok(()),
+        dav::Uploaded::Conflict => Err(format!("{path} changed on the server meanwhile; nothing restored (its new version is kept)")),
+    }
+}
+
 /// Takes the versions of `from` (a file, or a folder's files) along to `to` after a rename or
 /// move. No history is fine; where `to` already has one, the versions are added to it.
 pub fn follow_move(transport: &mut dyn Transport, base: &Base, from: &str, to: &str) -> Result<(), String> {

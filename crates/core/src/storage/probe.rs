@@ -326,17 +326,24 @@ pub fn server_seconds(text: &str) -> Option<i64> {
     jiff::fmt::rfc2822::parse(text.trim()).ok().map(|z| z.timestamp().as_second())
 }
 
-/// The probe folders older than [`SWEEP_AFTER_SECS`] **by the server's clock**: each folder's
-/// time against the server's `Date` on the same answer (both in seconds), never this computer's
-/// clock, so a device whose clock is off can't take another device's running probe for an old
-/// one. Without the server's time, or for a folder without one, nothing is swept.
-pub fn stale_probe_folders<'a>(folders: impl IntoIterator<Item = (&'a str, Option<i64>)>, server_now: Option<i64>) -> Vec<String> {
+/// The entries older than `max_age_secs` **by the server's clock**: each entry's time against the
+/// server's `Date` on the same answer (both in seconds), never this computer's clock, so a device
+/// whose clock is off can't take a fresh entry for an old one. Without the server's time, or for
+/// an entry without one, nothing is returned. Shared by the probe sweep ([`stale_probe_folders`],
+/// [`SWEEP_AFTER_SECS`]) and the client trash's retention (`dav::TRASH_RETAIN_SECS`).
+pub fn older_than<'a>(entries: impl IntoIterator<Item = (&'a str, Option<i64>)>, server_now: Option<i64>, max_age_secs: i64) -> Vec<String> {
     let Some(now) = server_now else { return Vec::new() };
-    folders
+    entries
         .into_iter()
-        .filter(|(_, modified)| modified.is_some_and(|m| now.saturating_sub(m) > SWEEP_AFTER_SECS))
+        .filter(|(_, modified)| modified.is_some_and(|m| now.saturating_sub(m) > max_age_secs))
         .map(|(path, _)| path.to_owned())
         .collect()
+}
+
+/// The probe folders older than [`SWEEP_AFTER_SECS`] by the server's clock ([`older_than`]): left
+/// by a crashed probe, and swept. Never this computer's clock.
+pub fn stale_probe_folders<'a>(folders: impl IntoIterator<Item = (&'a str, Option<i64>)>, server_now: Option<i64>) -> Vec<String> {
+    older_than(folders, server_now, SWEEP_AFTER_SECS)
 }
 
 /// What the probe has learnt so far, for a known-server check to build on.

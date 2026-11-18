@@ -461,13 +461,81 @@ As built (pull request 4a, the first of two under § 14's row 4; `crates/native/
 - **The desktop client** syncs CraftCloud's own server only until pull request 10: with the opt-in and a settings
   file naming another kind, its window opens on the Connect sheet and says to use `craftcloud daemon` or `sync`.
   Under download only its header, tray and headline say "Download only".
-- **Left to pull request 4b**, as § 14 splits the row: the client trash's retention (30 days by the server's clock,
-  through `purge_own`) and `craftcloud trash empty`, `trash ls`/`restore` and `versions`/`restore` through the trait,
-  the probe's re-run schedule (daily, on a version change, "Check again") and the runtime watch of § 7.5. A trash
-  that is never emptied is safe; it only takes room.
-- **Carried from pull request 3, not decided here:** Nextcloud 31 and ownCloud 10.15 keep a file's version tag when
-  it is overwritten within the same second as the write before it. The generic driver changes nothing about it;
-  the engine's `If-Match` can't tell two writes to one file apart within one second on those servers.
+- **Done in pull request 4b**, as § 14 splits the row: see the as-built note below.
+- **Carried from pull request 3, decided 2026-11-18 for pull requests 6 and 7:** Nextcloud 31 and ownCloud 10.15
+  keep a file's version tag when it is overwritten within the same second as the write before it, so the engine's
+  `If-Match` can't tell two writes to one file apart within one second there. Their profiles add a checksum check
+  after every overwrite, and a mismatch becomes a conflict copy. The generic driver changes nothing about it.
+
+As built (pull request 4b, the second of two under § 14's row 4; `crates/native/src/storage/webdav.rs`,
+`crates/native/src/sync.rs`, `crates/core/src/storage/probe.rs`, `apps/craftcloud/src/cli/webdav.rs`):
+
+- **The client trash's retention** (§ 16, Q5). `RemoteStorage::sweep_trash` (a no-op where the server keeps its own
+  trash) removes entries of `.craftcloud/trash/` older than 30 days (`dav::TRASH_RETAIN_SECS`) **by the server's
+  clock**: each entry folder's `getlastmodified` against the `Date` header of the same listing, through the shared
+  pure `core::storage::probe::older_than` that `stale_probe_folders` now also uses, never this computer's clock. A
+  listing without a `Date`, or an entry without a time, removes nothing. Removal is `purge_own` only, inside
+  `.craftcloud/`. The engine calls it after a clean cycle, at most once a day per client (a monotonic-clock rate
+  limit, not a deletion decision). Never sooner for quota reasons.
+- **The trash and version commands through the trait.** On another WebDAV server the command line routes
+  `trash ls|restore|rm|empty` and `versions`/`versions … restore` through the storage trait (`cli/webdav.rs`): `ls`
+  shows each item's original cloud path (from the entry's name) and when it was trashed, reading only; `restore`,
+  `rm`, `empty` and a version restore write, so they need two-way sync (`webdav_for_writes`). `restore` is a `MOVE`
+  back with `Overwrite: F`, `names::restored_name` when the place is taken (`--as PATH` restores elsewhere); `empty`
+  and `rm` purge inside `.craftcloud/trash/` only; `versions`/`restore` read and restore `.craftcloud/versions/`
+  through the same code OxiCloud uses (`storage::versions`, now with a `restore` that snapshots the current file
+  first, so the restore can be undone).
+- **The runtime watch** (§ 7.5, engine, `Engine::verify_write`). § 7.5 says "a replace that succeeds on a version
+  the listing says is newer": that isn't observable as written (a listing has no "newer than", and by the next
+  listing a later edit by another device looks the same). What the watch compares instead: right after a guarded
+  write answered "saved", **in the same step**, one depth-0 stat of the path (`RemoteStorage::stat`); if the file is
+  there at neither the size just uploaded nor the tag the write answered, the server said it saved ours yet kept
+  another file, a guard honoured at the check but ignored now. Then two-way sync stops for the rest of the run
+  (`Engine::effective_mode` forces download only; the rest of that cycle's writes are skipped), the check re-runs
+  (`RemoteStorage::recheck`, which saves it and takes the fresh capabilities), the file is not recorded as synced (so
+  the next cycle keeps the local version as a conflict copy, never overwrites it), and the activity list and `status`
+  say so once. Checking before anything else can list the new tag and write with an honoured guard is what tells a
+  lie from a later edit: another device's edit comes after the stat and is an ordinary change next cycle (a test
+  runs that sequence against the well-behaved scripted server: two-way stays on, no warning). The watch applies only
+  to a server whose capabilities were **measured** (`RemoteStorage::measured`: the generic driver); CraftCloud's own
+  server's guards are known and checked by its live suite, so it is never watched, sends no stat, and nothing changes
+  for it (a test over the OxiCloud driver; the golden logs are unchanged). The one extra request is the stat after
+  each write on a generic server. After the trip nothing is written but the re-check's probe, inside
+  `.craftcloud/probe/` and bounded by `Limits`; the retention sweep runs only under two-way sync. Two `fake::Flags`
+  stage the trip (`create_keeps_other`, `replace_keeps_other`).
+- **A version restore is a guarded write.** On the generic driver `versions … restore` keeps the current file as a
+  version, then writes the chosen version's bytes over it with a `PUT` and `If-Match` on the tag read at the start:
+  a change landing meanwhile answers 412 and nothing is restored (its new version is kept). Not OxiCloud's `COPY`
+  with `Overwrite: T`, whose precondition can't name the destination's version; OxiCloud's own restore is
+  unchanged here.
+- **The check's re-run schedule** (§ 7.5, "When"). `WebDav::connect` reuses the saved check only while it is less
+  than a day old (`checked_at`, this computer's clock — cache freshness, not a server-clock safety decision) and the
+  server's version string is unchanged; otherwise it re-probes and saves. The version string is a plain WebDAV
+  server's `Server` header (none, or the richer `status.php`, come with the profiles of PRs 6–8); an unknown version
+  never forces a re-check on its own, so a momentary blip keeps a good saved check. `server check` still re-runs the
+  probe. The mode in use always comes from the saved check, never from a product name.
+- **Redirects are never followed** (found by pull request 5's live suite against Apache's mod_dav). Apache answers
+  301 to a `PROPFIND` or `DELETE` of a folder whose URL lacks its trailing slash. Followed, that became a `GET`
+  without the `Authorization` header (ureq's `RedirectAuthHeaders::Never`, which is right), a 401, and the app
+  password session wrongly marked "signed out". So the generic driver and the probe send every request through an
+  agent with `max_redirects(0)` (`http::execute_direct`, `send_direct`, `send_file_direct`): a 3xx is an answer the
+  driver reports as an error (unknown, never "gone", never signed out), and the password never travels to a redirect
+  target. `is_folder` reads a 301 whose `Location` is the slash form as "a folder", so `restore` and `purge_own` send
+  a folder's `MOVE` and `DELETE` with the slash, as every other folder request already did. CraftCloud's own server
+  keeps the usual agent and follows redirects exactly as before (its golden logs are unchanged). The fake server's
+  `folders_need_slash` flag stages it.
+- **`trash_list` lists one thing for one thing** (4a's design, for pull requests 10 and 11 to know): a trashed
+  folder whose only content is one folder (or one file) is listed as that inner item, since the entry's walk goes
+  down while a folder holds exactly one folder; a restore puts the same tree back. A count of items in the client
+  trash is therefore a count of entries' innermost single items, not of what was trashed, and `trash restore` or
+  `trash rm` of such a folder take that inner path (seen by hand: `trash rm <folder>` answers "isn't in the trash"
+  while `trash rm <folder>/<file>` removes the entry).
+- **CLI writes on a download-only server stay refused** (exit code 10, `webdav_for_writes`): decided 2026-11-18 and
+  written into § 11. A trash entry's folder made for a `MOVE` that found the file gone (404) is removed again
+  through `purge_own` after a listing that worked shows it empty (a failed listing leaves it), as a restore's
+  emptied entry is.
+- **Left as is:** a trashed item's restored path isn't echoed back when a clash renamed it (the generic `restore`
+  reports the original path).
 
 ## 8. How each non-negotiable is met
 
@@ -571,6 +639,12 @@ local side:
 - `ls`, `put`, `mv`, `rm`, `trash`, `versions`, `restore`, `sync`, `files`, `open` go through the trait.
 - `share`, `server users`, `server info`'s OxiCloud fields, `starred`, `recent`, `search` answer "not available on
   this server" with a new exit code 10 and JSON kind `unsupported` (an addition; existing codes keep their meaning).
+- **On a server whose check measured download only, the command line writes nothing either** (decided 2026-11-18):
+  `put`, `mkdir`, `mv`, `rm`, a direct `save`, `trash restore`, `trash rm`, `trash empty` and `versions … restore`
+  answer "not available on this server" (exit code 10, kind `unsupported`), with the mode and a pointer to
+  `server check`. A guard the sync won't rely on must not be exercised by hand either: nothing of the person's files
+  is ever written to such a server, by the engine or by the command line (the client trash's retention sweep
+  included); the check itself writes only inside `.craftcloud/probe/`.
 
 ## 12. Migration and "upgrade all devices together"
 

@@ -3,7 +3,7 @@
 **Stage: early alpha** · version 0.2.0 (share links and version history on the web, the Windows fixes, server hardening)
 
 > **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-18 · **Change:** minor (version 0.2.0; M9 moves to
-> 0.3.0; M9 pull requests 1 to 4a, the sync engine behind a storage trait, sync modes, the check on connect with `craftcloud server check`, and the generic WebDAV driver behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in); on Linux the tray counts as up only while a tray
+> 0.3.0; M9 pull requests 1 to 4b, the sync engine behind a storage trait, sync modes, the check on connect with `craftcloud server check`, the generic WebDAV driver, the client trash's retention, the trash and version commands and the runtime watch, all behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in); on Linux the tray counts as up only while a tray
 > host is on the bus, so closing the window on stock GNOME quits instead of leaving an invisible client; a start at
 > login stays in the tray on Windows and X11, and opens the window where there is no tray; an offline desktop window waits before asking who is signed in again; the
 > release checklist and the Release workflow check the Craft web app pins; an idle window uses next to no CPU; trace
@@ -56,7 +56,7 @@ backup of anything you sync with it.
 | M6 Files on demand | Placeholders that download when opened (Windows, Linux, macOS) | Design only |
 | M7 Signed desktop builds | Signed and notarized macOS builds, signed Windows builds | Not started; v1 is unsigned |
 | M8 Native NixOS deployment | OxiCloud, Caddy and craftcloud-admin as NixOS services without Docker, with the Craft web apps built by Nix from `apps.toml` | Not started; the NixOS module runs the Docker image today |
-| M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Planned for 0.3.0, on `main` behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in until the release; the storage trait with OxiCloud as its first driver, the sync modes (two-way, download only, refused) with the plan cut to each, the check on connect (the probe's steps and verdict in `core`, its runner in `native`, `craftcloud server check`) and the generic WebDAV driver (an app-password sign-in, the client's own trash by `MOVE` and versions by `COPY`, the command line's file and sync commands through the trait) are in; without the opt-in a person sees only `server check`, which reports CraftCloud's own server's known capabilities. Next: the trash's retention and the trash and version commands through the trait (4b), the live suite against Nextcloud, ownCloud and OpenCloud (5), their profiles (6 to 8), the desktop's Connect sheet (10) |
+| M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Planned for 0.3.0, on `main` behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in until the release; the storage trait with OxiCloud as its first driver, the sync modes (two-way, download only, refused) with the plan cut to each, the check on connect (the probe's steps and verdict in `core`, its runner in `native`, `craftcloud server check`) and the generic WebDAV driver (an app-password sign-in, the client's own trash by `MOVE` and versions by `COPY`, the command line's file and sync commands through the trait, the client trash's 30-day retention by the server's clock, the trash and version commands through the trait, the check's re-run schedule and the runtime watch) are in; without the opt-in a person sees only `server check`, which reports CraftCloud's own server's known capabilities. Next: the live suite against Nextcloud, ownCloud and OpenCloud (5), their profiles (6 to 8), the desktop's Connect sheet (10) |
 | M10 No Python in the tree | The operator scripts without Python (sh and curl) and the packaging icons in Rust (0.3.0), then the design build (`design/tools`, FigCraft) as `cargo xtask design` | 0.3.0: scripts and icons in progress; the design build later |
 
 ## Current focus
@@ -116,6 +116,26 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-18: Sync (M9, pull request 4b of [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14, the second of two under its
+  row 4): the client trash's retention, the runtime watch, and the trash and version commands on any WebDAV server,
+  all behind the opt-in. The generic driver's `sweep_trash` removes client-trash entries older than 30 days by the
+  **server's** clock (each entry's `getlastmodified` against the listing's `Date`, never this computer's clock; a
+  shared pure `core::storage::probe::older_than` with the 30-day `dav::TRASH_RETAIN_SECS`), through `purge_own` only,
+  at most once a day per client, after a cycle; the engine calls it, a server with its own trash is a no-op. The
+  command line routes `trash ls|restore|rm|empty` and `versions`/`versions … restore` through the trait on such a
+  server (reading needs the mode's ok; writing needs two-way, `webdav_for_writes`): `trash ls` shows the original
+  path and when it was trashed, `restore` is a `MOVE` back with `Overwrite: F` (`names::restored_name` on a clash),
+  `empty` and `rm` purge inside `.craftcloud/trash/` only, versions share OxiCloud's `.craftcloud/versions/` layout
+  and code. The runtime watch (engine): a file this client just wrote that comes back as someone else's (the ETag
+  the write answered isn't the one listed and the size isn't ours) stops two-way sync for the rest of the run (the
+  mode drops to download only), re-runs the check (`RemoteStorage::recheck`), saves it, and says so once in the
+  activity list and in `status`. `WebDav::connect` now reuses the saved check only while it is less than a day old
+  and the server's version string (a plain WebDAV `Server` header) hasn't changed, else re-probes and saves. Tests:
+  retention by the server's clock (a day-old entry stays, a 31-day one goes, no `Date` sweeps nothing, nothing
+  outside `.craftcloud/trash/` touched), `trash empty` purges only inside it, versions listed and restored on the
+  generic driver, the watch's two triggers (mode drops, probe re-run, activity line, nothing more written after),
+  the re-run schedule (fresh: no probe; version changed: probe; day-old: probe), and `older_than` over any span. The
+  15 golden logs are unchanged.
 - 2026-11-18: Sync (M9, pull request 4a of [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14, the first of two under its
   row 4): any WebDAV server, with the client's own trash and versions, behind the opt-in. The opt-in
   (`CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, read in `native::experimental` and asked by the command line, the daemon

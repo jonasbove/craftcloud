@@ -5,10 +5,16 @@
 - **Other WebDAV servers, experimental and off.** The command line can sign in to any other WebDAV server
   (`craftcloud login <WebDAV address> --kind webdav --user NAME`, with an app or WebDAV password) and sync with it,
   keeping its own trash and versions in `.craftcloud/` there; the check on connect decides two-way or download
-  only. All of it is switched off unless the environment variable `CRAFTCLOUD_EXPERIMENTAL_WEBDAV` is exactly `1`
+  only. On such a server the client trash and version commands work too (`craftcloud trash ls|restore|rm|empty`,
+  `craftcloud versions`), the client trash keeps an entry 30 days (by the server's clock; only `trash empty` clears
+  it sooner), the check re-runs by itself when it is more than a day old or the server's version string changed, and
+  the sync drops to download only (and says so) if the server ever replaces a file it was told to leave alone. All
+  of it is switched off unless the environment variable `CRAFTCLOUD_EXPERIMENTAL_WEBDAV` is exactly `1`
   (nothing in the release, its packaging or its settings sets it): without it, `--kind` isn't offered, and a
   settings file naming another kind of server is refused with a message, nothing synced. CraftCloud's own server
-  syncs exactly as before. **A new kind of server: upgrade all devices together.** Every device that syncs an
+  syncs exactly as before. The 30-day trash sweep and the drop to download only are rules only this version's
+  clients follow; that is fine, because no earlier CraftCloud can sync with such a server at all (below).
+  **A new kind of server: upgrade all devices together.** Every device that syncs an
   account on another WebDAV server must run this version or later: no earlier CraftCloud can sync with such a
   server, so none can undo its plan, and from now on any change to how a server kind is decided or what it skips
   gets its own line here, as for CraftCloud's server.
