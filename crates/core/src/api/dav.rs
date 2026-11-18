@@ -38,8 +38,15 @@ const SEGMENT: &AsciiSet = &CONTROLS
 
 /// The URL of a cloud path; folders get a trailing slash.
 pub fn url(server: &ServerUrl, path: &str, folder: bool) -> String {
+    url_under(&server.join("webdav/"), path, folder)
+}
+
+/// The URL of `path` under any WebDAV base (`https://cloud.example.org/remote.php/dav/files/john/`,
+/// a trailing slash added where missing), each segment escaped; folders get a trailing slash.
+pub fn url_under(base: &str, path: &str, folder: bool) -> String {
     let encoded: Vec<String> = segments(path).map(|s| utf8_percent_encode(s, SEGMENT).to_string()).collect();
-    let mut out = server.join("webdav/");
+    let mut out = base.trim_end_matches('/').to_owned();
+    out.push('/');
     out.push_str(&encoded.join("/"));
     if folder && !encoded.is_empty() {
         out.push('/');

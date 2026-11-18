@@ -38,7 +38,8 @@ impl Seen {
 pub type Reply = (u16, String);
 
 /// A full answer: a status, extra headers (an `ETag`, a `Content-Range` …; a `Content-Type` here
-/// replaces the one the status would get) and a body.
+/// replaces the one the status would get) and a body. Status [`Answer::DROP`] (0) closes the
+/// connection without answering: a server that stops answering mid-way.
 #[derive(Clone, Debug)]
 pub struct Answer {
     pub status: u16,
@@ -47,6 +48,9 @@ pub struct Answer {
 }
 
 impl Answer {
+    /// The status of an answer that never comes: the connection is closed instead.
+    pub const DROP: u16 = 0;
+
     pub fn new(status: u16, body: impl Into<String>) -> Self {
         Self { status, headers: Vec::new(), body: body.into() }
     }
@@ -98,6 +102,10 @@ impl FakeServer {
                         if let Some(request) = read_request(&conn) {
                             let Answer { status, headers, body } = answer(&request);
                             seen.lock().unwrap_or_else(PoisonError::into_inner).push(request);
+                            if status == Answer::DROP {
+                                // Closed without an answer (the thread's `conn` drops here).
+                                return;
+                            }
                             let kind = if status == 207 { "application/xml; charset=utf-8" } else { "application/json" };
                             let mut head = String::new();
                             if !headers.iter().any(|(n, _)| n.eq_ignore_ascii_case("content-type")) {

@@ -114,6 +114,7 @@ fn share_and_server_commands() {
         Some(Cmd::Server(ServerCmd::Settings(SettingsCmd::Set { web_apps: Some(_), disable_app, .. }))) if disable_app.len() == 2
     ));
     assert_eq!(fails(&["server", "settings", "set", "--web-apps", "maybe"]), clap::error::ErrorKind::InvalidValue);
+    assert!(matches!(parse(&["server", "check", "--json"]).command, Some(Cmd::Server(ServerCmd::Check))));
 }
 
 #[test]

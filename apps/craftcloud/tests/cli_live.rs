@@ -137,6 +137,21 @@ fn a_new_file_starts_clean(env: &Env, docs: &str) {
     env.ok(&["rm", &x]);
 }
 
+/// `server check` on CraftCloud's own server: the capabilities are known, and no probe runs
+/// (docs/WEBDAV-STORAGE.md, Q3), so nothing lands in `.craftcloud/probe/`.
+fn server_check_reports_known_capabilities(env: &Env) {
+    let check = env.ok(&["server", "check"]);
+    assert_eq!(
+        (check["kind"].as_str(), check["mode"].as_str(), check["measured"].as_bool()),
+        (Some("oxicloud"), Some("two_way"), Some(false)),
+        "{check}"
+    );
+    let rows = check["checks"].as_array().unwrap_or_else(|| panic!("{check}"));
+    assert!(rows.len() >= 18 && rows.iter().all(|r| r["check"].is_string() && r["result"].is_string()), "{check}");
+    let own = env.ok(&["ls", ".craftcloud", "--all"]);
+    assert!(!paths(&own).iter().any(|p| p == ".craftcloud/probe"), "a probe ran on OxiCloud: {own}");
+}
+
 #[test]
 fn the_command_line_end_to_end() {
     let (Ok(server), Ok(user), Ok(password)) =
@@ -232,6 +247,7 @@ fn the_command_line_end_to_end() {
     assert_eq!(info["craftcloud"], true);
     assert!(env.ok(&["server", "users", "ls"]).as_array().unwrap().iter().any(|p| p["username"] == user.as_str()));
     assert!(env.ok(&["server", "settings", "show"])["web_apps"].is_boolean());
+    server_check_reports_known_capabilities(&env);
     env.fails(6, &["status"]);
 
     // Clean up: the test folder goes to the trash, then for good.
