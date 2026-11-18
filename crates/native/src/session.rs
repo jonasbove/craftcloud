@@ -14,9 +14,11 @@ use craftcloud_core::ServerUrl;
 use craftcloud_core::api::auth::{self, Tokens};
 use craftcloud_core::api::{dav, versions};
 use craftcloud_core::http::{HttpRequest, HttpResponse};
+use craftcloud_core::storage::probe::Base;
 
 use crate::http;
 use crate::secrets::TokenStore;
+use crate::storage::versions as kept;
 
 /// Called with new tokens after a refresh (when there is no shared store to save them in).
 pub type TokenSink = Box<dyn Fn(&Tokens) + Send>;
@@ -171,41 +173,17 @@ impl Session {
         Ok(false)
     }
 
+    /// OxiCloud's WebDAV base, `<server>/webdav/`, for the code shared with the other drivers.
+    fn dav_base(&self) -> Result<Base, String> {
+        Base::parse(&self.server.join("webdav/"))
+    }
+
     /// Keeps the cloud version of `path` in `.craftcloud/versions/<path>/<now>`, then deletes all
-    /// but the newest [`versions::VERSIONS_KEPT`]. Nothing to keep (no such file) is fine.
+    /// but the newest [`versions::VERSIONS_KEPT`]. Nothing to keep (no such file) is fine
+    /// (`storage::versions::keep`, shared with the generic WebDAV driver).
     pub fn snapshot(&mut self, path: &str) -> Result<(), String> {
-        // Already kept (an overwrite tried again after it failed, a save with the same bytes):
-        // nothing to add.
-        let current = self.call(&dav::stat(&self.server, path))?;
-        if current.status == 404 {
-            return Ok(());
-        }
-        let entry = dav::parse_list(&current).ok().and_then(|e| e.into_iter().next());
-        // When the content was last changed: the copy gets the time of the copy (T-019).
-        let modified = entry
-            .as_ref()
-            .and_then(|e| e.modified.as_deref())
-            .and_then(|m| jiff::fmt::rfc2822::parse(m).ok())
-            .map(|z| z.timestamp().strftime(versions::MODIFIED_FORMAT).to_string());
-        if let Some(etag) = entry.and_then(|e| e.etag)
-            && versions::already_kept(&etag, &self.versions(path)?)
-        {
-            return Ok(());
-        }
-        for folder in versions::make_folders(&self.server, path) {
-            let resp = self.call(&folder)?;
-            if !dav::folder_exists_after(&resp) {
-                return Err(format!("can't make the versions folder for {path}: the server answered {}", resp.status));
-            }
-        }
-        let stamp = versions::name_for(&jiff::Timestamp::now().strftime(versions::STAMP_FORMAT).to_string(), modified.as_deref());
-        let resp = self.call(&versions::snapshot(&self.server, path, &stamp))?;
-        versions::snapshot_done(&resp).map_err(|e| format!("keeping the previous version of {path} failed: {e}"))?;
-        let names: Vec<String> = self.versions(path)?.into_iter().map(|v| v.stamp).collect();
-        for old in versions::to_prune(names) {
-            let _ = self.call(&versions::delete(&self.server, path, &old));
-        }
-        Ok(())
+        let base = self.dav_base()?;
+        kept::keep(self, &base, path)
     }
 
     /// Takes the versions of `from` (a file, or a folder's files) along to `to` after a rename or
@@ -243,38 +221,16 @@ impl Session {
         Ok(total)
     }
 
+    /// Takes the versions of `from` along to `to` after a rename or move (`storage::versions::follow_move`).
     pub fn move_versions(&mut self, from: &str, to: &str) -> Result<(), String> {
-        for folder in versions::history_parents(to) {
-            let resp = self.call(&dav::create_folder(&self.server, &folder))?;
-            if !dav::folder_exists_after(&resp) {
-                return Err(format!("can't make the versions folder for {to}: the server answered {}", resp.status));
-            }
-        }
-        let resp = self.call(&versions::move_history(&self.server, from, to))?;
-        if resp.is_success() || resp.status == 404 {
-            return Ok(());
-        }
-        if resp.status != 412 {
-            return Err(format!("moving the versions of {from}: the server answered {}", resp.status));
-        }
-        // `to` has a history already (an earlier file of that name): add these to it.
-        let (old, new) = (versions::versions_folder(from), versions::versions_folder(to));
-        let listed = self.call(&dav::list(&self.server, &old))?;
-        let entries = dav::parse_list(&listed).map_err(|e| e.to_string())?;
-        for e in entries.iter().filter(|e| e.path != old) {
-            let _ = self.call(&dav::move_to(&self.server, &e.path, &format!("{new}/{}", e.name()), e.is_folder));
-        }
-        let left = self.call(&dav::list(&self.server, &old)).ok().and_then(|r| dav::parse_list(&r).ok()).map_or(0, |e| e.len());
-        if left <= 1 {
-            let _ = self.call(&dav::delete(&self.server, &old, true));
-        }
-        Ok(())
+        let base = self.dav_base()?;
+        kept::follow_move(self, &base, from, to)
     }
 
     /// The kept versions of `path`, newest first.
     pub fn versions(&mut self, path: &str) -> Result<Vec<versions::Version>, String> {
-        let resp = self.call(&versions::list(&self.server, path))?;
-        versions::parse_list(&resp).map_err(|e| e.to_string())
+        let base = self.dav_base()?;
+        kept::list(self, &base, path)
     }
 
     /// Puts version `stamp` of `path` back, after keeping the current file as a version of its own
@@ -287,6 +243,115 @@ impl Session {
         let resp = self.call(&versions::restore(&self.server, path, stamp))?;
         craftcloud_core::api::expect_ok(&resp).map_err(|e| format!("restoring {path} failed: {e}"))
     }
+}
+
+/// What a session on an app password says when the server refused it (401): it was revoked on
+/// the server, and only a new sign-in helps.
+pub const APP_PASSWORD_REFUSED: &str = "Signed out: the server no longer takes this app password. Sign in again.";
+
+/// Authorised requests to another WebDAV server, with the user name and an app or WebDAV
+/// password the person made there (docs/WEBDAV-STORAGE.md § 10). Nothing refreshes: a 401 is
+/// "signed out" (the password was revoked). The password travels only over https, or over plain
+/// http to this computer itself (a local server, tests); [`Self::new`] refuses anything else.
+pub struct AppPasswordSession {
+    base: Base,
+    user: String,
+    /// The `Authorization` header, made once.
+    authorization: String,
+    /// The last transport error (no answer at all); the sync engine clears it each pass.
+    pub offline: Option<String>,
+    /// The server refused the password: only a new sign-in helps.
+    pub signed_out: bool,
+    /// Set to stop a transfer that is under way (Pause, Quit); checked between chunks.
+    pub cancel: Arc<AtomicBool>,
+}
+
+impl std::fmt::Debug for AppPasswordSession {
+    // Never print the password, nor the header that carries it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppPasswordSession").field("base", &self.base.url()).field("user", &self.user).finish_non_exhaustive()
+    }
+}
+
+impl AppPasswordSession {
+    /// A session on `base` as `user`. `Err` when the password would travel unencrypted to another
+    /// computer (an `http://` base that isn't this computer).
+    pub fn new(base: Base, user: &str, secret: &str) -> Result<Self, String> {
+        if base.is_plain_http() && !base.is_loopback() {
+            return Err(format!("{} isn't https: a password is never sent over plain http to another computer", base.url()));
+        }
+        Ok(Self {
+            authorization: format!("Basic {}", base64(format!("{user}:{secret}").as_bytes())),
+            base,
+            user: user.to_owned(),
+            offline: None,
+            signed_out: false,
+            cancel: Arc::default(),
+        })
+    }
+
+    pub fn base(&self) -> &Base {
+        &self.base
+    }
+
+    pub fn user(&self) -> &str {
+        &self.user
+    }
+
+    /// Adds the password to a request.
+    pub fn authorize(&self, req: HttpRequest) -> HttpRequest {
+        req.header("Authorization", self.authorization.clone())
+    }
+
+    /// Remembers a transport error, and a refused password.
+    fn note<R>(&mut self, result: Result<R, String>, status: impl Fn(&R) -> u16) -> Result<R, String> {
+        match result {
+            Err(e) => {
+                self.offline = Some(e.clone());
+                Err(e)
+            }
+            Ok(r) if status(&r) == 401 => {
+                self.signed_out = true;
+                Err(APP_PASSWORD_REFUSED.into())
+            }
+            Ok(r) => Ok(r),
+        }
+    }
+
+    /// Sends a request and waits for the whole answer.
+    pub fn call(&mut self, req: &HttpRequest) -> Result<HttpResponse, String> {
+        let answer = http::execute(&self.authorize(req.clone()));
+        self.note(answer, |r| r.status)
+    }
+
+    /// Like [`Self::call`], but hands back the open response for streaming a download.
+    pub fn open(&mut self, req: &HttpRequest) -> Result<ureq::http::Response<ureq::Body>, String> {
+        let answer = http::send(&self.authorize(req.clone()));
+        self.note(answer, |r| r.status().as_u16())
+    }
+
+    /// Like [`Self::call`], with the body streamed from a file.
+    pub fn upload(&mut self, req: &HttpRequest, file: &Path) -> Result<HttpResponse, String> {
+        let answer = http::send_file(&self.authorize(req.clone()), file, &self.cancel);
+        self.note(answer, |r| r.status)
+    }
+}
+
+/// Standard base64 (RFC 4648) of `bytes`, for the Basic authorization header.
+pub(crate) fn base64(bytes: &[u8]) -> String {
+    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().fold(0u32, |acc, b| (acc << 8) | u32::from(*b)) << (8 * (3 - chunk.len()));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(T[((n >> (18 - 6 * i)) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 /// Holds the refresh lock until dropped.
@@ -599,6 +664,38 @@ mod tests {
     fn tokens_never_reach_the_trace_log() {
         let (_, leaked) = token_trouble("TRACED", log::Level::Trace);
         assert!(leaked.is_empty(), "a token in the log: {leaked:?}");
+    }
+
+    /// An app password (docs/WEBDAV-STORAGE.md § 10) stays out of what the session says and of the
+    /// log at every level, as the tokens do: neither the password nor the Basic header it makes
+    /// shows up when the server refuses it (401), when it has gone away, or in `Debug`.
+    #[test]
+    fn app_passwords_never_reach_an_error_or_the_log() {
+        use craftcloud_core::storage::probe::Base;
+
+        use super::{APP_PASSWORD_REFUSED, AppPasswordSession, base64};
+        let logs = captured_logs();
+        let marker = "SECRET-APP-PW";
+        let encoded = base64(format!("john:{marker}").as_bytes());
+        let server = FakeServer::start(|_| (401, "{}".into()));
+        let base = Base::parse(&format!("{}/dav/", server.url)).unwrap();
+        let mut session = AppPasswordSession::new(base, "john", marker).unwrap();
+        let req = HttpRequest::new(Method::Get, format!("{}/dav/", server.url));
+        let mut said = vec![session.call(&req).unwrap_err()];
+        assert_eq!(said[0], APP_PASSWORD_REFUSED);
+        assert!(session.signed_out);
+        assert_eq!(server.seen()[0].header("authorization"), Some(format!("Basic {encoded}").as_str()), "the request did carry it");
+        let url = server.url.clone();
+        drop(server);
+        said.push(session.call(&HttpRequest::new(Method::Get, format!("{url}/dav/"))).unwrap_err());
+        said.extend(session.offline.clone());
+        said.push(format!("{session:?}"));
+        for s in &said {
+            assert!(!s.contains(marker) && !s.contains(&encoded), "a password in what the session said: {s}");
+        }
+        let logs = logs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let leaked: Vec<&String> = logs.iter().map(|(_, l)| l).filter(|l| l.contains(marker) || l.contains(&encoded)).collect();
+        assert!(leaked.is_empty(), "a password in the log (any level): {leaked:?}");
     }
 
     #[test]

@@ -5,14 +5,19 @@ use std::time::{Duration, Instant};
 
 use craftcloud_core::ServerUrl;
 use craftcloud_core::api::auth::{self, DevicePoll};
-use craftcloud_core::http::HttpResponse;
+use craftcloud_core::http::{HttpRequest, HttpResponse, Method};
 use craftcloud_core::names::{self, Platform};
-use craftcloud_core::sync::SyncPlan;
+use craftcloud_core::storage::probe::{Base, PROPFIND_BODY};
+use craftcloud_core::sync::{Storage, SyncPlan};
 use craftcloud_native::control::{self, LinkHandoff, Request, SendError, Status};
+use craftcloud_native::experimental;
 use craftcloud_native::http::execute;
 use craftcloud_native::open::{self, OpenError};
-use craftcloud_native::session::Session;
+use craftcloud_native::secrets::Credential;
+use craftcloud_native::session::{AppPasswordSession, Session};
 use craftcloud_native::settings::Prefs;
+use craftcloud_native::storage::probe::Limits;
+use craftcloud_native::storage::webdav::WebDav;
 use serde_json::json;
 
 use super::output::{self, CliError, Fail, Result, print_json};
@@ -22,8 +27,27 @@ fn send(req: &craftcloud_core::http::HttpRequest) -> Result<craftcloud_core::htt
     execute(req).map_err(CliError::transport)
 }
 
-/// `login [server]`: the device flow, as in the desktop client.
-pub fn login(ctx: &mut Ctx, server: Option<&str>, no_browser: bool) -> Result<()> {
+/// The environment variable `login --kind webdav` reads the app password from, instead of asking
+/// (never a command-line argument: it would land in the shell history and the process list).
+pub const APP_PASSWORD_VAR: &str = "CRAFTCLOUD_APP_PASSWORD";
+
+/// `login [server] [--kind KIND] [--user NAME]`: the device flow for CraftCloud's own server, as
+/// in the desktop client; with `--kind webdav`, another WebDAV server with an app password.
+pub fn login(ctx: &mut Ctx, server: Option<&str>, no_browser: bool, kind: Option<&str>, user: Option<&str>) -> Result<()> {
+    let kind = match kind {
+        None => Storage::Oxicloud,
+        Some(word) => Storage::parse(word).ok_or_else(|| CliError::usage(format!("--kind {word}: use oxicloud or webdav")))?,
+    };
+    match kind {
+        Storage::Oxicloud => {}
+        // Only with the opt-in (docs/WEBDAV-STORAGE.md § 16), and only a kind with a driver.
+        _ if !experimental::experimental_webdav() => return Err(CliError::usage(experimental::REFUSED)),
+        Storage::Webdav => return login_webdav(ctx, server, user),
+        Storage::Nextcloud | Storage::Owncloud | Storage::Opencloud => return Err(CliError::usage(experimental::NOT_YET)),
+    }
+    if user.is_some() {
+        return Err(CliError::usage("--user goes with --kind webdav; a CraftCloud server signs you in through the browser"));
+    }
     let server = match server {
         Some(s) => ServerUrl::parse(s).map_err(|e| CliError::usage(format!("{s}: {e}")))?,
         None => ctx.server().map_err(|_| CliError::usage("Which server? Run `craftcloud login <server>`."))?,
@@ -81,19 +105,99 @@ pub fn login(ctx: &mut Ctx, server: Option<&str>, no_browser: bool) -> Result<()
     }
 }
 
+/// `login <webdav address> --kind webdav --user NAME`: another WebDAV server, with an app or
+/// WebDAV password the person made there, from [`APP_PASSWORD_VAR`] or a prompt (never the
+/// account password, never an argument). The address is checked with one listing, the sign-in
+/// saved in the keychain, the settings set to this kind of server, and the check on connect run
+/// and saved (docs/WEBDAV-STORAGE.md § 10, § 11).
+fn login_webdav(ctx: &mut Ctx, server: Option<&str>, user: Option<&str>) -> Result<()> {
+    let address = server.ok_or_else(|| {
+        CliError::usage("Which server? Give its WebDAV address: `craftcloud login https://cloud.example.org/remote.php/dav/files/NAME/ --kind webdav --user NAME`.")
+    })?;
+    let base = Base::parse(address).map_err(|e| CliError::usage(format!("{address}: {e}")))?;
+    let user = user
+        .filter(|u| !u.trim().is_empty())
+        .ok_or_else(|| CliError::usage("--kind webdav needs --user NAME (the user name on that server)"))?
+        .trim();
+    let secret = match std::env::var(APP_PASSWORD_VAR) {
+        Ok(s) if !s.is_empty() => s,
+        _ => super::read_secret(&format!("App or WebDAV password for {user} (an app or WebDAV password, not your account password)"))?,
+    };
+    let mut session = AppPasswordSession::new(base.clone(), user, &secret).map_err(CliError::usage)?;
+    // One listing shows the address and the password work before anything is saved.
+    let probe = HttpRequest::new(Method::Propfind, base.url().to_owned())
+        .header("Depth", "0")
+        .header("Content-Type", "application/xml; charset=utf-8")
+        .body(PROPFIND_BODY.as_bytes().to_vec());
+    let answer = session.call(&probe);
+    if session.signed_out {
+        return Err(CliError::new(Fail::SignedOut, format!("{} refused the user name or password (401).", base.url())));
+    }
+    let resp = answer.map_err(CliError::transport)?;
+    if resp.status != 207 {
+        return Err(CliError::error(format!("{} doesn't answer like a WebDAV server (a listing answered {})", base.url(), resp.status)));
+    }
+    let origin = ServerUrl::parse(&base.origin()).map_err(|e| CliError::error(format!("{}: {e}", base.origin())))?;
+    ctx.tokens(&origin)
+        .save_credential(&Credential::AppPassword { user: user.to_owned(), secret })
+        .map_err(|e| CliError::error(format!("couldn't keep the sign-in: {e}")))?;
+    // The desktop client's server, when it has none yet (or this one); a different one stays.
+    let mut settings = ctx.settings();
+    let default = settings.server.is_empty() || settings.server == origin.to_string();
+    if default {
+        settings.server = origin.to_string();
+        settings.storage = Storage::Webdav;
+        settings.dav_url = base.url().to_owned();
+        ctx.store.set(Prefs(settings));
+        ctx.store.flush().map_err(|e| CliError::error(format!("couldn't save the settings: {e}")))?;
+    }
+    // The check on connect, so the sync (and this output) know what this server allows.
+    let dir = ctx.dir();
+    let (_, check) = WebDav::connect(session, &ctx.device(), dir.as_deref(), Limits::default());
+    if default && let Some(dir) = dir {
+        control::signed_in(&dir);
+    }
+    if ctx.json {
+        return print_json(&json!({
+            "signed_in": true,
+            "server": origin.to_string(),
+            "dav_url": base.url(),
+            "kind": "webdav",
+            "username": user,
+            "mode": check.mode.as_str(),
+            "refused_because": check.refused_because,
+            "default": default,
+        }));
+    }
+    println!("Signed in to {} as {user}.", base.url());
+    match &check.refused_because {
+        Some(why) => println!("Sync mode: {}: {why}. `craftcloud server check` says what was checked.", check.mode.words()),
+        None => println!("Sync mode: {} (`craftcloud server check` says what was checked).", check.mode.words()),
+    }
+    if !default {
+        println!("The desktop client uses another server; sign out of it first to use this one.");
+    }
+    Ok(())
+}
+
 /// `logout`: ends the sign-in on the server and forgets it here. It is forgotten here even when
 /// the server can't be told; then the output says so (`server_session_ended: false`) and the exit
-/// code is 8 (the server can't be reached) or 1 (it refused).
+/// code is 8 (the server can't be reached) or 1 (it refused). An app password isn't ended on the
+/// server (the person removes it there); it is forgotten here.
 pub fn logout(ctx: &mut Ctx) -> Result<()> {
     let server = ctx.server()?;
     let store = ctx.tokens(&server);
-    let had = store.load();
-    let ended = had.as_ref().map(|tokens| {
-        // Shared with the desktop client: a refresh on the way is done under its lock.
-        let mut session = Session::shared(server.clone(), tokens.clone(), ctx.tokens(&server), ctx.store.dir());
-        let answer = session.logout();
-        server_logout(answer, session.signed_out)
+    let had = store.load_credential();
+    let ended = had.as_ref().map(|credential| match credential {
+        Credential::Bearer(tokens) => {
+            // Shared with the desktop client: a refresh on the way is done under its lock.
+            let mut session = Session::shared(server.clone(), tokens.clone(), ctx.tokens(&server), ctx.store.dir());
+            let answer = session.logout();
+            server_logout(answer, session.signed_out)
+        }
+        Credential::AppPassword { .. } => Ok(()),
     });
+    let app_password = matches!(had, Some(Credential::AppPassword { .. }));
     store.delete();
     let mut settings = ctx.settings();
     if settings.server == server.to_string() {
@@ -101,7 +205,7 @@ pub fn logout(ctx: &mut Ctx) -> Result<()> {
         ctx.store.set(Prefs(settings));
         ctx.store.flush().map_err(|e| CliError::error(format!("couldn't save the settings: {e}")))?;
     }
-    let server_session_ended = matches!(ended, Some(Ok(())));
+    let server_session_ended = matches!(ended, Some(Ok(()))) && !app_password;
     if ctx.json {
         print_json(&json!({
             "signed_out": true,
@@ -114,6 +218,9 @@ pub fn logout(ctx: &mut Ctx) -> Result<()> {
             "{}",
             match &ended {
                 None => format!("Wasn't signed in to {server}."),
+                Some(Ok(())) if app_password => {
+                    format!("Signed out of {server} on this computer. The app password stays valid on the server until you remove it there.")
+                }
                 Some(Ok(())) => format!("Signed out of {server}."),
                 Some(Err(_)) => format!("Signed out of {server} on this computer."),
             }
@@ -160,6 +267,10 @@ fn show_status(ctx: &Ctx, s: &Status) -> Result<()> {
     println!("{}", state_words(s));
     println!("server   {}", s.server);
     println!("folder   {}", s.local_folder);
+    if !s.mode.is_empty() && s.mode != "two_way" {
+        // Said only where it isn't the usual: CraftCloud's own server syncs both ways.
+        println!("mode     {}", mode_words(&s.mode));
+    }
     if s.files_total > 0 {
         println!("files    {} of {}", s.files_done, s.files_total);
     }
@@ -178,6 +289,16 @@ fn show_status(ctx: &Ctx, s: &Status) -> Result<()> {
     Ok(())
 }
 
+/// The sync mode in plain words (`download_only` → "download only").
+pub(super) fn mode_words(mode: &str) -> &str {
+    match mode {
+        "two_way" => "two-way",
+        "download_only" => "download only (nothing is written to this server; changes made here stay here)",
+        "refused" => "refused (this server can't show when a file changed; nothing is synced)",
+        other => other,
+    }
+}
+
 /// `not synced t13/locked.txt  (can't be read)`.
 pub(super) fn not_synced_line(n: &control::NotSynced) -> String {
     format!("not synced {}  ({})", n.path, reason_words(&n.path, &n.reason, Platform::current()))
@@ -193,6 +314,7 @@ pub(super) fn reason_words<'a>(path: &str, reason: &'a str, platform: Platform) 
         "name" if names::local_refused_in(path, platform).is_some() => "a name this computer (Windows) can't have",
         "name" => "a name this computer can't keep apart from another (they differ only in upper and lower case)",
         "temporary" => "looks like a temporary file",
+        "not_uploaded" => "new or changed here, not uploaded: this server only syncs downwards",
         other => other,
     }
 }
@@ -336,6 +458,9 @@ pub(super) fn failed(s: &Status) -> Result<()> {
 
 /// `usage`.
 pub fn usage(ctx: &Ctx) -> Result<()> {
+    if ctx.is_webdav() {
+        return Err(CliError::unsupported("storage use"));
+    }
     let mut remote = ctx.remote()?;
     let me = remote.ask(&auth::me(remote.server()), auth::parse_me)?.ok_or_else(|| CliError::new(Fail::SignedOut, "Not signed in."))?;
     // Kept versions count against the quota too (T-049).

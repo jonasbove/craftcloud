@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **Other WebDAV servers, experimental and off.** The command line can sign in to any other WebDAV server
+  (`craftcloud login <WebDAV address> --kind webdav --user NAME`, with an app or WebDAV password) and sync with it,
+  keeping its own trash and versions in `.craftcloud/` there; the check on connect decides two-way or download
+  only. All of it is switched off unless the environment variable `CRAFTCLOUD_EXPERIMENTAL_WEBDAV` is exactly `1`
+  (nothing in the release, its packaging or its settings sets it): without it, `--kind` isn't offered, and a
+  settings file naming another kind of server is refused with a message, nothing synced. CraftCloud's own server
+  syncs exactly as before. **A new kind of server: upgrade all devices together.** Every device that syncs an
+  account on another WebDAV server must run this version or later: no earlier CraftCloud can sync with such a
+  server, so none can undo its plan, and from now on any change to how a server kind is decided or what it skips
+  gets its own line here, as for CraftCloud's server.
+- **A folder another sync program syncs is refused.** The desktop client, `craftcloud daemon` and `sync --once` no
+  longer sync a folder that holds another sync client's database (`.sync_*.db`, `.owncloudsync.log` or
+  `.csync_journal.db`, Nextcloud's or ownCloud's desktop client): two sync engines on one folder fight over it.
+  Choose another folder. Nothing else needs care when updating.
+- **`craftcloud status --json` says the sync `mode`** (`two_way` on a CraftCloud server), `sync --once --json` too,
+  and a new exit code 10 (kind `unsupported`) means "not available on this server". Existing codes and fields keep
+  their meaning.
 - **`craftcloud server check`** prints what the server guarantees the sync, each check in plain words, and the sync
   mode that allows. On a CraftCloud server it reports the known capabilities (two-way) and writes nothing to the
   server. Nothing needs care when updating.

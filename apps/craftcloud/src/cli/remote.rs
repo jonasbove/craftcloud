@@ -7,10 +7,15 @@ use craftcloud_core::ServerUrl;
 use craftcloud_core::api::resources::{Folder, Resource};
 use craftcloud_core::api::{dav, folders};
 use craftcloud_core::http::{HttpRequest, HttpResponse};
-use craftcloud_core::sync::ClientSettings;
-use craftcloud_native::secrets::TokenStore;
-use craftcloud_native::session::Session;
+use craftcloud_core::storage::probe::{Base, StoredCheck};
+use craftcloud_core::sync::{ClientSettings, Storage};
+use craftcloud_native::experimental;
+use craftcloud_native::secrets::{Credential, TokenStore};
+use craftcloud_native::session::{AppPasswordSession, Session};
 use craftcloud_native::settings::{self, Store};
+use craftcloud_native::storage::RemoteStorage;
+use craftcloud_native::storage::probe::Limits;
+use craftcloud_native::storage::webdav::WebDav;
 
 use super::output::{CliError, Fail, Result};
 
@@ -58,6 +63,69 @@ impl Ctx {
 
     pub fn tokens(&self, server: &ServerUrl) -> TokenStore {
         TokenStore::new(&server.to_string(), self.store.dir())
+    }
+
+    /// Whether this build may use the settings' kind of server (docs/WEBDAV-STORAGE.md § 16):
+    /// another kind only with `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, and only one with a driver.
+    pub fn allowed(&self) -> Result<()> {
+        experimental::allowed_here(&self.settings()).map_err(CliError::error)
+    }
+
+    /// The kind of server the commands talk to: the settings' (`--server` names another
+    /// CraftCloud server, never another kind).
+    pub fn storage(&self) -> Storage {
+        if self.server_override.is_some() && !self.uses_clients_server() { Storage::Oxicloud } else { self.settings().storage }
+    }
+
+    /// Whether the commands go through the generic WebDAV driver (another kind of server).
+    pub fn is_webdav(&self) -> bool {
+        self.storage() == Storage::Webdav
+    }
+
+    /// The device name in trash entries and conflict copies.
+    pub fn device(&self) -> String {
+        Some(self.settings().device_name.trim().to_owned()).filter(|d| !d.is_empty()).unwrap_or_else(craftcloud_native::device_name)
+    }
+
+    /// The signed-in session on another WebDAV server (an app password), from the settings'
+    /// `dav_url` and the keychain.
+    pub fn app_password_session(&self) -> Result<AppPasswordSession> {
+        let settings = self.settings();
+        let base = Base::parse(&settings.dav_url).map_err(|e| CliError::error(format!("the saved WebDAV address: {e}")))?;
+        let server = self.server()?;
+        let credential = self.tokens(&server).load_credential().ok_or_else(|| {
+            CliError::new(Fail::SignedOut, format!("Not signed in to {server}. Run `craftcloud login {} --kind webdav --user NAME`.", base.url()))
+        })?;
+        let Credential::AppPassword { user, secret } = credential else {
+            return Err(CliError::new(Fail::SignedOut, format!("The sign-in saved for {server} isn't an app password. Sign in again.")));
+        };
+        AppPasswordSession::new(base, &user, &secret).map_err(CliError::error)
+    }
+
+    /// The generic WebDAV driver on the signed-in server, with the saved check on connect (or a
+    /// fresh one when none is saved for this address).
+    pub fn webdav(&self) -> Result<(WebDav, StoredCheck)> {
+        let session = self.app_password_session()?;
+        Ok(WebDav::connect(session, &self.device(), self.dir().as_deref(), Limits::default()))
+    }
+
+    /// [`Self::webdav`] for a command that writes to the server: only where the check on connect
+    /// allows two-way sync. A server that ignores a write guard gets no write from the command
+    /// line either (docs/WEBDAV-STORAGE.md § 7.3): the sync doesn't write to it, and `put` or `rm`
+    /// mustn't be the one way a guard can be bypassed.
+    pub fn webdav_for_writes(&self) -> Result<(WebDav, StoredCheck)> {
+        let (driver, check) = self.webdav()?;
+        match craftcloud_core::storage::mode_for(driver.capabilities()) {
+            craftcloud_core::storage::Mode::TwoWay => Ok((driver, check)),
+            mode => Err(CliError::new(
+                Fail::Unsupported,
+                format!(
+                    "writing to this server: {} (the sync mode is {}; `craftcloud server check` says why)",
+                    super::output::NOT_ON_THIS_SERVER,
+                    mode.words()
+                ),
+            )),
+        }
     }
 
     /// A session on the stored sign-in for the server.

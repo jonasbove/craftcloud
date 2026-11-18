@@ -117,6 +117,22 @@ fn share_and_server_commands() {
     assert!(matches!(parse(&["server", "check", "--json"]).command, Some(Cmd::Server(ServerCmd::Check))));
 }
 
+/// `login` takes the kind of server and a user name (other servers, docs/WEBDAV-STORAGE.md § 11);
+/// without them it is the browser sign-in as always.
+#[test]
+fn login_takes_a_kind_and_a_user() {
+    assert!(matches!(parse(&["login", "cloud.example.org"]).command, Some(Cmd::Login { kind: None, user: None, no_browser: false, .. })));
+    assert!(matches!(
+        parse(&["login", "https://cloud.example.org/remote.php/dav/files/john/", "--kind", "webdav", "--user", "john"]).command,
+        Some(Cmd::Login { server: Some(s), kind: Some(k), user: Some(u), .. }) if s.ends_with("/john/") && k == "webdav" && u == "john"
+    ));
+    assert!(help_contains_exit_code_10());
+}
+
+fn help_contains_exit_code_10() -> bool {
+    Cli::command().render_long_help().to_string().contains("10 not available")
+}
+
 #[test]
 fn help_is_there_with_examples() {
     let help = Cli::command().render_long_help().to_string();

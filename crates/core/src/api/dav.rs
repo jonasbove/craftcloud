@@ -81,7 +81,12 @@ const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8"?><d:propfind
 
 /// `PROPFIND` depth 1: the folder and what is directly in it.
 pub fn list(server: &ServerUrl, folder: &str) -> HttpRequest {
-    HttpRequest::new(Method::Propfind, url(server, folder, true))
+    list_under(&server.join("webdav/"), folder)
+}
+
+/// [`list`] under any WebDAV base ([`url_under`]).
+pub fn list_under(base: &str, folder: &str) -> HttpRequest {
+    HttpRequest::new(Method::Propfind, url_under(base, folder, true))
         .header("Depth", "1")
         .header("Content-Type", "application/xml; charset=utf-8")
         .body(PROPFIND_BODY.as_bytes().to_vec())
@@ -124,7 +129,12 @@ fn cloud_path(href: &str) -> Result<String, ApiError> {
 
 /// `GET` a file's bytes.
 pub fn download(server: &ServerUrl, path: &str) -> HttpRequest {
-    HttpRequest::new(Method::Get, url(server, path, false))
+    download_under(&server.join("webdav/"), path)
+}
+
+/// [`download`] under any WebDAV base.
+pub fn download_under(base: &str, path: &str) -> HttpRequest {
+    HttpRequest::new(Method::Get, url_under(base, path, false))
 }
 
 /// How to write a file.
@@ -137,7 +147,12 @@ pub enum Write {
 }
 
 pub fn upload(server: &ServerUrl, path: &str, bytes: Vec<u8>, write: &Write) -> HttpRequest {
-    let req = HttpRequest::new(Method::Put, url(server, path, false)).body(bytes);
+    upload_under(&server.join("webdav/"), path, bytes, write)
+}
+
+/// [`upload`] under any WebDAV base: a `PUT` that always carries its guard.
+pub fn upload_under(base: &str, path: &str, bytes: Vec<u8>, write: &Write) -> HttpRequest {
+    let req = HttpRequest::new(Method::Put, url_under(base, path, false)).body(bytes);
     match write {
         Write::Create => req.header("If-None-Match", "*"),
         Write::Replace { etag } => req.header("If-Match", etag.clone()),
@@ -164,7 +179,12 @@ pub fn parse_upload(resp: &HttpResponse) -> Result<Uploaded, ApiError> {
 
 /// `MKCOL`: one new folder (its parent must exist). 405 means it already exists.
 pub fn create_folder(server: &ServerUrl, path: &str) -> HttpRequest {
-    HttpRequest::new(Method::Mkcol, url(server, path, true))
+    create_folder_under(&server.join("webdav/"), path)
+}
+
+/// [`create_folder`] under any WebDAV base.
+pub fn create_folder_under(base: &str, path: &str) -> HttpRequest {
+    HttpRequest::new(Method::Mkcol, url_under(base, path, true))
 }
 
 /// Whether a `MKCOL` answer leaves the folder in place (created now, or already there).
@@ -174,7 +194,12 @@ pub fn folder_exists_after(resp: &HttpResponse) -> bool {
 
 /// `COPY` a file on the server, never overwriting the destination.
 pub fn copy(server: &ServerUrl, from: &str, to: &str) -> HttpRequest {
-    HttpRequest::new(Method::Copy, url(server, from, false)).header("Destination", url(server, to, false)).header("Overwrite", "F")
+    copy_under(&server.join("webdav/"), from, to)
+}
+
+/// [`copy`] under any WebDAV base.
+pub fn copy_under(base: &str, from: &str, to: &str) -> HttpRequest {
+    HttpRequest::new(Method::Copy, url_under(base, from, false)).header("Destination", url_under(base, to, false)).header("Overwrite", "F")
 }
 
 /// `COPY` a file over another, replacing it (`Overwrite: T`): restoring a version.
@@ -194,12 +219,22 @@ pub fn copy_to(server: &ServerUrl, from: &str, to: &str, folder: bool) -> HttpRe
 /// `MOVE` (rename and/or move) a file or folder to a new path, never overwriting (412 when the
 /// destination exists).
 pub fn move_to(server: &ServerUrl, from: &str, to: &str, folder: bool) -> HttpRequest {
-    HttpRequest::new(Method::Move, url(server, from, folder)).header("Destination", url(server, to, folder)).header("Overwrite", "F")
+    move_to_under(&server.join("webdav/"), from, to, folder)
+}
+
+/// [`move_to`] under any WebDAV base: a `MOVE` that always carries `Overwrite: F`.
+pub fn move_to_under(base: &str, from: &str, to: &str, folder: bool) -> HttpRequest {
+    HttpRequest::new(Method::Move, url_under(base, from, folder)).header("Destination", url_under(base, to, folder)).header("Overwrite", "F")
 }
 
 /// `PROPFIND` depth 0: one file's (or folder's) own properties, e.g. its current ETag.
 pub fn stat(server: &ServerUrl, path: &str) -> HttpRequest {
-    HttpRequest::new(Method::Propfind, url(server, path, false))
+    stat_under(&server.join("webdav/"), path)
+}
+
+/// [`stat`] under any WebDAV base.
+pub fn stat_under(base: &str, path: &str) -> HttpRequest {
+    HttpRequest::new(Method::Propfind, url_under(base, path, false))
         .header("Depth", "0")
         .header("Content-Type", "application/xml; charset=utf-8")
         .body(PROPFIND_BODY.as_bytes().to_vec())
@@ -239,7 +274,25 @@ pub fn versions_to_prune(mut names: Vec<String>) -> Vec<String> {
 /// `DELETE` a file or folder **for good**: it does not go to the trash (the REST
 /// `files::trash` and `folders::trash` do). A folder goes with everything in it.
 pub fn delete(server: &ServerUrl, path: &str, folder: bool) -> HttpRequest {
-    HttpRequest::new(Method::Delete, url(server, path, folder))
+    delete_under(&server.join("webdav/"), path, folder)
+}
+
+/// [`delete`] under any WebDAV base: for good. The sync sends it only for a path inside
+/// `.craftcloud/` (`craftcloud_native::storage::RemoteStorage::purge_own`).
+pub fn delete_under(base: &str, path: &str, folder: bool) -> HttpRequest {
+    HttpRequest::new(Method::Delete, url_under(base, path, folder))
+}
+
+/// CraftCloud's own trash on a server without one (docs/WEBDAV-STORAGE.md § 8), and the local
+/// folder's trash under download only (§ 9): `.craftcloud/trash`.
+pub const TRASH_DIR: &str = ".craftcloud/trash";
+
+/// The name of one trash entry's folder, `<time>-<device>` (`20261117T143205Z-Laptop`), or
+/// `<time>-<device>-<n>` for `n` 2 and on when that name is taken; the trashed item keeps its
+/// cloud path below it, so a restore knows where it goes. `/` and `\` in a device name become `-`.
+pub fn trash_entry_name(time: &str, device: &str, n: u32) -> String {
+    let device: String = device.chars().map(|c| if matches!(c, '/' | '\\') { '-' } else { c }).collect();
+    if n <= 1 { format!("{time}-{device}") } else { format!("{time}-{device}-{n}") }
 }
 
 /// Whether a path is CraftCloud's own (never shown in file lists, never synced).
@@ -320,6 +373,40 @@ mod tests {
         assert_eq!(snap.header_value("Overwrite"), Some("F"));
         assert!(is_craftcloud_internal(".craftcloud/versions/x"));
         assert!(!is_craftcloud_internal("Documents/.craftcloud"));
+    }
+
+    /// The `_under` builders give the same requests for OxiCloud's base as the server ones (the
+    /// generic driver runs the same code under its own base).
+    #[test]
+    fn requests_under_oxiclouds_base_are_the_servers() {
+        use super::{copy_under, create_folder_under, delete_under, list_under, move_to, move_to_under, stat, stat_under, upload_under};
+        let s = server();
+        let base = s.join("webdav/");
+        let same = |a: crate::http::HttpRequest, b: crate::http::HttpRequest| {
+            assert_eq!((a.method, a.url, a.headers, a.body), (b.method, b.url, b.headers, b.body));
+        };
+        same(list(&s, "Docs"), list_under(&base, "Docs"));
+        same(stat(&s, "Docs/a.txt"), stat_under(&base, "Docs/a.txt"));
+        same(upload(&s, "a.md", b"x".to_vec(), &Write::Create), upload_under(&base, "a.md", b"x".to_vec(), &Write::Create));
+        same(super::create_folder(&s, "Docs"), create_folder_under(&base, "Docs"));
+        same(copy(&s, "a", "b"), copy_under(&base, "a", "b"));
+        same(move_to(&s, "a", "b", true), move_to_under(&base, "a", "b", true));
+        same(super::delete(&s, ".craftcloud/x", false), delete_under(&base, ".craftcloud/x", false));
+        assert_eq!(
+            list_under("https://cloud.example.org/remote.php/dav/files/john/", "Docs").url,
+            "https://cloud.example.org/remote.php/dav/files/john/Docs/"
+        );
+    }
+
+    /// The client trash's entry names (docs/WEBDAV-STORAGE.md § 8): the time, the device, and a
+    /// count only when the first name is taken.
+    #[test]
+    fn trash_entries_are_named_by_time_and_device() {
+        use super::{TRASH_DIR, trash_entry_name};
+        assert_eq!(trash_entry_name("20261117T143205Z", "Laptop", 1), "20261117T143205Z-Laptop");
+        assert_eq!(trash_entry_name("20261117T143205Z", "Laptop", 2), "20261117T143205Z-Laptop-2");
+        assert_eq!(trash_entry_name("20261117T143205Z", "a/b\\c", 1), "20261117T143205Z-a-b-c");
+        assert!(is_craftcloud_internal(TRASH_DIR));
     }
 
     #[test]

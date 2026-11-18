@@ -698,6 +698,41 @@ fn a_running_client_takes_a_sign_in_made_on_the_command_line() {
     assert!(!h.state_mut().signed_in_elsewhere(ClientSettings::default()));
 }
 
+/// Under download only (docs/WEBDAV-STORAGE.md § 11) the header, the tray's words and the
+/// headline say so, so nobody takes it for a two-way sync; a two-way sync reads as before.
+#[test]
+fn download_only_is_said_beside_the_state() {
+    use craftcloud_core::storage::Mode;
+    let mut h = signed_in();
+    h.state_mut().host.progress = SyncProgress { state: SyncState::UpToDate, mode: Some(Mode::DownloadOnly), ..SyncProgress::default() };
+    h.run();
+    h.get_by_label("Up to date · Download only");
+    h.get_by_label_contains("downloaded");
+    assert_eq!(super::status_text(&h.state().host.progress), "Up to date · Download only");
+    let two_way = SyncProgress { state: SyncState::UpToDate, mode: Some(Mode::TwoWay), ..SyncProgress::default() };
+    assert_eq!(super::status_text(&two_way), "Up to date");
+    let unknown = SyncProgress { state: SyncState::UpToDate, ..SyncProgress::default() };
+    assert_eq!(super::status_text(&unknown), "Up to date");
+    let failed = SyncProgress { state: SyncState::Failed("x".into()), mode: Some(Mode::DownloadOnly), ..SyncProgress::default() };
+    assert_eq!(super::status_text(&failed), "Error", "a stopped sync says what stopped it");
+}
+
+/// Settings naming a kind of server this build won't sync with: the host refuses, the window
+/// opens on the Connect sheet with the message, and no sign-in is started or taken.
+#[test]
+fn a_refused_kind_of_server_opens_the_window_with_the_message() {
+    let mut h = app(signed_in_settings(), None);
+    h.state_mut().screen = Screen::Keychain;
+    h.state_mut().refuse("This build syncs only with a CraftCloud server; set CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1 to try other servers".into());
+    h.run();
+    assert!(matches!(h.state().screen, Screen::Connect(_)));
+    h.get_by_label_contains("CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1");
+    assert!(!h.state().wants_keychain(), "a keychain answer that arrives late changes nothing");
+    h.state_mut().keychain_answered(Some(Tokens { access_token: "a".into(), refresh_token: "r".into() }));
+    h.run();
+    assert!(matches!(h.state().screen, Screen::Connect(_)) && h.state().host.started.is_empty(), "no sync was started");
+}
+
 #[test]
 fn offline_retries_and_signed_out_signs_in_again() {
     let mut h = with_state(SyncState::Offline("connection refused".into()));

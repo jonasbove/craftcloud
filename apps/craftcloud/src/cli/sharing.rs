@@ -101,6 +101,9 @@ fn print_links(ctx: &Ctx, links: &[Link]) -> Result<()> {
 
 /// `share create|ls|rm`.
 pub fn share(ctx: &Ctx, cmd: ShareCmd) -> Result<()> {
+    if ctx.is_webdav() {
+        return Err(CliError::unsupported("share links"));
+    }
     let mut remote = ctx.remote()?;
     match cmd {
         ShareCmd::Create { path, expires, password } => {
@@ -171,6 +174,11 @@ fn remove(ctx: &Ctx, remote: &mut Remote, link: &str) -> Result<()> {
 /// `versions <path> [restore <n>]`.
 pub fn versions(ctx: &Ctx, path: &str, restore: bool, n: Option<usize>) -> Result<()> {
     let path = clean(path)?;
+    if ctx.is_webdav() {
+        // The kept versions are listed and restored through the trait in a later pull request
+        // (docs/WEBDAV-STORAGE.md § 14, 4b); the sync keeps them already.
+        return Err(CliError::unsupported("the version commands"));
+    }
     let mut remote = ctx.remote()?;
     if remote.stat(&path)?.is_none() {
         return Err(CliError::not_found(format!("{path}: no such file")));

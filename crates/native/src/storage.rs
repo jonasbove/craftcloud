@@ -53,6 +53,8 @@
 
 pub mod oxicloud;
 pub mod probe;
+pub mod versions;
+pub mod webdav;
 
 use std::path::Path;
 use std::sync::Arc;
