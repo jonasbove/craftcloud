@@ -320,19 +320,19 @@ impl AppPasswordSession {
 
     /// Sends a request and waits for the whole answer.
     pub fn call(&mut self, req: &HttpRequest) -> Result<HttpResponse, String> {
-        let answer = http::execute(&self.authorize(req.clone()));
+        let answer = http::execute_direct(&self.authorize(req.clone()));
         self.note(answer, |r| r.status)
     }
 
     /// Like [`Self::call`], but hands back the open response for streaming a download.
     pub fn open(&mut self, req: &HttpRequest) -> Result<ureq::http::Response<ureq::Body>, String> {
-        let answer = http::send(&self.authorize(req.clone()));
+        let answer = http::send_direct(&self.authorize(req.clone()));
         self.note(answer, |r| r.status().as_u16())
     }
 
     /// Like [`Self::call`], with the body streamed from a file.
     pub fn upload(&mut self, req: &HttpRequest, file: &Path) -> Result<HttpResponse, String> {
-        let answer = http::send_file(&self.authorize(req.clone()), file, &self.cancel);
+        let answer = http::send_file_direct(&self.authorize(req.clone()), file, &self.cancel);
         self.note(answer, |r| r.status)
     }
 }

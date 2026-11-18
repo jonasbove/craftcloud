@@ -48,6 +48,10 @@ pub struct Flags {
     /// A replace with a stale `If-Match` answers 204 with a fresh ETag but keeps the newer file
     /// already there: the guard is honoured at probe time yet ignored at runtime (the runtime watch).
     pub replace_keeps_other: bool,
+    /// A folder's URL without its trailing slash answers 301 with a `Location` to the slash form,
+    /// whatever the method, as Apache's mod_dav does. A client that follows it sends a `GET`
+    /// without its `Authorization` header and gets a 401.
+    pub folders_need_slash: bool,
     /// The server's clock, as an RFC 1123 time: the `Date` header on every answer, and the
     /// `getlastmodified` of every folder made from now on.
     pub date: Option<String>,
@@ -205,6 +209,12 @@ impl FakeDav {
             .filter_map(|n| header(n).map(|v| ((*n).to_owned(), v)))
             .collect();
         self.log.push((method.to_owned(), path.clone(), guards));
+        if self.flags.folders_need_slash && !path.is_empty() && self.folders.contains_key(&self.key(&path)) {
+            let target = url_path.split('?').next().unwrap_or(url_path);
+            if !target.ends_with('/') {
+                return self.done(301, "").with_header("Location", &self.href(&path, true));
+            }
+        }
         match method {
             "PROPFIND" => self.propfind(&path, header("Depth").as_deref().unwrap_or("infinity")),
             "MKCOL" => self.mkcol(&path),

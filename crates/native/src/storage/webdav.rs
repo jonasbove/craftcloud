@@ -294,6 +294,14 @@ impl WebDav {
         if resp.status == 404 {
             return Err(StorageError::NotFound(format!("{path}: 404")));
         }
+        // Apache's mod_dav answers 301 to a folder's URL without its trailing slash, pointing at
+        // the slash form. The session never follows a redirect (`http::execute_direct`), so the
+        // answer is read here: a redirect to `<path>/` says "a folder". Any other 3xx is unknown.
+        if (300..400).contains(&resp.status) {
+            let slash_form = dav::url_under("", path, true);
+            let to_slash_form = resp.header("Location").is_some_and(|l| l.split('?').next().unwrap_or(l).ends_with(&slash_form));
+            return if to_slash_form { Ok(true) } else { Err(StorageError::Status(resp.status)) };
+        }
         let listed = parse_listing(&resp, &self.base).map_err(|e| format!("listing {path:?}: {e}"))?;
         Ok(listed.iter().find(|e| e.path == path.trim_matches('/')).is_some_and(|e| e.is_folder))
     }
@@ -1011,6 +1019,52 @@ pub(crate) mod tests {
         assert_eq!(dav.lock().unwrap().body("Docs/a.txt"), Some(b"v0".as_slice()), "the version is back");
         assert_eq!(s.list_versions("Docs/a.txt").unwrap().len(), 4, "the replaced file is kept as a new version, so the restore can be undone");
         assert!(s.restore_version("Docs/a.txt", "20200101T000000.000Z").unwrap_err().to_string().contains("no version"));
+    }
+
+    /// Apache's mod_dav answers 301 to a folder URL without its trailing slash. The driver never
+    /// follows a redirect (followed, it became a `GET` without the password, a 401 and a wrong
+    /// "signed out"): it reads the 301 as "a folder" and sends the folder's URL with its slash, so
+    /// a trashed folder is still restored and an entry's folder still purged, and no request ever
+    /// leaves without the `Authorization` header.
+    #[test]
+    fn a_folder_url_without_its_slash_is_redirected_and_never_followed() {
+        let (server, dav) = scripted(Flags { folders_need_slash: true, ..Flags::default() });
+        {
+            let mut dav = dav.lock().unwrap();
+            dav.add_folder("Old/Sub", None);
+            dav.add_file("Old/a.txt", b"a");
+            dav.add_file("Old/Sub/b.txt", b"b");
+        }
+        let mut s = driver(&server);
+        let etag = |s: &mut WebDav, folder: &str, name: &str| s.list(folder).unwrap().into_iter().find(|e| e.path == name).unwrap().etag.unwrap();
+        let planned =
+            vec![("Old/a.txt".to_owned(), etag(&mut s, "Old", "Old/a.txt")), ("Old/Sub/b.txt".to_owned(), etag(&mut s, "Old/Sub", "Old/Sub/b.txt"))];
+        assert_eq!(s.trash("Old", TrashGuard::Folder { files: planned }).unwrap(), Trashed::Done);
+        let items = s.trash_list().unwrap();
+        assert_eq!(items.iter().map(|i| i.path.as_str()).collect::<Vec<_>>(), ["Old"]);
+        s.restore(&items[0]).unwrap();
+        {
+            let dav = dav.lock().unwrap();
+            assert_eq!(dav.body("Old/Sub/b.txt"), Some(b"b".as_slice()), "the folder is back whole");
+            assert!(dav.folders().iter().all(|f| !f.starts_with(".craftcloud/trash/")), "the emptied entry is purged: {:?}", dav.folders());
+        }
+        assert!(!s.signed_out(), "a redirect is never 'signed out'");
+        let seen = server.seen();
+        assert!(seen.iter().any(|r| r.method == "PROPFIND" && !r.path.ends_with('/')), "the slashless PROPFIND was sent: {seen:?}");
+        for r in &seen {
+            assert!(r.header("authorization").is_some(), "a request without the password (a followed redirect): {r:?}");
+            assert_ne!(r.method, "GET", "a redirect was followed as a GET: {r:?}");
+            if r.method == "DELETE" {
+                assert!(r.path.ends_with('/'), "a folder DELETE without its slash: {r:?}");
+            }
+        }
+
+        // A 3xx the driver can't read as "a folder" is an error, not a listing and not a sign-out.
+        let server = FakeServer::start_full(|_| Answer::new(302, "").header("Location", "https://elsewhere.example.org/"));
+        let mut s = driver(&server);
+        assert!(matches!(s.list("Docs").unwrap_err(), StorageError::Failed(_)));
+        assert!(!s.signed_out() && s.take_offline().is_none());
+        assert_eq!(server.seen().len(), 1, "never followed: {:?}", server.seen());
     }
 
     /// The check's re-run schedule (docs/WEBDAV-STORAGE.md § 7.5): a fresh saved check of the same

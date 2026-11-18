@@ -26,16 +26,39 @@ pub const IDLE: Duration = Duration::from_secs(60);
 /// The shared agent and its pool of kept-alive connections. After a transport error the pool is
 /// dropped (a fresh agent): connections kept from before a dropped route may be dead too, and
 /// each would otherwise wait out its own idle limit.
-static AGENT: LazyLock<Mutex<ureq::Agent>> = LazyLock::new(|| Mutex::new(agent(idle())));
+static AGENT: LazyLock<Mutex<ureq::Agent>> = LazyLock::new(|| Mutex::new(agent(idle(), FOLLOW_REDIRECTS)));
+
+/// The agent for another WebDAV server's requests (the generic driver and the probe over an app
+/// password): the same, but it **never follows a redirect**. A 3xx comes back as the answer it
+/// is, for the driver to report as an error (unknown, never "gone"). Apache's mod_dav answers 301
+/// to a folder URL without its trailing slash; followed, that became a `GET` without the
+/// `Authorization` header (redirects never carry it, rightly), a 401, and a session wrongly marked
+/// signed out. CraftCloud's own server keeps the usual agent, so nothing changes for it.
+static DIRECT_AGENT: LazyLock<Mutex<ureq::Agent>> = LazyLock::new(|| Mutex::new(agent(idle(), 0)));
+
+/// ureq's own default: how many redirects the usual agent follows.
+const FOLLOW_REDIRECTS: u32 = 10;
 
 fn shared() -> ureq::Agent {
     AGENT.lock().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
+fn direct() -> ureq::Agent {
+    DIRECT_AGENT.lock().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
 /// Passes a result through, dropping the connection pool on a transport error.
 fn pooled<T>(result: Result<T, String>) -> Result<T, String> {
     if result.is_err() {
-        *AGENT.lock().unwrap_or_else(PoisonError::into_inner) = agent(idle());
+        *AGENT.lock().unwrap_or_else(PoisonError::into_inner) = agent(idle(), FOLLOW_REDIRECTS);
+    }
+    result
+}
+
+/// [`pooled`] for the direct agent.
+fn pooled_direct<T>(result: Result<T, String>) -> Result<T, String> {
+    if result.is_err() {
+        *DIRECT_AGENT.lock().unwrap_or_else(PoisonError::into_inner) = agent(idle(), 0);
     }
     result
 }
@@ -45,7 +68,7 @@ pub const CANCELLED: &str = "cancelled";
 /// What an upload says when its file changed while it was being sent.
 pub const CHANGED_WHILE_UPLOADING: &str = "changed while uploading; trying again";
 
-fn agent(idle: Duration) -> ureq::Agent {
+fn agent(idle: Duration, max_redirects: u32) -> ureq::Agent {
     ureq::Agent::config_builder()
         // 4xx/5xx are answers to read (412 = conflict, 401 = refresh), not transport errors.
         .http_status_as_error(false)
@@ -58,6 +81,8 @@ fn agent(idle: Duration) -> ureq::Agent {
         // cycle), however long a moving one takes.
         .timeout_per_read(Some(idle))
         .timeout_per_write(Some(idle))
+        // 0 for another WebDAV server (see `DIRECT_AGENT`); the usual agent follows as before.
+        .max_redirects(max_redirects)
         .build()
         .into()
 }
@@ -69,6 +94,21 @@ fn method(m: Method) -> ureq::http::Method {
 /// Sends one request and waits for the whole answer. Errors are transport errors only.
 pub fn execute(req: &HttpRequest) -> Result<HttpResponse, String> {
     pooled(execute_on(&shared(), req))
+}
+
+/// [`execute`] without following redirects (another WebDAV server; see `DIRECT_AGENT`).
+pub fn execute_direct(req: &HttpRequest) -> Result<HttpResponse, String> {
+    pooled_direct(execute_on(&direct(), req))
+}
+
+/// [`send`] without following redirects.
+pub fn send_direct(req: &HttpRequest) -> Result<ureq::http::Response<ureq::Body>, String> {
+    pooled_direct(send_on(&direct(), req))
+}
+
+/// [`send_file`] without following redirects.
+pub fn send_file_direct(req: &HttpRequest, file: &std::path::Path, cancel: &Arc<AtomicBool>) -> Result<HttpResponse, String> {
+    pooled_direct(send_file_on(&direct(), req, file, cancel))
 }
 
 fn execute_on(agent: &ureq::Agent, req: &HttpRequest) -> Result<HttpResponse, String> {
@@ -293,7 +333,10 @@ impl ThreadBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::{CANCELLED, CANT_CONNECT, CANT_FIND, CHANGED_WHILE_UPLOADING, FileBody, agent, describe, execute_on, is_unreachable, send_file_on};
+    use super::{
+        CANCELLED, CANT_CONNECT, CANT_FIND, CHANGED_WHILE_UPLOADING, FOLLOW_REDIRECTS, FileBody, agent, describe, execute_on, is_unreachable,
+        send_file_on,
+    };
     use craftcloud_core::http::{HttpRequest, Method};
     use std::io::{Read, Write};
     use std::sync::Arc;
@@ -378,7 +421,7 @@ mod tests {
 
     #[test]
     fn a_stalled_server_is_an_error_not_a_hang() {
-        let quick = agent(Duration::from_millis(500));
+        let quick = agent(Duration::from_millis(500), FOLLOW_REDIRECTS);
         let (url, held) = stalled_server();
         let started = Instant::now();
         assert!(execute_on(&quick, &HttpRequest::new(Method::Get, url)).is_err());
@@ -451,14 +494,16 @@ mod tests {
     #[test]
     fn a_port_nothing_listens_on_is_unreachable() {
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let e = execute_on(&agent(Duration::from_secs(5)), &HttpRequest::new(Method::Get, format!("http://127.0.0.1:{port}/"))).unwrap_err();
+        let e = execute_on(&agent(Duration::from_secs(5), FOLLOW_REDIRECTS), &HttpRequest::new(Method::Get, format!("http://127.0.0.1:{port}/")))
+            .unwrap_err();
         assert!(e.starts_with(CANT_CONNECT), "{e}");
     }
 
     #[test]
     fn a_name_that_doesnt_exist_is_unreachable() {
         // `.invalid` never resolves (RFC 2606); without a network the lookup fails all the same.
-        let e = execute_on(&agent(Duration::from_secs(5)), &HttpRequest::new(Method::Get, "http://craftcloud-test.invalid/")).unwrap_err();
+        let e = execute_on(&agent(Duration::from_secs(5), FOLLOW_REDIRECTS), &HttpRequest::new(Method::Get, "http://craftcloud-test.invalid/"))
+            .unwrap_err();
         assert!(e.starts_with(CANT_FIND), "{e}");
     }
 }

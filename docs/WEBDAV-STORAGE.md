@@ -497,6 +497,20 @@ As built (pull request 4b, the second of two under § 14's row 4; `crates/native
   server's `Server` header (none, or the richer `status.php`, come with the profiles of PRs 6–8); an unknown version
   never forces a re-check on its own, so a momentary blip keeps a good saved check. `server check` still re-runs the
   probe. The mode in use always comes from the saved check, never from a product name.
+- **Redirects are never followed** (found by pull request 5's live suite against Apache's mod_dav). Apache answers
+  301 to a `PROPFIND` or `DELETE` of a folder whose URL lacks its trailing slash. Followed, that became a `GET`
+  without the `Authorization` header (ureq's `RedirectAuthHeaders::Never`, which is right), a 401, and the app
+  password session wrongly marked "signed out". So the generic driver and the probe send every request through an
+  agent with `max_redirects(0)` (`http::execute_direct`, `send_direct`, `send_file_direct`): a 3xx is an answer the
+  driver reports as an error (unknown, never "gone", never signed out), and the password never travels to a redirect
+  target. `is_folder` reads a 301 whose `Location` is the slash form as "a folder", so `restore` and `purge_own` send
+  a folder's `MOVE` and `DELETE` with the slash, as every other folder request already did. CraftCloud's own server
+  keeps the usual agent and follows redirects exactly as before (its golden logs are unchanged). The fake server's
+  `folders_need_slash` flag stages it.
+- **`trash_list` lists one thing for one thing** (4a's design, for pull requests 10 and 11 to know): a trashed
+  folder whose only content is one folder (or one file) is listed as that inner item, since the entry's walk goes
+  down while a folder holds exactly one folder; a restore puts the same tree back. A count of items in the client
+  trash is therefore a count of entries' innermost single items, not of what was trashed.
 - **Left as is (the maintainer decides):** 4a's command line refuses CLI writes (exit code 10) on a download-only
   server (`webdav_for_writes`), beyond what § 11 lists; a trashed item's restored path isn't echoed back when a
   clash renamed it (the generic `restore` reports the original path).
