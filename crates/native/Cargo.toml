@@ -37,3 +37,5 @@ winreg = "0.55"
 
 [dev-dependencies]
 tempfile = "3"
+# The scripted WebDAV server the probe tests put behind `fake_server`.
+craftcloud-core = { workspace = true, features = ["test-support"] }

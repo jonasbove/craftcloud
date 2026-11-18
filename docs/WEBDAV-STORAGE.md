@@ -358,6 +358,57 @@ The engine also watches at runtime: a create that the cloud listing shows replac
 replace that succeeds on a version the listing says is newer, stops two-way sync for the session, re-runs the
 probe, and says so in the activity list.
 
+As built (pull request 3, `crates/core/src/storage/probe.rs` and `crates/native/src/storage/probe.rs`):
+
+- **The probe is a state machine, not a fixed list.** `Probe::next()` gives the request to send now (a `Request`:
+  the step, the method, a cloud path under the WebDAV base, the guard headers, a body, a destination for `MOVE`
+  and `COPY`), `Probe::observe(&response)` moves on, `Probe::verdict()` gives the `Mode`, the `Capabilities` and
+  every step in plain words (`StepResult`). The twenty steps of the table are the steps; several take more than
+  one request (step 1 lists the base and `.craftcloud/probe/` and makes them when missing; steps 4 and 5 follow
+  the refused write with a `GET` to see the bytes stayed; step 3 always lists the new file, so `put_etag_is_listed`
+  compares the two tags). A `PUT` is built only through a guarded constructor (`If-None-Match: *` or `If-Match`),
+  so an unguarded write can't be expressed. Hrefs are read against the base's path (`Base::relative`); one outside
+  it fails the listing. The runner checks every request's guard once more before sending (`guarded`): a `PUT`
+  without its guard, a `MOVE` or `COPY` without `Overwrite: F` or outside `.craftcloud/probe/`, or a `DELETE`
+  anywhere but inside `.craftcloud/probe/` (an `OwnPath`) ends the probe, refused.
+- **A second between writes to the same file.** Measured while building this: Nextcloud 31 and ownCloud 10.15
+  keep a file's ETag when it is overwritten within the same second as the write before it (the tag is reused
+  while the file's modified time, in whole seconds, is unchanged; 3 of 3 rounds on each, with `curl`). The
+  probe's first run against ownCloud was therefore refused at step 6. The two overwrites of the test file
+  (steps 6 and 7) are marked `settles`, and the runner waits `Limits::settle` (1.1 s) before each, so the
+  probe measures what § 5 measured. This narrows § 5's "ETag changes on every write" to "on every write in a
+  later second"; what it means for the engine (two devices writing one file within a second) is for the
+  maintainer to weigh, not changed here.
+- **Refused wins.** A transport error, a request over the per-step limit (30 s), a run over the total limit
+  (180 s), a `verdict()` asked for before the end, a version tag that doesn't change when the bytes do, a file
+  listed without one, a failed listing, or a server that won't make the probe folder or create a file: all
+  `Mode::Refused`, with the reason in words. When the server still answers, the probe goes straight to step 20
+  and deletes its folder; when it doesn't, the folder stays for the next probe to sweep.
+- **The sweep** is a pure function on seconds (`stale_probe_folders`): each folder's `getlastmodified` against the
+  `Date` header of the same listing, both parsed by `server_seconds` (jiff's RFC 2822 parser, which core's `std`
+  feature already has), older than a day goes. No `Date`, or a folder without a time, sweeps nothing. The runner
+  never looks at this computer's clock for it.
+- **The transport** is a two-method trait in `native` (`Transport::call` and `upload`, the shapes `Session` has;
+  `Session` implements it), so the generic WebDAV driver of pull request 4 runs the same probe with an app
+  password. The probe's bodies are bytes, so it uses `call` only.
+- **Steps 16 and 17** take a profile's check through `ExtraCheck` (`next(&Learnt)`, `observe`, `confirmed`), handed
+  in as `Profile { trash, versions }`. No profile exists yet, so the verdict records `Trash::Client` and
+  `Versions::Client` (or `Versions::None` without `COPY`, Q2) exactly as § 7.3 says, and the step says why.
+- **Step 18** sends the hard names (a trailing space, a trailing dot, a colon, a 255-byte name, an NFD name) and
+  records each answer in words. `NameRules` is **not** widened by what it sees: the rules are the skip rule every
+  device must agree on, and a server that accepts a trailing space today proves little about the next one; the
+  capabilities keep the strict rules (a backslash, a control character, more than 255 bytes). Widening them per
+  server is a later decision, with its "upgrade all devices together" entry.
+- **The saved check** (`StoredCheck`, `storage-check.json` in the settings folder, written whole or not at all)
+  holds the date, the server's version string, the base, `measured`, the mode, the capabilities, the capability
+  table in words and every step. Every field has a default on the safe side (`Mode::Refused`, no capabilities, the
+  strict names), so an older or newer client reads it without taking it for more than it says.
+- **The wording** of the capability table is one function, `probe::checks(&Capabilities)`, which `craftcloud server
+  check` prints for OxiCloud's known capabilities today and the desktop's "What was checked" (pull request 10)
+  reuses.
+- `Capabilities`, its enums, `Mode` and `NameRules` serialize (snake case; `two_way`, `download_only`, `refused`),
+  and `Capabilities::unknown()` is the server nobody knows: every guard ignored, nothing trusted.
+
 ## 8. How each non-negotiable is met
 
 | Non-negotiable | Server has it (honoured, measured) | Server lacks it | OpenCloud as measured |
@@ -562,8 +613,9 @@ until the 0.3.0 release pull request. Sizes are rough lines changed.
 | 10 | `✨ Desktop: choosing a server, and what the check found` | Connect sheet detection and choice, the mode panel and status, Settings › Server; kittest shots compared with `design/` | M, ~800 |
 | 11 | `📝 Docs: other servers` | ARCHITECTURE, CLI, STATUS, README, RELEASE-NOTES (0.3.0), ROADMAP M9 | S |
 
-Pull requests 1 to 3 change nothing a person sees; 4 to 9 add server types reachable from the command line, and
-10 from the desktop, both only with the opt-in. The 0.3.0 release pull request removes the opt-in and turns them
+Pull requests 1 to 3 change nothing a person sees, with one exception: pull request 3 adds the informational
+`craftcloud server check`, which on OxiCloud reports the known capabilities and writes nothing. 4 to 9 add server
+types reachable from the command line, and 10 from the desktop, both only with the opt-in. The 0.3.0 release pull request removes the opt-in and turns them
 on.
 
 ## 15. Risks

@@ -8,12 +8,20 @@
 //! measures them on other servers comes later (§ 14). What the sync may do with a server follows
 //! from them: [`mode_for`] gives its [`Mode`], and `reconcile::restrict` cuts every plan to it.
 //!
+//! The check on connect that measures them on another server is [`probe`]: the steps and the
+//! verdict as data and pure functions, run over HTTP by `craftcloud-native`.
+//!
 //! No I/O here: the drivers that talk to a server are in `craftcloud-native` (`storage`).
+
+pub mod probe;
+
+use serde::{Deserialize, Serialize};
 
 use crate::names::NameRules;
 
 /// Whether a server keeps a write guard it was sent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Guard {
     /// A write it doesn't allow is refused (412) and nothing changes.
     Honoured,
@@ -22,7 +30,8 @@ pub enum Guard {
 }
 
 /// Whether a delete with `If-Match` is refused when the file changed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DeleteGuard {
     Honoured,
     Ignored,
@@ -32,7 +41,8 @@ pub enum DeleteGuard {
 }
 
 /// Whether a folder's ETag changes when something in it does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FolderEtags {
     Follow,
     DontFollow,
@@ -41,7 +51,8 @@ pub enum FolderEtags {
 }
 
 /// What a `PUT` into a folder that isn't there answers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MissingParent {
     /// 404.
     NotFound,
@@ -51,7 +62,8 @@ pub enum MissingParent {
 }
 
 /// A checksum a server lists for its files.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Checksum {
     Sha1,
     Md5,
@@ -59,7 +71,8 @@ pub enum Checksum {
 }
 
 /// Where a delete goes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Trash {
     /// The server's own trash (restored the way its profile says).
     Server,
@@ -68,7 +81,8 @@ pub enum Trash {
 }
 
 /// Where the bytes a save replaces are kept.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Versions {
     /// The server keeps them itself (by file id).
     Server,
@@ -78,7 +92,8 @@ pub enum Versions {
 }
 
 /// Where the free space comes from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Quota {
     /// OxiCloud's `GET /api/auth/me`.
     OxiCloudRest,
@@ -90,7 +105,8 @@ pub enum Quota {
 }
 
 /// What a server guarantees the sync (docs/WEBDAV-STORAGE.md § 7.3).
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default = "Capabilities::unknown")]
 pub struct Capabilities {
     /// `PUT` with `If-None-Match: *` over an existing file.
     pub create_if_absent: Guard,
@@ -163,10 +179,38 @@ impl Capabilities {
             names: NameRules::oxicloud(),
         }
     }
+
+    /// A server nothing is known about: every guard taken as ignored, nothing trusted. What the
+    /// check on connect starts from, and what a saved check is read as where it doesn't say
+    /// (`mode_for` gives it download only at most, and the check itself refuses what it
+    /// couldn't measure).
+    pub const fn unknown() -> Self {
+        Self {
+            create_if_absent: Guard::Ignored,
+            replace_if_match: Guard::Ignored,
+            delete_if_match: DeleteGuard::Ignored,
+            move_no_overwrite: false,
+            etag_changes_on_write: false,
+            etag_kept_by_move: false,
+            put_etag_is_listed: false,
+            folder_etags: FolderEtags::NotTrusted,
+            missing_parent: MissingParent::Other,
+            depth_infinity: false,
+            copy: false,
+            file_ids: false,
+            checksums: None,
+            case_insensitive: false,
+            trash: Trash::Client,
+            versions: Versions::None,
+            quota: Quota::Unknown,
+            names: NameRules::oxicloud(),
+        }
+    }
 }
 
 /// What the sync may do with a server (docs/WEBDAV-STORAGE.md § 7.3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Mode {
     /// Both ways: every write guarded, every delete into a trash, the old bytes kept before an
     /// overwrite.
@@ -175,8 +219,30 @@ pub enum Mode {
     /// made here stays here, and a file deleted in the cloud goes into `.craftcloud/trash/` in the
     /// local folder, never away for good (§ 9).
     DownloadOnly,
-    /// Nothing at all: the server can't show that a file changed.
+    /// Nothing at all: the server can't show that a file changed. The default, so that a check
+    /// read from a file that doesn't say is never taken as more.
+    #[default]
     Refused,
+}
+
+impl Mode {
+    /// The name in JSON (`two_way`, `download_only`, `refused`), the same the serde form uses.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TwoWay => "two_way",
+            Self::DownloadOnly => "download_only",
+            Self::Refused => "refused",
+        }
+    }
+
+    /// In plain words: "two-way", "download only", "refused".
+    pub const fn words(self) -> &'static str {
+        match self {
+            Self::TwoWay => "two-way",
+            Self::DownloadOnly => "download only",
+            Self::Refused => "refused",
+        }
+    }
 }
 
 /// The mode a server's capabilities allow (docs/WEBDAV-STORAGE.md § 7.3). Never two-way unless

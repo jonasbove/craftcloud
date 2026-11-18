@@ -159,6 +159,14 @@ copy, so the content's own time is kept in the name.
 | `versions PATH` | The kept versions, numbered from 1 (the newest): when each one's content was last changed, its size, and when it was replaced, in this computer's time zone. Versions kept before the content's time was recorded (or kept by the web frontend) show `-` there |
 | `versions PATH restore N` | Puts version `N` back; the version it replaces is kept too, so a restore can be undone |
 
+### The server
+
+For everyone, not only admins.
+
+| Command | What it does |
+|---|---|
+| `server check` | What the server guarantees the sync, each check in plain words (a create that refuses to overwrite, an overwrite that refuses a stale version tag, a move that never lands on an existing name, version tags that change on every write, where deletes and replaced bytes go, the names it can't take …), and the sync mode that allows: **two-way**, **download only** or **refused** ([WEBDAV-STORAGE.md § 7.3](WEBDAV-STORAGE.md)). On a CraftCloud server these are *known*, not measured: nothing is written to the server and no sign-in is needed, only that it answers. Exit code 8 when it can't be reached |
+
 ### Server administration (owners and admins)
 
 | Command | What it does |
@@ -282,6 +290,7 @@ exits 0 when the run ended up to date (with or without `waiting`), 3 when signed
 | `versions … restore` | the restored version's fields, with `path` and `restored` (its `stamp`) |
 | `open` | `{"opened": local path}`, with `"with": "chooser"` when Windows had no app for the file's type and showed its "Open with" dialog instead |
 | `server info` | `{"server", "craftcloud", "version", "public_url", "web_apps", "initialized", "signed_in_as", "role"}` |
+| `server check` | `{"server", "kind": "oxicloud", "mode": "two_way" \| "download_only" \| "refused", "measured": false, "checks": [{"check", "result"}]}` (`measured`: `false` when the capabilities are known for the kind of server rather than probed; `checks`: one row per capability, in plain words) |
 | `server users ls` | `[{"username", "email", "role", "active", "used_bytes", "quota_bytes", "last_login_at", "id"}]` |
 | `server settings` | `{"web_apps", "disabled_apps", "bundled_apps"}` |
 

@@ -24,6 +24,11 @@ log = { workspace = true }
 # offset, and nothing here reads the system clock (that would panic on wasm32).
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 
+[features]
+# `storage::probe::fake`, the scripted WebDAV server the probe tests drive; `crates/native`'s tests
+# put it behind a loopback HTTP server. Never on by default, never in a build a person runs.
+test-support = []
+
 [dev-dependencies]
 # Property tests of the sync decisions (src/reconcile/properties.rs). Without the default `fork`
 # and `timeout` features: no subprocesses, fewer crates.

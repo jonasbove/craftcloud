@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`craftcloud server check`** prints what the server guarantees the sync, each check in plain words, and the sync
+  mode that allows. On a CraftCloud server it reports the known capabilities (two-way) and writes nothing to the
+  server. Nothing needs care when updating.
 - **Web: the right version before the server answers.** A page drawn before the server's settings arrived showed
   version 0.1.0; it now shows the version it was built as.
 - **Server scripts no longer need Python.** `scripts/create-owner`, `scripts/add-user` and `scripts/app-password`

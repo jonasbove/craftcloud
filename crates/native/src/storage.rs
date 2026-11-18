@@ -52,6 +52,7 @@
 //! `craftcloud-core`).
 
 pub mod oxicloud;
+pub mod probe;
 
 use std::path::Path;
 use std::sync::Arc;

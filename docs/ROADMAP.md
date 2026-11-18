@@ -2,8 +2,8 @@
 
 **Stage: early alpha** · version 0.2.0 (share links and version history on the web, the Windows fixes, server hardening)
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-17 · **Change:** minor (version 0.2.0; M9 moves to
-> 0.3.0; M9 pull requests 1 and 2, the sync engine behind a storage trait, and sync modes); on Linux the tray counts as up only while a tray
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-18 · **Change:** minor (version 0.2.0; M9 moves to
+> 0.3.0; M9 pull requests 1 to 3, the sync engine behind a storage trait, sync modes, and the check on connect with `craftcloud server check`); on Linux the tray counts as up only while a tray
 > host is on the bus, so closing the window on stock GNOME quits instead of leaving an invisible client; a start at
 > login stays in the tray on Windows and X11, and opens the window where there is no tray; an offline desktop window waits before asking who is signed in again; the
 > release checklist and the Release workflow check the Craft web app pins; an idle window uses next to no CPU; trace
@@ -33,7 +33,7 @@ backup of anything you sync with it.
 | Web file browser (upload, download, rename, move, delete, trash, versions, details, recent, starred, search) | done | [design-notes/pass-2.md](design-notes/pass-2.md) |
 | Share links | done: public share page, CLI, the web's "Share link" sheet and "Your share links" page | [CLI.md › Share links](CLI.md#share-links) |
 | Admin (users, server settings, Craft web apps on or off) | done, on the web and in the CLI | [CLI.md](CLI.md#server-administration-owners-and-admins) |
-| Command line | done; on Windows through `craftcloud.com` (untried on Windows) | [CLI.md](CLI.md) |
+| Command line | done; on Windows through `craftcloud.com` (untried on Windows); `server check` says what the server guarantees the sync | [CLI.md](CLI.md) |
 | Craft apps through the sync folder | done (every app) | [CRAFT-INTEGRATION.md § 1](CRAFT-INTEGRATION.md#1-the-sync-folder-works-today-every-app) |
 | `craftcloud://` deep links | done on Linux and Windows; macOS needs an Apple Event handler | [CRAFT-INTEGRATION.md § 2](CRAFT-INTEGRATION.md#2-deep-links-craftcloud) |
 | Integration contract (`craftcloud apps`, `files`, `save`) | done | [CRAFT-INTEGRATION.md § 3](CRAFT-INTEGRATION.md#3-the-integration-contract-the-craftcloud-command) |
@@ -56,7 +56,7 @@ backup of anything you sync with it.
 | M6 Files on demand | Placeholders that download when opened (Windows, Linux, macOS) | Design only |
 | M7 Signed desktop builds | Signed and notarized macOS builds, signed Windows builds | Not started; v1 is unsigned |
 | M8 Native NixOS deployment | OxiCloud, Caddy and craftcloud-admin as NixOS services without Docker, with the Craft web apps built by Nix from `apps.toml` | Not started; the NixOS module runs the Docker image today |
-| M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Planned for 0.3.0, on `main` behind an opt-in until the release; the storage trait with OxiCloud as its first driver, and the sync modes (two-way, download only, refused) with the plan cut to each, are in (no change for a person) |
+| M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Planned for 0.3.0, on `main` behind an opt-in until the release; the storage trait with OxiCloud as its first driver, the sync modes (two-way, download only, refused) with the plan cut to each, and the check on connect (the probe's steps and verdict in `core`, its runner in `native`, `craftcloud server check`) are in; the only thing a person sees so far is `server check`, which reports CraftCloud's own server's known capabilities |
 | M10 No Python in the tree | The operator scripts without Python (sh and curl) and the packaging icons in Rust (0.3.0), then the design build (`design/tools`, FigCraft) as `cargo xtask design` | 0.3.0: scripts and icons in progress; the design build later |
 
 ## Current focus
@@ -116,6 +116,24 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-18: Sync (M9, pull request 3 of [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14): the server check. The check
+  on connect is a state machine in `core::storage::probe` (§ 7.5's twenty steps as request/expectation pairs, every
+  write with its guard, the verdict as `Capabilities` plus each step in plain words, `Mode` through `mode_for`; a
+  probe that doesn't finish, a version tag that doesn't change with the bytes or a listing without one is refused),
+  with the sweep of old probe folders decided by the server's clock alone and the saved check's shape
+  (`storage-check.json`, every field with a safe default). `native::storage::probe` runs it over a small transport
+  trait (`Session` implements it; the generic driver will too), checks every request's guard again before sending,
+  and refuses a probe that takes too long. `craftcloud server check [--json]` prints the capability table and the
+  mode; on CraftCloud's own server no probe runs (Q3): the known capabilities, marked not measured. Tests: the
+  verdict for each misbehaviour of § 5 against a scripted WebDAV server (`core::storage::probe::fake`, also behind
+  the loopback `fake_server` in `native`), the sweep rule, the request-log guards, a server that stops answering
+  (refused, swept next time), the saved check's round trip, a property test that one more failing step never raises
+  the mode; `cli_live` checks `server check` and that nothing was written. Steps 16 and 17 (a known server's trash
+  and versions) take a profile's check through `ExtraCheck`; none exists yet, so the verdict records CraftCloud's
+  own trash and versions. The hard names of step 18 are recorded in words; the name rules stay the strict ones.
+  Found on the way: Nextcloud and ownCloud keep a file's version tag when it is overwritten within the same
+  second as the write before it, so the probe waits a second before its two overwrites (noted in the design's
+  as-built note for the maintainer). Nothing changes for an OxiCloud sync: the 15 golden logs are unchanged.
 - 2026-11-17: Sync (M9, pull request 2 of [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14): sync modes. What a server
   guarantees decides what the sync may do with it (`core::storage::mode_for`: two-way, download only, or refused),
   and every plan is cut to that mode (`core::reconcile::restrict`): download only never uploads, moves, makes,
@@ -493,3 +511,4 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 | 2026-11-17 | minor | M9's design, with the decisions; on `main` behind an opt-in until 0.3.0. |
 | 2026-11-17 | minor | M9 pull request 1: the sync engine behind a storage trait, OxiCloud its first driver; no change for a person. |
 | 2026-11-17 | minor | M9 pull request 2: sync modes, and the plan cut to download only; no change for a person. |
+| 2026-11-18 | minor | M9 pull request 3: the server check (the probe in core, its runner, `craftcloud server check`); OxiCloud syncs as before. |

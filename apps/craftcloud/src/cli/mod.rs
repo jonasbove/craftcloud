@@ -4,6 +4,7 @@
 
 mod account;
 mod admin;
+mod check;
 mod craft;
 mod files;
 mod headless;
@@ -287,7 +288,7 @@ pub enum Cmd {
     /// Show storage use.
     #[command(after_help = "Example:\n  craftcloud usage --json")]
     Usage,
-    /// Server administration (owners and admins).
+    /// The server: what it guarantees the sync (`check`), and its administration (owners and admins).
     #[command(subcommand)]
     Server(ServerCmd),
 }
@@ -367,6 +368,11 @@ pub enum ServerCmd {
     /// What the server is and runs.
     #[command(after_help = "Example:\n  craftcloud server info --json")]
     Info,
+    /// What the server guarantees the sync (guarded writes, version tags, a trash, versions) and
+    /// the sync mode that allows: two-way, download only or refused. On a CraftCloud server these
+    /// are known, not measured.
+    #[command(after_help = "Examples:\n  craftcloud server check\n  craftcloud server check --json")]
+    Check,
     /// People on the server.
     #[command(subcommand)]
     Users(UsersCmd),

@@ -165,14 +165,24 @@ pub fn temporary(name: &str) -> bool {
 /// The names a server can't take, as data (docs/WEBDAV-STORAGE.md § 7.3): part of what a server
 /// guarantees the sync (`storage::Capabilities::names`), so that what the sync leaves alone for a
 /// server goes through the one rule, [`skipped`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+///
+/// Saved with a check on connect (`storage-check.json`), so a field a file doesn't name reads as
+/// the strict side: a name is left alone rather than sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct NameRules {
     /// A backslash in a name is refused (or mishandled, which is worse).
+    #[serde(default = "yes")]
     pub no_backslash: bool,
     /// A control character in a name is refused.
+    #[serde(default = "yes")]
     pub no_control: bool,
     /// Names (one path segment) longer than 255 bytes of UTF-8 are refused.
+    #[serde(default = "yes")]
     pub max_255_bytes: bool,
+}
+
+const fn yes() -> bool {
+    true
 }
 
 impl NameRules {

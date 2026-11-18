@@ -15,6 +15,8 @@ use super::{ServerCmd, SettingsCmd, UsersCmd};
 pub fn server(ctx: &Ctx, cmd: ServerCmd) -> Result<()> {
     match cmd {
         ServerCmd::Info => info(ctx),
+        // For everyone, not only admins: its own module.
+        ServerCmd::Check => super::check::server_check(ctx),
         ServerCmd::Users(u) => users(ctx, u),
         ServerCmd::Settings(s) => settings(ctx, s),
     }
