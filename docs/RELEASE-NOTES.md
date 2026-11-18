@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`craftcloud versions … restore` never overwrites a newer file.** The restore now writes the kept version only if
+  the file is still the one it saw; a change made meanwhile (another device, a Craft app) is kept and the restore
+  says so (exit code 5). The web's restore already worked this way. Nothing else needs care when updating: the
+  sync's decisions don't change.
 - **Other WebDAV servers, experimental and off.** The command line can sign in to any other WebDAV server
   (`craftcloud login <WebDAV address> --kind webdav --user NAME`, with an app or WebDAV password) and sync with it,
   keeping its own trash and versions in `.craftcloud/` there; the check on connect decides two-way or download

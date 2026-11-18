@@ -12,7 +12,8 @@ use std::sync::atomic::AtomicBool;
 
 use craftcloud_core::ServerUrl;
 use craftcloud_core::api::auth::{self, Tokens};
-use craftcloud_core::api::{dav, versions};
+use craftcloud_core::api::dav::{self, Uploaded, Write};
+use craftcloud_core::api::versions;
 use craftcloud_core::http::{HttpRequest, HttpResponse};
 use craftcloud_core::storage::probe::Base;
 
@@ -233,15 +234,66 @@ impl Session {
         kept::list(self, &base, path)
     }
 
-    /// Puts version `stamp` of `path` back, after keeping the current file as a version of its own
-    /// (so the restore can be undone).
-    pub fn restore_version(&mut self, path: &str, stamp: &str) -> Result<(), String> {
+    /// Puts version `stamp` of `path` back, the way the web frontend does (`web/files/versions.rs`):
+    /// the file's current ETag first, then the version's bytes, then the current file kept as a
+    /// version of its own (so the restore can be undone), then a `PUT` of the version's bytes with
+    /// `If-Match: <that ETag>`. A write that lands meanwhile (another device, the web, a Craft app
+    /// saving) makes the `PUT` answer 412: nothing is overwritten, the change is kept, and the
+    /// restore says so ([`RestoreError::Changed`]). The ETag is read before the snapshot, not
+    /// after: a write between the snapshot and a later stat would otherwise pass the guard, and
+    /// its bytes would be lost with no version kept. Never a `COPY` over the file: a `COPY` with
+    /// `Overwrite: T` has no guard.
+    pub fn restore_version(&mut self, path: &str, stamp: &str) -> Result<(), RestoreError> {
         if !self.versions(path)?.iter().any(|v| v.stamp == stamp) {
-            return Err(format!("{path} has no version {stamp}"));
+            return Err(RestoreError::Other(format!("{path} has no version {stamp}")));
+        }
+        let current = self.call(&dav::stat(&self.server, path))?;
+        let etag = dav::parse_list(&current).ok().and_then(|e| e.into_iter().find(|e| !e.is_folder)).and_then(|e| e.etag);
+        let Some(etag) = etag else {
+            return Err(RestoreError::Other(format!(
+                "restoring {path} failed: couldn't read the current file on the server (it answered {})",
+                current.status
+            )));
+        };
+        // The version's bytes (in memory, bounded as every other answer is), before the snapshot
+        // prunes anything.
+        let kept = self.call(&dav::download(&self.server, &versions::version_path(path, stamp)))?;
+        if !kept.is_success() {
+            return Err(RestoreError::Other(format!("restoring {path} failed: the server answered {} for the version", kept.status)));
         }
         self.snapshot(path)?;
-        let resp = self.call(&versions::restore(&self.server, path, stamp))?;
-        craftcloud_core::api::expect_ok(&resp).map_err(|e| format!("restoring {path} failed: {e}"))
+        let resp = self.call(&dav::upload(&self.server, path, kept.body, &Write::Replace { etag }))?;
+        match dav::parse_upload(&resp) {
+            Ok(Uploaded::Saved { .. }) => Ok(()),
+            Ok(Uploaded::Conflict) => Err(RestoreError::Changed { path: path.to_owned() }),
+            Err(e) => Err(RestoreError::Other(format!("restoring {path} failed: {e}"))),
+        }
+    }
+}
+
+/// Why [`Session::restore_version`] didn't restore.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RestoreError {
+    /// The file changed between the restore's start and its write (the server answered 412 to
+    /// the guarded `PUT`): nothing was written, the change is kept, and the person chooses again.
+    /// The command line maps it to its "conflict" exit code.
+    Changed { path: String },
+    /// Anything else (a transport error, [`SIGNED_OUT`], a refusal), in plain words.
+    Other(String),
+}
+
+impl std::fmt::Display for RestoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Changed { path } => write!(f, "{path} changed meanwhile: nothing was restored; run `craftcloud versions {path}` and choose again"),
+            Self::Other(why) => f.write_str(why),
+        }
+    }
+}
+
+impl From<String> for RestoreError {
+    fn from(why: String) -> Self {
+        Self::Other(why)
     }
 }
 
@@ -696,6 +748,90 @@ mod tests {
         let logs = logs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let leaked: Vec<&String> = logs.iter().map(|(_, l)| l).filter(|l| l.contains(marker) || l.contains(&encoded)).collect();
         assert!(leaked.is_empty(), "a password in the log (any level): {leaked:?}");
+    }
+
+    use std::sync::PoisonError;
+
+    use craftcloud_core::storage::probe::fake::{FakeDav, Flags};
+
+    use super::RestoreError;
+    use crate::fake_server::Answer;
+
+    const FILE: &str = "Docs/a.txt";
+    const KEPT: &str = "20261118T100000.000Z";
+
+    /// A scripted server with OxiCloud's WebDAV under `/webdav`: `Docs/a.txt` holds "now" and has
+    /// one kept version holding "before". With `interleave`, another write lands right after the
+    /// snapshot's `COPY` (the server sees it, then the file becomes "from elsewhere" with a new
+    /// ETag): a Craft app saving, or another device, between the restore's start and its write.
+    fn a_file_with_a_version(interleave: bool) -> (FakeServer, Arc<Mutex<FakeDav>>) {
+        let dav = Arc::new(Mutex::new(FakeDav::new("/webdav", Flags::default())));
+        {
+            let mut d = dav.lock().unwrap();
+            d.add_folder("Docs", None);
+            d.add_folder(&format!(".craftcloud/versions/{FILE}"), None);
+            d.add_file(FILE, b"now");
+            d.add_file(&format!(".craftcloud/versions/{FILE}/{KEPT}"), b"before");
+        }
+        let shared = Arc::clone(&dav);
+        let server = FakeServer::start_full(move |seen| {
+            let mut d = shared.lock().unwrap_or_else(PoisonError::into_inner);
+            let resp = d.answer(&seen.method, &seen.path, &seen.headers, seen.body.as_bytes());
+            if interleave && seen.method == "COPY" && seen.header("destination").is_some_and(|to| to.contains("/.craftcloud/versions/")) {
+                d.add_file(FILE, b"from elsewhere");
+            }
+            let mut answer = Answer::new(resp.status, String::from_utf8_lossy(&resp.body).into_owned());
+            for (name, value) in resp.headers {
+                answer = answer.header(&name, value);
+            }
+            answer
+        });
+        (server, dav)
+    }
+
+    /// The restore's writes, as the sync's rules want them: a `COPY` only *into* the kept versions
+    /// (the snapshot), never onto the file, and every `PUT` guarded with `If-Match`.
+    fn writes_are_guarded(seen: &[Seen]) {
+        for r in seen.iter().filter(|r| r.method == "COPY") {
+            assert!(r.header("destination").is_some_and(|to| to.contains("/.craftcloud/versions/")), "a COPY onto the file: {r:?}");
+        }
+        let puts: Vec<&Seen> = seen.iter().filter(|r| r.method == "PUT").collect();
+        assert_eq!(puts.len(), 1, "one guarded write: {puts:?}");
+        assert!(puts[0].header("if-match").is_some(), "a PUT without If-Match: {:?}", puts[0]);
+    }
+
+    /// `craftcloud versions PATH restore N` while a change lands meanwhile: the guarded `PUT`
+    /// answers 412, nothing is overwritten, the change is kept, and the restore says so. Before
+    /// the fix the restore was a `COPY` with `Overwrite: T` and no guard, which this server lets
+    /// land: the change made meanwhile was lost, with no version of it kept.
+    #[test]
+    fn a_restore_never_overwrites_a_change_made_meanwhile() {
+        let (server, dav) = a_file_with_a_version(true);
+        let (mut session, _) = session(&server, tokens("a1", "r1"));
+        let err = session.restore_version(FILE, KEPT).unwrap_err();
+        assert_eq!(err, RestoreError::Changed { path: FILE.into() });
+        assert_eq!(err.to_string(), "Docs/a.txt changed meanwhile: nothing was restored; run `craftcloud versions Docs/a.txt` and choose again");
+        assert_eq!(dav.lock().unwrap().body(FILE), Some(b"from elsewhere".as_slice()), "the change made meanwhile is kept");
+        writes_are_guarded(&server.seen());
+        assert_eq!(session.versions(FILE).unwrap().len(), 2, "the file as it was when the restore started is kept as a version");
+    }
+
+    /// Nothing lands meanwhile: the version's bytes are put back, and the replaced file is kept
+    /// as a version of its own (so the restore can be undone).
+    #[test]
+    fn a_restore_puts_the_version_back_and_keeps_the_replaced_file() {
+        let (server, dav) = a_file_with_a_version(false);
+        let (mut session, _) = session(&server, tokens("a1", "r1"));
+        session.restore_version(FILE, KEPT).unwrap();
+        assert_eq!(dav.lock().unwrap().body(FILE), Some(b"before".as_slice()));
+        writes_are_guarded(&server.seen());
+        let kept = session.versions(FILE).unwrap();
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        assert!(kept.iter().any(|v| v.stamp == KEPT), "the restored version stays: {kept:?}");
+        assert_eq!(
+            session.restore_version(FILE, "20000101T000000.000Z").unwrap_err(),
+            RestoreError::Other("Docs/a.txt has no version 20000101T000000.000Z".into())
+        );
     }
 
     #[test]

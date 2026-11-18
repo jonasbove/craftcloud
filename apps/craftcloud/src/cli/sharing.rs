@@ -3,6 +3,7 @@
 use craftcloud_core::api::expect_ok;
 use craftcloud_core::api::shares::{self, NewShare, Share};
 use craftcloud_core::api::versions::Version;
+use craftcloud_native::session::RestoreError;
 use serde::Serialize;
 use serde_json::json;
 
@@ -204,7 +205,7 @@ pub fn versions(ctx: &Ctx, path: &str, restore: bool, n: Option<usize>) -> Resul
         .checked_sub(1)
         .and_then(|i| list.get(i))
         .ok_or_else(|| CliError::not_found(format!("{path} has no version {n} (it has {})", list.len())))?;
-    remote.session.restore_version(&path, &version.stamp).map_err(CliError::transport)?;
+    remote.session.restore_version(&path, &version.stamp).map_err(restore_failed)?;
     if ctx.json {
         let mut out = version_json(n, version);
         out["path"] = json!(path);
@@ -214,6 +215,15 @@ pub fn versions(ctx: &Ctx, path: &str, restore: bool, n: Option<usize>) -> Resul
         let when = version.modified_at().or_else(|| version.replaced_at()).map_or_else(|| version.when(), |t| output::time(&t));
         println!("Restored {path} to version {n}, last changed {when} (the replaced one is now version 1).");
         Ok(())
+    }
+}
+
+/// Why a restore didn't happen, as an exit code: the file changed meanwhile (nothing was written)
+/// is a conflict (code 5); anything else reads as a transport error (signed out, unreachable …).
+fn restore_failed(e: RestoreError) -> CliError {
+    match e {
+        RestoreError::Changed { .. } => CliError::conflict(e.to_string()),
+        RestoreError::Other(why) => CliError::transport(why),
     }
 }
 
@@ -265,6 +275,18 @@ mod tests {
         let old = Version { stamp: "20261113T151013.123Z".into(), size: 11, etag: None };
         assert!(super::version_json(1, &old)["modified"].is_null());
         assert!(super::version_line(1, &old).starts_with(" 1  -   "));
+    }
+
+    /// A restore refused because the file changed meanwhile exits with the conflict code (5), in
+    /// the words the session chose; the other reasons keep their codes (signed out is 3).
+    #[test]
+    fn a_restore_of_a_file_that_changed_meanwhile_is_a_conflict() {
+        use craftcloud_native::session::{RestoreError, SIGNED_OUT};
+        let e = super::restore_failed(RestoreError::Changed { path: "Docs/a.txt".into() });
+        assert_eq!(e.kind.code(), 5);
+        assert_eq!(e.message, "Docs/a.txt changed meanwhile: nothing was restored; run `craftcloud versions Docs/a.txt` and choose again");
+        assert_eq!(super::restore_failed(RestoreError::Other(SIGNED_OUT.into())).kind.code(), 3);
+        assert_eq!(super::restore_failed(RestoreError::Other("restoring Docs/a.txt failed: 500".into())).kind.code(), 1);
     }
 
     fn now() -> jiff::Timestamp {

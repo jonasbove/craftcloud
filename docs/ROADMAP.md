@@ -136,6 +136,13 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   generic driver, the watch's two triggers (mode drops, probe re-run, activity line, nothing more written after),
   the re-run schedule (fresh: no probe; version changed: probe; day-old: probe), and `older_than` over any span. The
   15 golden logs are unchanged.
+- 2026-11-18: CLI: `craftcloud versions PATH restore N` never overwrites a newer file. The restore was a `COPY` of
+  the kept version over the file with `Overwrite: T`, which has no guard: a write that landed between the snapshot
+  and the `COPY` (another device, the web, a Craft app saving) was lost, with no version of it kept. It now does
+  what the web's restore does: the file's ETag first, the version's bytes, the current file kept as a version, then
+  a `PUT` with `If-Match`; a 412 keeps the change and says so (exit code 5). The unguarded `COPY` builders
+  (`versions::restore`, `dav::copy_over`) are gone. The sync engine never called it: its decisions are unchanged.
+  Tests against the scripted server, one of them with a write landing right after the snapshot.
 - 2026-11-18: Sync (M9, pull request 4a of [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14, the first of two under its
   row 4): any WebDAV server, with the client's own trash and versions, behind the opt-in. The opt-in
   (`CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, read in `native::experimental` and asked by the command line, the daemon
