@@ -175,9 +175,8 @@ fn remove(ctx: &Ctx, remote: &mut Remote, link: &str) -> Result<()> {
 pub fn versions(ctx: &Ctx, path: &str, restore: bool, n: Option<usize>) -> Result<()> {
     let path = clean(path)?;
     if ctx.is_webdav() {
-        // The kept versions are listed and restored through the trait in a later pull request
-        // (docs/WEBDAV-STORAGE.md § 14, 4b); the sync keeps them already.
-        return Err(CliError::unsupported("the version commands"));
+        // The kept versions in `.craftcloud/versions/<path>/`, through the storage trait.
+        return super::webdav::versions(ctx, &path, restore, n);
     }
     let mut remote = ctx.remote()?;
     if remote.stat(&path)?.is_none() {
@@ -222,7 +221,7 @@ pub fn versions(ctx: &Ctx, path: &str, restore: bool, n: Option<usize>) -> Resul
 /// before CraftCloud wrote that down) and `replaced_at` (when it was replaced), ISO 8601 in this
 /// computer's time zone, with the offset. `stamp` and `time` (the replacement time, UTC, as text)
 /// stay for scripts that read them.
-fn version_json(n: usize, v: &Version) -> serde_json::Value {
+pub(super) fn version_json(n: usize, v: &Version) -> serde_json::Value {
     let local = |t: Option<String>| t.and_then(|t| output::local_iso(&t));
     json!({
         "n": n,
@@ -236,7 +235,7 @@ fn version_json(n: usize, v: &Version) -> serde_json::Value {
 
 /// ` 1  2026-11-13 14:02      11 B  replaced 2026-11-13 15:10` (local times; `-` when the
 /// content's time isn't known).
-fn version_line(n: usize, v: &Version) -> String {
+pub(super) fn version_line(n: usize, v: &Version) -> String {
     let modified = v.modified_at().map_or_else(|| "-".to_owned(), |t| output::time(&t));
     let replaced = v.replaced_at().map_or_else(|| v.when(), |t| output::time(&t));
     format!("{n:>2}  {modified:<16}  {:>8}  replaced {replaced}", output::size(v.size))

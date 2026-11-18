@@ -345,9 +345,8 @@ fn trash_item(i: &TrashItem) -> Item {
 /// `trash ls|restore|rm|empty`.
 pub fn trash(ctx: &Ctx, cmd: TrashCmd) -> Result<()> {
     if ctx.is_webdav() {
-        // CraftCloud's own trash on the server (`.craftcloud/trash/`) is listed, restored and
-        // emptied through the trait in a later pull request (docs/WEBDAV-STORAGE.md § 14, 4b).
-        return Err(CliError::unsupported("the trash commands"));
+        // CraftCloud's own trash on the server (`.craftcloud/trash/`), through the storage trait.
+        return super::webdav::trash(ctx, cmd);
     }
     let mut remote = ctx.remote()?;
     match cmd {

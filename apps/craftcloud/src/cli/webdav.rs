@@ -1,18 +1,20 @@
 //! The file commands on another kind of server, through the storage trait (docs/WEBDAV-STORAGE.md
-//! § 11): `ls`, `get`, `put`, `mkdir`, `mv`, `rm`, `files` and the direct `save`. CraftCloud's own
-//! server keeps its REST paths (ids, stars, the server's trash); these go through
-//! `RemoteStorage` only, so every write carries its guard and a delete goes to the client's
-//! trash by `MOVE`. What CraftCloud's own server has and this kind hasn't (share links, stars,
-//! search, people, the server's settings) answers "not available on this server" (exit code 10);
-//! the trash and version commands through the trait come in a later pull request.
+//! § 11): `ls`, `get`, `put`, `mkdir`, `mv`, `rm`, `files`, the direct `save`, and the client
+//! trash and version commands (`trash ls|restore|rm|empty`, `versions`). CraftCloud's own server
+//! keeps its REST paths (ids, stars, the server's trash); these go through `RemoteStorage` only,
+//! so every write carries its guard and a delete goes to the client's trash by `MOVE`. What
+//! CraftCloud's own server has and this kind hasn't (share links, stars, search, people, the
+//! server's settings) answers "not available on this server" (exit code 10).
 
 use std::io::Write as _;
 use std::path::Path;
 
-use craftcloud_native::storage::{Entry, MoveGuard, Moved, RemoteStorage, StorageError, TrashGuard, Trashed, Written};
+use craftcloud_core::api::dav;
+use craftcloud_native::storage::{Entry, MoveGuard, Moved, OwnPath, RemoteStorage, StorageError, TrashGuard, TrashItem, Trashed, Written};
 use serde_json::json;
 
-use super::files::print_items;
+use super::TrashCmd;
+use super::files::{confirm, print_items};
 use super::output::{CliError, Item, Result, print_json};
 use super::remote::{Ctx, clean, join, split};
 
@@ -319,4 +321,148 @@ pub fn save_direct(ctx: &Ctx, local: &Path, path: &str, force: bool) -> Result<b
     }
     let existing = stat(&mut storage, path)?;
     upload_to(&mut storage, local, path, existing, force)
+}
+
+/// A trashed item as an output item: its original cloud path and when it was trashed.
+fn trash_item(i: &TrashItem) -> Item {
+    Item {
+        path: i.path.clone(),
+        name: i.path.rsplit('/').next().unwrap_or(&i.path).to_owned(),
+        kind: "",
+        size: None,
+        modified: String::new(),
+        starred: false,
+        id: i.id.clone(),
+        local_path: None,
+        sync: None,
+        starred_at: None,
+        opened_at: None,
+        trashed_at: Some(i.trashed_at.clone()),
+        expires_at: None,
+        score: None,
+    }
+}
+
+/// Finds one trashed item by id, by its original cloud path, or (when only one has it) by name.
+fn pick<'a>(items: &'a [TrashItem], wanted: &str) -> Result<&'a TrashItem> {
+    let path = wanted.trim_matches('/');
+    if let Some(i) = items.iter().find(|i| i.id == wanted) {
+        return Ok(i);
+    }
+    let by_path: Vec<&TrashItem> = items.iter().filter(|i| i.path == path).collect();
+    let matches = if by_path.is_empty() { items.iter().filter(|i| i.path.rsplit('/').next() == Some(path)).collect() } else { by_path };
+    match matches.as_slice() {
+        [one] => Ok(one),
+        [] => Err(CliError::not_found(format!("{wanted} isn't in the trash"))),
+        more => Err(CliError::conflict(format!(
+            "{} items in the trash match {wanted}; use the id from `craftcloud trash ls --json` ({})",
+            more.len(),
+            more.iter().map(|i| i.id.clone()).collect::<Vec<_>>().join(", ")
+        ))),
+    }
+}
+
+/// The trash entry folder (`.craftcloud/trash/<time>-<device>`) an item lives in, from its id.
+fn entry_folder(id: &str) -> Option<OwnPath> {
+    let entry = id.strip_prefix(dav::TRASH_DIR)?.trim_start_matches('/').split('/').next().filter(|e| !e.is_empty())?;
+    OwnPath::new(&format!("{}/{entry}", dav::TRASH_DIR))
+}
+
+/// `trash ls|restore|rm|empty` on another WebDAV server: CraftCloud's own trash in
+/// `.craftcloud/trash/` on the server, through the storage trait (docs/WEBDAV-STORAGE.md § 11).
+/// `ls` reads; the rest write, so they need two-way sync (`webdav_for_writes`).
+pub fn trash(ctx: &Ctx, cmd: TrashCmd) -> Result<()> {
+    match cmd {
+        TrashCmd::Ls { all: _ } => {
+            let (mut storage, _) = ctx.webdav()?;
+            let items: Vec<Item> = storage.trash_list().map_err(cli)?.iter().map(trash_item).collect();
+            print_items(ctx, &items, |i| i.path.clone())
+        }
+        TrashCmd::Restore { item, to, rename: _ } => {
+            let (mut storage, _) = ctx.webdav_for_writes()?;
+            let all = storage.trash_list().map_err(cli)?;
+            let found = pick(&all, &item)?.clone();
+            let from = found.path.clone();
+            // `--as PATH` restores elsewhere; otherwise back where it was. A taken place gets
+            // "NAME (restored).EXT" next to it (a `MOVE` with `Overwrite: F`, never an overwrite).
+            let target = match to {
+                Some(to) => TrashItem { path: clean(&to)?, ..found },
+                None => found,
+            };
+            let dest = target.path.clone();
+            storage.restore(&target).map_err(cli)?;
+            let human = if dest == from { format!("Restored {from}") } else { format!("Restored {from} as {dest}") };
+            done(ctx, json!({"restored": dest, "from": from, "id": target.id}), &human)
+        }
+        TrashCmd::Rm { item } => {
+            let (mut storage, _) = ctx.webdav_for_writes()?;
+            let all = storage.trash_list().map_err(cli)?;
+            let found = pick(&all, &item)?.clone();
+            let entry = entry_folder(&found.id).ok_or_else(|| CliError::error(format!("{}: not a trash item", found.id)))?;
+            storage.purge_own(&entry).map_err(cli)?;
+            done(ctx, json!({"deleted": found.path, "id": found.id}), &format!("Deleted {} for good", found.path))
+        }
+        TrashCmd::Empty { yes } => {
+            if !yes {
+                confirm("Delete everything in the trash for good?")?;
+            }
+            let (mut storage, _) = ctx.webdav_for_writes()?;
+            let entries = match storage.list(dav::TRASH_DIR) {
+                Ok(entries) => entries,
+                Err(StorageError::NotFound(_)) => Vec::new(),
+                Err(e) => return Err(cli(e)),
+            };
+            for e in entries.iter().filter(|e| e.is_folder) {
+                if let Some(own) = OwnPath::new(&e.path) {
+                    storage.purge_own(&own).map_err(cli)?;
+                }
+            }
+            done(ctx, json!({"emptied": true}), "The trash is empty.")
+        }
+    }
+}
+
+/// `versions <path> [restore <n>]` on another WebDAV server: the kept versions in
+/// `.craftcloud/versions/<path>/`, read and restored through the same code OxiCloud uses. Listing
+/// reads; a restore writes, so it needs two-way sync.
+pub fn versions(ctx: &Ctx, path: &str, restore: bool, n: Option<usize>) -> Result<()> {
+    let path = clean(path)?;
+    if restore {
+        let n = n.ok_or_else(|| CliError::usage("which version? craftcloud versions <path> restore <n> (1 = newest)"))?;
+        let (mut storage, _) = ctx.webdav_for_writes()?;
+        let list = storage.list_versions(&path).map_err(cli)?;
+        let version = n
+            .checked_sub(1)
+            .and_then(|i| list.get(i))
+            .ok_or_else(|| CliError::not_found(format!("{path} has no version {n} (it has {})", list.len())))?
+            .clone();
+        storage.restore_version(&path, &version.stamp).map_err(cli)?;
+        if ctx.json {
+            let mut out = super::sharing::version_json(n, &version);
+            out["path"] = json!(path);
+            out["restored"] = json!(version.stamp);
+            return print_json(&out);
+        }
+        println!("Restored {path} to version {n} (the replaced one is now version 1).");
+        return Ok(());
+    }
+    let (mut storage, _) = ctx.webdav()?;
+    if stat(&mut storage, &path)?.is_none() {
+        return Err(CliError::not_found(format!("{path}: no such file")));
+    }
+    if n.is_some() {
+        return Err(CliError::usage("to restore a version: craftcloud versions <path> restore <n>"));
+    }
+    let list = storage.list_versions(&path).map_err(cli)?;
+    if ctx.json {
+        let rows: Vec<_> = list.iter().enumerate().map(|(i, v)| super::sharing::version_json(i + 1, v)).collect();
+        return print_json(&rows);
+    }
+    if list.is_empty() {
+        println!("{path} has no earlier versions.");
+    }
+    for (i, v) in list.iter().enumerate() {
+        println!("{}", super::sharing::version_line(i + 1, v));
+    }
+    Ok(())
 }

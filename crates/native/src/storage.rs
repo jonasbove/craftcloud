@@ -320,6 +320,22 @@ pub trait RemoteStorage: Send {
     /// Deletes for good, only inside CraftCloud's own `.craftcloud/` (probe files, old client
     /// trash, pruned versions). Gone already is fine.
     fn purge_own(&mut self, path: &OwnPath) -> Result<(), StorageError>;
+
+    /// Removes client-trash entries past their retention, where the driver keeps the trash itself
+    /// (the generic WebDAV driver; docs/WEBDAV-STORAGE.md § 16, Q5: 30 days, by the server's clock,
+    /// through [`RemoteStorage::purge_own`], at most once a day). A server with its own trash keeps
+    /// to its own policy: this is a no-op. Called after a cycle; a failure never fails the cycle.
+    fn sweep_trash(&mut self) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    /// Re-runs the check on connect after the runtime watch saw this server misbehave
+    /// (docs/WEBDAV-STORAGE.md § 7.5), saves it, and takes the fresh capabilities. The new mode is
+    /// for the record; the engine has already dropped two-way sync for the rest of the run. A
+    /// driver whose capabilities are known rather than measured (OxiCloud) never probes: `None`.
+    fn recheck(&mut self) -> Option<craftcloud_core::storage::Mode> {
+        None
+    }
 }
 
 #[cfg(test)]

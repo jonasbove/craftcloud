@@ -216,6 +216,8 @@ fn start_storage<S: RemoteStorage + 'static>(
             no_folder_move: BTreeSet::new(),
             platform: Platform::current(),
             parts_swept: None,
+            watched: BTreeMap::new(),
+            two_way_off: false,
             _watcher: watcher,
         };
         engine.run(&inbox);
@@ -286,6 +288,14 @@ struct Engine<S: RemoteStorage = OxiCloud> {
     platform: Platform,
     /// When leftover part files were last looked for ([`sweep_stale_parts`]).
     parts_swept: Option<Instant>,
+    /// Files this client just wrote, by cloud path, with the ETag the write answered and the size
+    /// it uploaded: the runtime watch (docs/WEBDAV-STORAGE.md § 7.5) compares them with the next
+    /// listing to catch a server that honoured a write guard at the probe yet ignored it now.
+    watched: BTreeMap<String, (String, u64)>,
+    /// Set once the runtime watch saw the server replace a file it was told to leave alone: two-way
+    /// sync is off for the rest of this run (the mode drops to download only), even if a re-check
+    /// passes. A new run reads the saved check afresh.
+    two_way_off: bool,
     /// Keeps the folder watcher alive (`None` where watching isn't possible: then the timer).
     _watcher: Option<notify::RecommendedWatcher>,
 }
@@ -463,6 +473,13 @@ impl<S: RemoteStorage> Engine<S> {
             p.files_total = 0;
         });
         let result = self.try_cycle(confirm);
+        if result.is_ok() {
+            // The client trash's retention, after a clean cycle (no-op where the server keeps its
+            // own trash; at most once a day per client). A failure never fails the cycle.
+            if let Err(e) = self.storage.sweep_trash() {
+                log::warn!("sweeping the client trash: {e}");
+            }
+        }
         let state = match result {
             Ok(()) => SyncState::UpToDate,
             Err(Stop::Hold(state)) => state,
@@ -487,12 +504,49 @@ impl<S: RemoteStorage> Engine<S> {
         });
     }
 
+    /// The sync mode now: the capabilities' mode, dropped to download only for the rest of the run
+    /// once the runtime watch has tripped (two-way becomes download only; refused stays refused).
+    fn effective_mode(&self) -> Mode {
+        let mode = mode_for(self.storage.capabilities());
+        if self.two_way_off && mode == Mode::TwoWay { Mode::DownloadOnly } else { mode }
+    }
+
+    /// Whether a file this client just wrote has come back from the server as someone else's (the
+    /// runtime watch, docs/WEBDAV-STORAGE.md § 7.5): the ETag the write answered isn't the one now
+    /// listed **and** the listed size isn't the one we uploaded. On the first such sign two-way
+    /// sync stops for the rest of the run, the check is re-run and saved, and the activity list
+    /// says so once. Each written file is checked against the next listing and then forgotten; on
+    /// a well-behaved server the listing shows exactly what the write answered, so nothing trips.
+    fn watch_tripped(&mut self, remote: &Tree<RemoteFile>) -> bool {
+        if self.two_way_off {
+            self.watched.clear();
+            return false;
+        }
+        let tripped = std::mem::take(&mut self.watched).into_iter().any(|(path, (etag, size))| {
+            remote.files.get(&path).is_some_and(|r| r.etag.trim_matches('"') != etag.trim_matches('"') && r.size != size)
+        });
+        if tripped {
+            self.two_way_off = true;
+            let _ = self.storage.recheck();
+            self.update(|p| {
+                p.record(event(
+                    ActivityKind::Warning,
+                    "",
+                    None,
+                    "this server replaced a file it was asked to leave alone; two-way sync is off for the rest of this run — it syncs downwards only now. `craftcloud server check` says what was found.".into(),
+                ));
+            });
+        }
+        tripped
+    }
+
     fn try_cycle(&mut self, confirm: Deletes) -> Result<(), Stop> {
         let root = self.root();
         let state_path = self.state_path();
         // What this server allows (docs/WEBDAV-STORAGE.md § 7.3): every plan below is cut to it.
-        // OxiCloud's capabilities give two-way sync, which cuts nothing.
-        let mode = mode_for(self.storage.capabilities());
+        // OxiCloud's capabilities give two-way sync, which cuts nothing. The runtime watch below
+        // may drop it to download only for the rest of the run ([`Self::effective_mode`]).
+        let mut mode = self.effective_mode();
         self.update(|p| p.mode = Some(mode));
         if mode == Mode::Refused {
             return Err(Stop::Error("this server can't show when a file changed, so nothing is synced with it".into()));
@@ -515,6 +569,14 @@ impl<S: RemoteStorage> Engine<S> {
 
         self.update(|p| p.state = SyncState::Scanning);
         let mut remote = self.scan_remote()?;
+        // The runtime watch (docs/WEBDAV-STORAGE.md § 7.5): if the files this client just wrote
+        // come back from the server as someone else's (a write guard honoured at the probe but
+        // ignored now), two-way sync stops for the rest of the run and the plan below is cut to
+        // download only.
+        if self.watch_tripped(&remote) {
+            mode = self.effective_mode();
+            self.update(|p| p.mode = Some(mode));
+        }
         let (mut local, unreadable) = scan_local(&root, &self.plan, &state, &std::mem::take(&mut self.settled));
         self.report_unreadable(&unreadable);
         self.report_unsynced(&root);
@@ -687,8 +749,9 @@ impl<S: RemoteStorage> Engine<S> {
         kept_conflicts: &BTreeSet<String>,
         unreadable: &[Unreadable],
     ) -> Result<(), Stop> {
-        // Download only: a folder moved here is never moved in the cloud.
-        let mode = mode_for(self.storage.capabilities());
+        // Download only: a folder moved here is never moved in the cloud (and once the runtime
+        // watch has tripped, two-way is off for the rest of the run).
+        let mode = self.effective_mode();
         for m in reconcile::restrict_folder_moves(reconcile::folder_moves(state, local, remote), mode) {
             if self.no_folder_move.contains(&(m.from.clone(), m.to.clone())) {
                 continue;
@@ -1153,6 +1216,9 @@ impl<S: RemoteStorage> Engine<S> {
             Err(e) => Err(e.into()),
             Ok(Written::Conflict) => Ok(false),
             Ok(Written::Saved { etag }) => {
+                // The runtime watch (docs/WEBDAV-STORAGE.md § 7.5) checks the next listing against
+                // what this write answered: the file should come back at this ETag and size.
+                self.watched.insert(path.to_owned(), (etag.clone(), before.size));
                 state.files.insert(path.to_owned(), Known { etag, size: before.size, mtime: before.mtime, hash });
                 Ok(true)
             }

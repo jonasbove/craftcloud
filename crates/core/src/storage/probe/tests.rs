@@ -294,6 +294,19 @@ fn old_probe_folders_are_swept_by_the_servers_clock_only() {
 }
 
 #[test]
+fn older_than_takes_any_span_by_the_servers_clock() {
+    use super::older_than;
+    let now = server_seconds("Mon, 15 Jun 2026 12:00:00 GMT");
+    let two_days_old = server_seconds("Sat, 13 Jun 2026 12:00:00 GMT");
+    let month_old = server_seconds("Wed, 13 May 2026 11:00:00 GMT");
+    let entries = || [("a", two_days_old), ("b", month_old), ("c", None)];
+    let thirty_days = 30 * 24 * 60 * 60;
+    assert_eq!(older_than(entries(), now, thirty_days), ["b"], "only the one past 30 days, and only with a time");
+    assert!(older_than(entries(), None, thirty_days).is_empty(), "no server time: nothing");
+    assert_eq!(older_than(entries(), now, 24 * 60 * 60).len(), 2, "a one-day span catches both the two-day-old and the month-old");
+}
+
+#[test]
 fn the_probe_sweeps_only_old_folders_and_only_inside_its_own_folder() {
     let mut server = FakeDav::new("/remote.php/dav/files/john", Flags { date: Some(NOON.into()), ..Flags::default() });
     server.add_folder(&format!("{PROBE_DIR}/Studio-old"), Some("Mon, 16 Nov 2026 11:00:00 GMT"));
