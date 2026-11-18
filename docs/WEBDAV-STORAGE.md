@@ -510,7 +510,9 @@ As built (pull request 4b, the second of two under § 14's row 4; `crates/native
 - **`trash_list` lists one thing for one thing** (4a's design, for pull requests 10 and 11 to know): a trashed
   folder whose only content is one folder (or one file) is listed as that inner item, since the entry's walk goes
   down while a folder holds exactly one folder; a restore puts the same tree back. A count of items in the client
-  trash is therefore a count of entries' innermost single items, not of what was trashed.
+  trash is therefore a count of entries' innermost single items, not of what was trashed, and `trash restore` or
+  `trash rm` of such a folder take that inner path (seen by hand: `trash rm <folder>` answers "isn't in the trash"
+  while `trash rm <folder>/<file>` removes the entry).
 - **Left as is (the maintainer decides):** 4a's command line refuses CLI writes (exit code 10) on a download-only
   server (`webdav_for_writes`), beyond what § 11 lists; a trashed item's restored path isn't echoed back when a
   clash renamed it (the generic `restore` reports the original path).
