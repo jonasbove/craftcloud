@@ -480,12 +480,16 @@ fn the_command_line_on_another_kind_of_server() {
 
     // Signing in: the WebDAV address, the user name, the password from the environment; the
     // check on connect runs and the answer says the mode.
-    // Nextcloud signs in as itself (here with an app password and `--user`, since the browser's
-    // Login Flow can't be driven headless; the flow's state machine is tested against a scripted
-    // server); the rest as "another WebDAV server".
+    // Nextcloud and ownCloud sign in as themselves (with an app password and `--user`: ownCloud
+    // has no browser flow, and Nextcloud's Login Flow can't be driven headless; its state machine
+    // is tested against a scripted server); the rest as "another WebDAV server".
     let dav = server.base().url().to_owned();
-    let kind_word = if server.kind == kind::Kind::Nextcloud { "nextcloud" } else { "webdav" };
-    let address = if server.kind == kind::Kind::Nextcloud { server.url.clone() } else { dav.clone() };
+    let kind_word = match server.kind {
+        kind::Kind::Nextcloud => "nextcloud",
+        kind::Kind::Owncloud => "owncloud",
+        _ => "webdav",
+    };
+    let address = if server.has_profile() { server.url.clone() } else { dav.clone() };
     let out = env.run(&["login", &address, "--kind", kind_word, "--user", &server.user, "--json"]);
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(out.status.success(), "login: {text}");
@@ -507,7 +511,7 @@ fn the_command_line_on_another_kind_of_server() {
     );
     let server_trash =
         check["checks"].as_array().unwrap().iter().any(|c| c["check"] == "Where a delete goes" && c["result"] == "the server's own trash");
-    assert_eq!(server_trash, server.kind == kind::Kind::Nextcloud, "the server's own trash only with a profile that confirmed it: {check}");
+    assert_eq!(server_trash, server.has_profile(), "the server's own trash only with a profile that confirmed it: {check}");
     let steps = check["steps"].as_array().unwrap_or_else(|| panic!("{check}"));
     assert!(steps.len() >= 18 && steps.iter().all(|s| s["what"].is_string() && s["result"].is_string()), "{check}");
     assert!(!check["checks"].as_array().unwrap().is_empty(), "{check}");
@@ -548,16 +552,28 @@ fn the_command_line_on_another_kind_of_server() {
     // signing out: on Nextcloud `logout` deletes the app password these requests use.
     let mut cloud = kind::Dav::new(&server);
     cloud.delete(&format!(".craftcloud/versions/{base}"), true);
-    if server_trash {
+    if server_trash && server.kind == kind::Kind::Nextcloud {
         let mut bin = kind::Dav::at(&server, &format!("{}/remote.php/dav/trashbin/{}/trash/", server.url, server.user));
         for entry in bin.list("").unwrap_or_default() {
             if entry.name().starts_with(&format!("{base}.d")) {
                 bin.delete(&entry.path, entry.is_folder);
             }
         }
+    } else if server_trash {
+        // ownCloud names a trashed item by its file id; `trash ls` says where each was.
+        let mut bin = kind::Dav::at(&server, &format!("{}/remote.php/dav/trash-bin/{}/", server.url, server.user));
+        let listed = bin.list("").unwrap_or_default();
+        for item in env.ok(&["trash", "ls"]).as_array().cloned().unwrap_or_default() {
+            let (Some(path), Some(id)) = (item["path"].as_str(), item["id"].as_str()) else { continue };
+            if path == base || path.starts_with(&format!("{base}/")) {
+                let is_folder = listed.iter().find(|e| e.path == id).is_some_and(|e| e.is_folder);
+                bin.delete(id, is_folder);
+            }
+        }
     }
 
-    // Signing out forgets the app password; on Nextcloud it is deleted on the server too.
+    // Signing out forgets the app password; on Nextcloud it is deleted on the server too (ownCloud
+    // has no call for it: the person revokes it in Settings › Security).
     let out = env.ok(&["logout"]);
     assert_eq!(out["server_session_ended"], server.kind == kind::Kind::Nextcloud, "{out}");
     env.fails(3, &["ls"]);
@@ -578,9 +594,9 @@ fn file_commands_through_the_trait(env: &Env, base: &str, server_trash: bool) {
     env.fails(5, &["put", "a.txt", &format!("{docs}/")]);
     std::fs::write(env.work.path().join("a.txt"), "version two!").unwrap();
     if server_trash {
-        // Nextcloud names a version by its second: an overwrite within the same second as the write
-        // before it leaves no version on the server (docs/UPSTREAM.md E1). The sync never writes a
-        // file twice in one second; this test would.
+        // Nextcloud and ownCloud name a version by its second: an overwrite within the same second
+        // as the write before it leaves no version of the earlier bytes on the server
+        // (docs/UPSTREAM.md E1, G1). The sync never writes a file twice in one second; this test would.
         std::thread::sleep(std::time::Duration::from_millis(1200));
     }
     assert_eq!(env.ok(&["put", "a.txt", &a, "--force"])["replaced"], true);

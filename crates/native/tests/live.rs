@@ -554,10 +554,32 @@ impl Live {
         Ok(())
     }
 
-    /// Nextcloud and ownCloud: what the cleanup deleted sits in the server's trash as
-    /// `<name>.d<seconds>`; the test's folders and the client-trash entries that held only its
-    /// things go from there too, so a run leaves nothing behind.
+    /// Nextcloud and ownCloud: what the cleanup deleted sits in the server's trash (Nextcloud as
+    /// `<name>.d<seconds>` under `trashbin/<user>/trash/`; ownCloud by file id under
+    /// `trash-bin/<user>/`, with the original path in a property); the test's folders and the
+    /// client-trash entries that held only its things go from there too, so a run leaves nothing
+    /// behind.
     fn purge_server_trash(&self) -> Result<(), String> {
+        if self.kind() == Kind::Owncloud {
+            // The profile lists the items with where they were (by id); the test's own client
+            // reads which are folders and purges.
+            let items = self.driver().trash_list().map_err(|e| format!("listing ownCloud's trash: {e}"))?;
+            let mut bin = Dav::at(&self.server, &format!("{}/remote.php/dav/trash-bin/{}/", self.server.url, self.server.user));
+            let listed = bin.list("")?;
+            for item in items {
+                let is_folder = listed.iter().find(|e| e.path == item.id).is_some_and(|e| e.is_folder);
+                let name = item.path.rsplit('/').next().unwrap_or("");
+                let ours = self.mine(name)
+                    || (is_folder && item.path.starts_with(dav::TRASH_DIR) && {
+                        let inside = bin.list(&item.id).unwrap_or_default();
+                        !inside.is_empty() && inside.iter().all(|e| self.mine(e.name()))
+                    });
+                if ours {
+                    bin.delete(&item.id, is_folder);
+                }
+            }
+            return Ok(());
+        }
         let mut bin = Dav::at(&self.server, &format!("{}/remote.php/dav/trashbin/{}/trash/", self.server.url, self.server.user));
         for entry in bin.list("")? {
             let name = entry.name().rsplit_once(".d").map_or(entry.name(), |(n, _)| n);

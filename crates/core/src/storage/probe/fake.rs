@@ -86,6 +86,17 @@ pub struct Flags {
     pub nextcloud_version: Option<String>,
     /// The Login Flow v2 finishes on this poll (1 = the first); 0: never.
     pub login_flow_ready_after: usize,
+    /// Answers like ownCloud 10 besides its files (docs/WEBDAV-STORAGE.md § 7.4, the ownCloud
+    /// column): `status.php` (`productname` "ownCloud", version `10.15.3.0`),
+    /// `current-user-principal` on `/remote.php/dav/`, a trash bin at
+    /// `/remote.php/dav/trash-bin/<user>/` whose items are named by file id and that every `DELETE`
+    /// lands in (restored by a `MOVE` to any path under the files base, `Overwrite: F` honoured; a
+    /// `GET` there answers 403), versions at `/remote.php/dav/meta/<file id>/v/` kept on every
+    /// overwrite (the current file **not** among them; restored by a `COPY` to the file), checksums
+    /// listed for every file (a made-up SHA1 stands for the server's own when the client sent
+    /// none), 412 for `Depth: infinity` and 409 for a `PUT` into a missing folder. The user is the
+    /// base path's last segment. Not with `nextcloud`.
+    pub owncloud: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -103,10 +114,10 @@ struct File {
     written_secs: i64,
 }
 
-/// An item in the Nextcloud-shaped trash bin.
+/// An item in the Nextcloud-shaped (or ownCloud-shaped) trash bin.
 #[derive(Clone, Debug)]
 struct TrashedItem {
-    /// `<name>.d<seconds>`.
+    /// `<name>.d<seconds>` (Nextcloud), or the file id it had (ownCloud).
     name: String,
     /// Where it was.
     original: String,
@@ -179,12 +190,19 @@ impl FakeDav {
         }
     }
 
-    /// The names in the Nextcloud-shaped trash bin (`<name>.d<seconds>`), with where each was.
+    /// The names in the Nextcloud-shaped trash bin (`<name>.d<seconds>`; ownCloud: the file id),
+    /// with where each was.
     pub fn trashed(&self) -> Vec<(String, String)> {
         self.trash.iter().map(|t| (t.name.clone(), t.original.clone())).collect()
     }
 
-    /// How many earlier versions the Nextcloud-shaped server keeps of the file at `path`.
+    /// Whether this is a server with its own trash and versions (`Flags::nextcloud` or
+    /// `Flags::owncloud`).
+    fn known_server(&self) -> bool {
+        self.flags.nextcloud || self.flags.owncloud
+    }
+
+    /// How many earlier versions the Nextcloud- or ownCloud-shaped server keeps of the file at `path`.
     pub fn versions_of(&self, path: &str) -> usize {
         self.files.get(&self.key(path)).and_then(|f| self.versions.get(&f.id)).map_or(0, Vec::len)
     }
@@ -310,8 +328,8 @@ impl FakeDav {
     /// header names in any case.
     pub fn answer(&mut self, method: &str, url_path: &str, headers: &[(String, String)], body: &[u8]) -> HttpResponse {
         let header = |name: &str| headers.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.trim().to_owned());
-        if self.flags.nextcloud
-            && let Some(resp) = self.nextcloud(method, url_path, header("Destination").as_deref(), body)
+        if self.known_server()
+            && let Some(resp) = self.beside_the_files(method, url_path, header("Destination").as_deref(), header("Overwrite").as_deref(), body)
         {
             return resp;
         }
@@ -367,7 +385,8 @@ impl FakeDav {
             return self.done(404, "");
         }
         if depth == "infinity" && !self.flags.depth_infinity {
-            return self.done(403, "");
+            // ownCloud 10 answers 412 ("Depth infinity not supported"), most others 403.
+            return self.done(if self.flags.owncloud { 412 } else { 403 }, "");
         }
         let mut xml = String::from(r#"<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">"#);
         xml.push_str(&self.entry(&key));
@@ -410,10 +429,10 @@ impl FakeDav {
             };
             format!("<oc:fileid>{}</oc:fileid>{checksums}", file.id)
         };
-        // A Nextcloud-shaped server names a file's versions by its modified time, so the listing
-        // says when it was written (by the server's clock).
+        // A Nextcloud- or ownCloud-shaped server names a file's versions by its modified time, so
+        // the listing says when it was written (by the server's clock).
         let written = jiff::Timestamp::from_second(file.written_secs).ok().map(|t| t.strftime("%a, %d %b %Y %H:%M:%S GMT").to_string());
-        let modified = match (&self.flags.date, self.flags.nextcloud) {
+        let modified = match (&self.flags.date, self.known_server()) {
             (_, true) => written.unwrap_or_default(),
             (Some(date), false) => date.clone(),
             (None, false) => "Mon, 16 Nov 2026 10:00:00 GMT".to_owned(),
@@ -485,8 +504,8 @@ impl FakeDav {
             }
         };
         let checksum = checksum.filter(|c| !c.is_empty());
-        // Nextcloud keeps the bytes an overwrite replaces as a version, by file id.
-        if self.flags.nextcloud
+        // Nextcloud and ownCloud keep the bytes an overwrite replaces as a version, by file id.
+        if self.known_server()
             && let Some(old) = self.files.get(&key)
         {
             let kept = (old.written_secs, old.body.clone());
@@ -619,7 +638,7 @@ impl FakeDav {
                 return self.done(412, "");
             }
             let file = self.files.remove(&key);
-            if self.flags.nextcloud
+            if self.known_server()
                 && let Some(file) = file
             {
                 self.put_in_trash(path, false, vec![file], Vec::new());
@@ -634,7 +653,7 @@ impl FakeDav {
             let folders: Vec<Folder> = self.folders.iter().filter(|(k, _)| below(k)).map(|(_, f)| f.clone()).collect();
             self.files.retain(|p, _| !p.starts_with(&prefix));
             self.folders.retain(|p, _| !p.starts_with(&prefix) && *p != key);
-            if self.flags.nextcloud {
+            if self.known_server() {
                 self.put_in_trash(path, true, files, folders);
             }
             self.touch_parents(path);
@@ -643,12 +662,41 @@ impl FakeDav {
         self.done(404, "")
     }
 
-    // --- Nextcloud's own endpoints (`Flags::nextcloud`) --------------------------------------------
+    // --- Nextcloud's and ownCloud's own endpoints (`Flags::nextcloud`, `Flags::owncloud`) ---------
 
     fn put_in_trash(&mut self, path: &str, is_folder: bool, files: Vec<File>, folders: Vec<Folder>) {
         let deleted_at = self.tick();
-        let name = format!("{}.d{deleted_at}", path.rsplit('/').next().unwrap_or(path));
+        // Nextcloud names a trashed item `<name>.d<seconds>`, ownCloud by the file id it had (a
+        // folder gets a fresh one here).
+        let name = if self.flags.owncloud {
+            match files.first().filter(|_| !is_folder) {
+                Some(f) => f.id.to_string(),
+                None => {
+                    let id = self.next;
+                    self.next += 1;
+                    id.to_string()
+                }
+            }
+        } else {
+            format!("{}.d{deleted_at}", path.rsplit('/').next().unwrap_or(path))
+        };
         self.trash.push(TrashedItem { name, original: path.trim_matches('/').to_owned(), is_folder, files, folders, deleted_at });
+    }
+
+    /// Puts a trashed item's files and folders back, at `to` (its original place, or elsewhere).
+    fn restore_trashed(&mut self, t: TrashedItem, to: &str) {
+        let moved = |p: &str| format!("{to}{}", p.strip_prefix(t.original.as_str()).unwrap_or(""));
+        let parent = to.rsplit_once('/').map_or("", |(p, _)| p).to_owned();
+        self.add_folder(&parent, None);
+        for f in t.folders {
+            let path = moved(&f.path);
+            self.folders.insert(self.key(&path), Folder { path, ..f });
+        }
+        for f in t.files {
+            let path = moved(&f.path);
+            self.files.insert(self.key(&path), File { path, ..f });
+        }
+        self.touch_parents(to);
     }
 
     /// The URL path of a request (its query dropped), decoded.
@@ -658,8 +706,9 @@ impl FakeDav {
         percent_decode_str(path).decode_utf8().ok().map(|p| p.into_owned())
     }
 
-    /// Answers what a Nextcloud answers besides its files; `None` for a request on the files base.
-    fn nextcloud(&mut self, method: &str, url: &str, destination: Option<&str>, body: &[u8]) -> Option<HttpResponse> {
+    /// Answers what a Nextcloud or an ownCloud answers besides its files; `None` for a request on
+    /// the files base.
+    fn beside_the_files(&mut self, method: &str, url: &str, destination: Option<&str>, overwrite: Option<&str>, body: &[u8]) -> Option<HttpResponse> {
         let path = Self::url_path(url)?;
         let user = self.user().to_owned();
         let json = |status: u16, text: String| HttpResponse::new(status, text).with_header("Content-Type", "application/json");
@@ -667,6 +716,9 @@ impl FakeDav {
             return None;
         }
         self.log.push((method.to_owned(), path.clone(), destination.map(|d| vec![("destination".to_owned(), d.to_owned())]).unwrap_or_default()));
+        if self.flags.owncloud {
+            return Some(self.owncloud(method, &path, destination, overwrite));
+        }
         match (method, path.as_str()) {
             ("GET", "/status.php") => {
                 let version = self.flags.nextcloud_version.clone().unwrap_or_else(|| "31.0.14.1".to_owned());
@@ -716,6 +768,162 @@ impl FakeDav {
         }
     }
 
+    /// What an ownCloud 10 answers besides its files (`Flags::owncloud`): `status.php`, the
+    /// principal, the trash bin at `trash-bin/<user>/` and the versions at `meta/<file id>/v/`.
+    fn owncloud(&mut self, method: &str, path: &str, destination: Option<&str>, overwrite: Option<&str>) -> HttpResponse {
+        let user = self.user().to_owned();
+        match (method, path) {
+            ("GET", "/status.php") => HttpResponse::new(
+                200,
+                r#"{"installed":true,"maintenance":false,"needsDbUpgrade":false,"version":"10.15.3.0","versionstring":"10.15.3","edition":"Community","productname":"ownCloud","product":"ownCloud"}"#,
+            )
+            .with_header("Content-Type", "application/json"),
+            ("PROPFIND", "/remote.php/dav/" | "/remote.php/dav") => self.done(
+                207,
+                format!(
+                    r#"<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"><d:response><d:href>/remote.php/dav/</d:href><d:propstat><d:prop><d:current-user-principal><d:href>/remote.php/dav/principals/users/{user}/</d:href></d:current-user-principal></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#
+                ),
+            ),
+            _ => {
+                let trash = format!("/remote.php/dav/trash-bin/{user}/");
+                if let Some(rest) = path.strip_prefix(&trash) {
+                    return self.owncloud_trash(method, rest, destination, overwrite);
+                }
+                if let Some(rest) = path.strip_prefix("/remote.php/dav/meta/") {
+                    return self.owncloud_meta(method, rest, destination, overwrite);
+                }
+                self.done(404, "not found")
+            }
+        }
+    }
+
+    /// ownCloud's trash bin: items named by file id right under the root; a `GET` is 403; a
+    /// `MOVE` to any path under the files base restores (`Overwrite: F` honoured, 409 for a
+    /// missing parent, 409 for Nextcloud's `restore/` shape); a `DELETE` purges.
+    fn owncloud_trash(&mut self, method: &str, rest: &str, destination: Option<&str>, overwrite: Option<&str>) -> HttpResponse {
+        let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('"', "&quot;");
+        let user = self.user().to_owned();
+        let root = format!("/remote.php/dav/trash-bin/{user}/");
+        let id = rest.trim_end_matches('/');
+        match method {
+            "PROPFIND" if id.is_empty() => {
+                let mut xml = format!(
+                    r#"<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns"><d:response><d:href>{root}</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>"#
+                );
+                for t in &self.trash {
+                    let href = format!("{root}{}{}", t.name, if t.is_folder { "/" } else { "" });
+                    let kind = if t.is_folder { "<d:collection/>" } else { "" };
+                    let size = if t.is_folder {
+                        String::new()
+                    } else {
+                        format!("<d:getcontentlength>{}</d:getcontentlength>", t.files.first().map_or(0, |f| f.body.len()))
+                    };
+                    let file_name = t.original.rsplit('/').next().unwrap_or(&t.original);
+                    let when = jiff::Timestamp::from_second(t.deleted_at)
+                        .ok()
+                        .map(|w| w.strftime("%a, %d %b %Y %H:%M:%S GMT").to_string())
+                        .unwrap_or_default();
+                    xml.push_str(&format!(
+                        "<d:response><d:href>{href}</d:href><d:propstat><d:prop><d:resourcetype>{kind}</d:resourcetype>{size}<d:getlastmodified>{when}</d:getlastmodified><oc:trashbin-original-filename>{}</oc:trashbin-original-filename><oc:trashbin-original-location>{}</oc:trashbin-original-location><oc:trashbin-delete-timestamp>{}</oc:trashbin-delete-timestamp></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>",
+                        esc(file_name),
+                        esc(&t.original),
+                        t.deleted_at
+                    ));
+                }
+                xml.push_str("</d:multistatus>");
+                self.done(207, xml)
+            }
+            "PROPFIND" => match self.trash.iter().find(|t| t.name == id) {
+                Some(t) => {
+                    let href = format!("{root}{}{}", t.name, if t.is_folder { "/" } else { "" });
+                    self.done(207, format!(r#"<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"><d:response><d:href>{href}</d:href><d:propstat><d:prop><d:resourcetype/></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#))
+                }
+                None => self.done(404, ""),
+            },
+            "GET" => self.done(403, "Permission denied to read this file"),
+            "MOVE" => {
+                let Some(at) = self.trash.iter().position(|t| t.name == id) else { return self.done(404, "") };
+                // Only a destination under the files base; Nextcloud's `restore/` shape is a
+                // destination that isn't there (409, measured).
+                let Some(to) = destination.and_then(|d| self.relative(d)) else { return self.done(409, "the destination node is not found") };
+                if self.has(&to) && overwrite.is_some_and(|o| o.eq_ignore_ascii_case("F")) {
+                    return self.done(412, "");
+                }
+                if !self.parent_exists(&to) {
+                    return self.done(409, "");
+                }
+                let t = self.trash.remove(at);
+                self.restore_trashed(t, &to);
+                self.done(201, "")
+            }
+            "DELETE" => {
+                let Some(at) = self.trash.iter().position(|t| t.name == id) else { return self.done(404, "") };
+                self.trash.remove(at);
+                self.trash_purged += 1;
+                self.done(204, "")
+            }
+            _ => self.done(405, ""),
+        }
+    }
+
+    /// ownCloud's versions: `meta/<file id>/v/` lists the earlier versions (not the current file),
+    /// `GET` of one gives its bytes, a `COPY` of one to the file's URL restores it (`Overwrite: F`
+    /// answers 412 since the file is there; the replaced file is kept as a version).
+    fn owncloud_meta(&mut self, method: &str, rest: &str, destination: Option<&str>, overwrite: Option<&str>) -> HttpResponse {
+        let root = "/remote.php/dav/meta/";
+        let (id_text, inside) = rest.split_once('/').unwrap_or((rest, ""));
+        let Ok(id) = id_text.parse::<u64>() else { return self.done(404, "") };
+        let Some(file) = self.files.values().find(|f| f.id == id).cloned() else { return self.done(404, "") };
+        let stamp = inside.strip_prefix("v/").map_or("", |s| s.trim_end_matches('/'));
+        if !inside.starts_with("v") {
+            return self.done(404, "");
+        }
+        let earlier = self.versions.get(&id).cloned().unwrap_or_default();
+        match method {
+            "PROPFIND" if stamp.is_empty() => {
+                let mut xml = format!(
+                    r#"<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns"><d:response><d:href>{root}{id}/v/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>"#
+                );
+                for (at, bytes) in &earlier {
+                    let when =
+                        jiff::Timestamp::from_second(*at).ok().map(|w| w.strftime("%a, %d %b %Y %H:%M:%S GMT").to_string()).unwrap_or_default();
+                    xml.push_str(&format!(
+                        "<d:response><d:href>{root}{id}/v/{at}</d:href><d:propstat><d:prop><d:resourcetype/><d:getetag>&quot;v{at}&quot;</d:getetag><d:getcontentlength>{}</d:getcontentlength><d:getlastmodified>{when}</d:getlastmodified></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>",
+                        bytes.len()
+                    ));
+                }
+                xml.push_str("</d:multistatus>");
+                self.done(207, xml)
+            }
+            "GET" => match earlier.iter().find(|(at, _)| at.to_string() == stamp) {
+                Some((_, bytes)) => self.done(200, bytes.clone()),
+                None => self.done(404, ""),
+            },
+            "COPY" => {
+                let Some(version) = earlier.iter().find(|(at, _)| at.to_string() == stamp).cloned() else { return self.done(404, "") };
+                let Some(to) = destination.and_then(|d| self.relative(d)) else { return self.done(409, "") };
+                if self.key(&to) != self.key(&file.path) {
+                    return self.done(409, "a version is copied over its own file here");
+                }
+                if overwrite.is_some_and(|o| o.eq_ignore_ascii_case("F")) {
+                    return self.done(412, "The destination node already exists, and the overwrite header is set to false");
+                }
+                let key = self.key(&file.path);
+                let etag = self.fresh_etag("e");
+                let now = self.tick();
+                self.versions.entry(id).or_default().push((file.written_secs, file.body.clone()));
+                if let Some(f) = self.files.get_mut(&key) {
+                    f.body = version.1;
+                    f.etag = etag;
+                    f.written_secs = now;
+                    f.checksum = None;
+                }
+                self.done(204, "")
+            }
+            _ => self.done(405, ""),
+        }
+    }
+
     fn trashbin(&mut self, method: &str, rest: &str, destination: Option<&str>) -> HttpResponse {
         let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('"', "&quot;");
         let user = self.user().to_owned();
@@ -748,15 +956,8 @@ impl FakeDav {
                     return self.done(400, "a trashed item moves only to its restore address here");
                 }
                 let t = self.trash.remove(at);
-                let parent = t.original.rsplit_once('/').map_or("", |(p, _)| p).to_owned();
-                self.add_folder(&parent, None);
-                for f in t.folders {
-                    self.folders.insert(self.key(&f.path), f);
-                }
-                for f in t.files {
-                    self.files.insert(self.key(&f.path), f);
-                }
-                self.touch_parents(&t.original);
+                let original = t.original.clone();
+                self.restore_trashed(t, &original);
                 self.done(201, "")
             }
             ("DELETE", item) => {

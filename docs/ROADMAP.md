@@ -3,7 +3,7 @@
 **Stage: early alpha** · version 0.2.0 (share links and version history on the web, the Windows fixes, server hardening)
 
 > **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-26 · **Change:** minor (the desktop client says when a new version is out; version 0.2.0; the web header's Apps menu for the Craft web apps, for 0.3.0; M9 moves to
-> 0.3.0; M9 pull requests 1 to 6, the sync engine behind a storage trait, sync modes, the check on connect with `craftcloud server check`, the generic WebDAV driver, the client trash's retention, the Nextcloud profile, the trash and version commands and the runtime watch, all behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in); on Linux the tray counts as up only while a tray
+> 0.3.0; M9 pull requests 1 to 7, the sync engine behind a storage trait, sync modes, the check on connect with `craftcloud server check`, the generic WebDAV driver, the client trash's retention, the Nextcloud and ownCloud profiles, the trash and version commands and the runtime watch, all behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in); on Linux the tray counts as up only while a tray
 > host is on the bus, so closing the window on stock GNOME quits instead of leaving an invisible client; a start at
 > login stays in the tray on Windows and X11, and opens the window where there is no tray; an offline desktop window waits before asking who is signed in again; the
 > release checklist and the Release workflow check the Craft web app pins; an idle window uses next to no CPU; trace
@@ -33,7 +33,7 @@ backup of anything you sync with it.
 | Web file browser (upload, download, rename, move, delete, trash, versions, details, recent, starred, search) | done | [design-notes/pass-2.md](design-notes/pass-2.md) |
 | Share links | done: public share page, CLI, the web's "Share link" sheet and "Your share links" page | [CLI.md › Share links](CLI.md#share-links) |
 | Admin (users, server settings, Craft web apps on or off) | done, on the web and in the CLI | [CLI.md](CLI.md#server-administration-owners-and-admins) |
-| Command line | done; `save --if-match` and `etag` in listings for cloud backends; on Windows through `craftcloud.com` (untried on Windows); `server check` says what the server guarantees the sync; behind `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, `login --kind webdav|nextcloud` and the file and sync commands on any other WebDAV server or a Nextcloud (its own trash and versions) | [CLI.md](CLI.md) |
+| Command line | done; `save --if-match` and `etag` in listings for cloud backends; on Windows through `craftcloud.com` (untried on Windows); `server check` says what the server guarantees the sync; behind `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, `login --kind webdav|nextcloud|owncloud` and the file and sync commands on any other WebDAV server, a Nextcloud or an ownCloud (their own trash and versions) | [CLI.md](CLI.md) |
 | Craft apps through the sync folder | done (every app) | [CRAFT-INTEGRATION.md § 1](CRAFT-INTEGRATION.md#1-the-sync-folder-works-today-every-app) |
 | `craftcloud://` deep links | done on Linux and Windows; macOS needs an Apple Event handler | [CRAFT-INTEGRATION.md § 2](CRAFT-INTEGRATION.md#2-deep-links-craftcloud) |
 | Integration contract (`craftcloud apps`, `files`, `save`) | done; desktop-only apps (`web = false`) listed too | [CRAFT-INTEGRATION.md § 3](CRAFT-INTEGRATION.md#3-the-integration-contract-the-craftcloud-command) |
@@ -56,7 +56,7 @@ backup of anything you sync with it.
 | M6 Files on demand | Placeholders that download when opened (Windows, Linux, macOS) | Design only |
 | M7 Signed desktop builds | Signed and notarized macOS builds, signed Windows builds | Not started; v1 is unsigned |
 | M8 Native NixOS deployment | OxiCloud, Caddy and craftcloud-admin as NixOS services without Docker, with the Craft web apps built by Nix from `apps.toml` | Not started; the NixOS module runs the Docker image today |
-| M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Planned for 0.3.0, on `main` behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in until the release; the storage trait with OxiCloud as its first driver, the sync modes (two-way, download only, refused) with the plan cut to each, the check on connect (the probe's steps and verdict in `core`, its runner in `native`, `craftcloud server check`) and the generic WebDAV driver (an app-password sign-in, the client's own trash by `MOVE` and versions by `COPY`, the command line's file and sync commands through the trait, the client trash's 30-day retention by the server's clock, the trash and version commands through the trait, the check's re-run schedule and the runtime watch) are in; without the opt-in a person sees only `server check`, which reports CraftCloud's own server's known capabilities. The live suite runs against Nextcloud, ownCloud, OpenCloud, `rclone serve webdav` and Apache `mod_dav` by hand (`CRAFTCLOUD_TEST_KIND`, `tests/other-servers/`), asserting the mode each gets. Nextcloud's profile is in (6: Login Flow v2, its trash and versions after the check's round trips, the checksum check on every write). Next: the ownCloud and OpenCloud profiles (7, 8), the CI job (9), the desktop's Connect sheet (10) |
+| M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Planned for 0.3.0, on `main` behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in until the release; the storage trait with OxiCloud as its first driver, the sync modes (two-way, download only, refused) with the plan cut to each, the check on connect (the probe's steps and verdict in `core`, its runner in `native`, `craftcloud server check`) and the generic WebDAV driver (an app-password sign-in, the client's own trash by `MOVE` and versions by `COPY`, the command line's file and sync commands through the trait, the client trash's 30-day retention by the server's clock, the trash and version commands through the trait, the check's re-run schedule and the runtime watch) are in; without the opt-in a person sees only `server check`, which reports CraftCloud's own server's known capabilities. The live suite runs against Nextcloud, ownCloud, OpenCloud, `rclone serve webdav` and Apache `mod_dav` by hand (`CRAFTCLOUD_TEST_KIND`, `tests/other-servers/`), asserting the mode each gets. Nextcloud's profile is in (6: Login Flow v2, its trash and versions after the check's round trips, the checksum check on every write), and ownCloud's (7: an app password, its trash bin by file id and versions by `meta/…/v/` after the same round trips, the checksum check). Next: the OpenCloud profile (8), the CI job (9), the desktop's Connect sheet (10) |
 | M10 No Python in the tree | The operator scripts without Python (sh and curl) and the packaging icons in Rust (0.3.0), then the design build (`design/tools`, FigCraft) as `cargo xtask design` | 0.3.0: scripts and icons in progress; the design build later |
 
 ## Current focus
@@ -204,6 +204,22 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   own server too. Tests: the scripted servers answer a `MOVE` or a `PUT` with a status once
   (`Flags::answers_once`), over both drivers, and a new golden log; the two live tests that failed sync until
   nothing changes (`settle`) instead of counting passes, since two computers are at the server at once there.
+- 2026-11-18: Sync (M9, pull request 7 of [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14): ownCloud. The second
+  profile on pull request 6's hook (`profile/owncloud.rs`, with `core::api::owncloud` for the requests and parsers,
+  recorded from ownCloud 10.15.3 in `crates/core/tests/fixtures/owncloud-10.15/`). `craftcloud login <server>
+  --kind owncloud --user NAME` signs in with an app password made in Settings › Security (no browser flow without an
+  admin); the user id comes from `current-user-principal`; `status.php` suggests the kind without `--kind`;
+  `logout` forgets the password and says where to revoke it. The trash bin is `trash-bin/<user>/`, its items named
+  by file id, a restore a `MOVE` to the item's original path under the files base with `Overwrite: F` (the server
+  would take any destination, so the probe's runner gained a general hook, `destination_under_base`, and allows on
+  the trash root only that one move of the probe's own file); versions are `meta/<file id>/v/<seconds>` without the
+  current file (step 17 lists before and after), a restore a `COPY` over the file; the quota WebDAV's property with
+  `-3` as no limit. Measured and recorded in UPSTREAM.md G1: two writes within one second share the ETag and keep
+  only one version (the later bytes), so Q13's checksum check applies, and ownCloud verifies `OC-Checksum` on
+  receipt. The scripted server got an ownCloud flavour; the profile, the probe's round trips, the driver and two
+  engine tests (the Q13 conflict copy, a cycle's request log) run against it; the live suite's cleanup on ownCloud
+  reads the trash bin through the profile (it had used Nextcloud's path). All behind the opt-in; nothing in the
+  engine changed, OxiCloud's golden logs stand.
 - 2026-11-18: Sync (M9, pull request 6 of [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14): Nextcloud. A profile hook
   on the generic driver (`storage::profile::ServerProfile`: the server's version string, the probe's known-server
   checks of steps 16 and 17, "verify writes by checksum", the server's own trash, versions and quota endpoint) and
