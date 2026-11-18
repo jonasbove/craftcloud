@@ -10,6 +10,11 @@
 //! would), keeps its settings in a temporary folder and its tokens out of the keychain
 //! (`CRAFTCLOUD_KEYCHAIN=off`), and works in a folder of its own, which it deletes at the end. Use
 //! a throwaway server.
+//!
+//! With `CRAFTCLOUD_TEST_KIND=nextcloud|owncloud|opencloud|webdav` and `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`
+//! ([`kind`]), [`the_command_line_on_another_kind_of_server`] runs instead: `login --kind webdav`
+//! with an app password, `server check` with the mode expected of the server, the file commands
+//! where two-way sync is allowed, and the answers of the commands that are OxiCloud's only.
 
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -17,13 +22,19 @@ use std::process::{Command, Output, Stdio};
 
 use craftcloud_core::ServerUrl;
 use craftcloud_core::api::auth;
+use craftcloud_core::storage::Mode;
 use craftcloud_native::http::execute;
 use serde_json::Value;
+
+#[path = "../../../crates/native/tests/live/kind.rs"]
+mod kind;
 
 struct Env {
     server: String,
     config: tempfile::TempDir,
     work: tempfile::TempDir,
+    /// More variables for every command (the opt-in, the app password).
+    extra: Vec<(&'static str, String)>,
 }
 
 impl Env {
@@ -33,8 +44,13 @@ impl Env {
             .env("CRAFTCLOUD_CONFIG_DIR", self.config.path())
             .env("CRAFTCLOUD_KEYCHAIN", "off")
             .env_remove("CRAFTCLOUD_SERVER")
+            .env_remove("CRAFTCLOUD_EXPERIMENTAL_WEBDAV")
+            .env_remove("CRAFTCLOUD_APP_PASSWORD")
             .current_dir(self.work.path())
             .stdin(Stdio::null());
+        for (name, value) in &self.extra {
+            c.env(name, value);
+        }
         c
     }
 
@@ -160,7 +176,11 @@ fn the_command_line_end_to_end() {
         eprintln!("skipped: CRAFTCLOUD_TEST_SERVER not set");
         return;
     };
-    let env = Env { server, config: tempfile::tempdir().unwrap(), work: tempfile::tempdir().unwrap() };
+    if kind::kind() != kind::Kind::Oxicloud {
+        eprintln!("skipped: CraftCloud's own server only (the_command_line_on_another_kind_of_server runs instead)");
+        return;
+    }
+    let env = Env { server, config: tempfile::tempdir().unwrap(), work: tempfile::tempdir().unwrap(), extra: Vec::new() };
     env.fails(3, &["ls"]);
     login(&env, &user, &password);
 
@@ -287,6 +307,10 @@ fn the_operator_scripts() {
         eprintln!("skipped: CRAFTCLOUD_TEST_SERVER not set");
         return;
     };
+    if kind::kind() != kind::Kind::Oxicloud {
+        eprintln!("skipped: the operator scripts are for CraftCloud's own server");
+        return;
+    }
     let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts");
     let fake = tempfile::tempdir().unwrap();
     // The scripts' own temporary files (mktemp, under TMPDIR) are all gone when they exit.
@@ -378,4 +402,163 @@ fn the_operator_scripts() {
     assert!(!called.exists(), "a script ran python");
     let left: Vec<_> = std::fs::read_dir(tmp.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
     assert!(left.is_empty(), "temporary files left behind: {left:?}");
+}
+
+/// The command line on another kind of server (`CRAFTCLOUD_TEST_KIND`, with the opt-in): `login
+/// --kind webdav` with the app password from `CRAFTCLOUD_APP_PASSWORD` (never an argument), `server
+/// check` measuring the mode expected of the server, the file, trash and version commands through
+/// the storage trait where two-way sync is allowed and refused with exit code 10 where it isn't,
+/// and "not available on this server" (exit code 10, kind `unsupported`) for what only CraftCloud's
+/// own server has. Skipped on CraftCloud's own server, where [`the_command_line_end_to_end`] runs.
+#[test]
+fn the_command_line_on_another_kind_of_server() {
+    let Some(server) = kind::Server::from_env() else {
+        eprintln!("skipped: CRAFTCLOUD_TEST_SERVER not set");
+        return;
+    };
+    if server.kind == kind::Kind::Oxicloud {
+        return;
+    }
+    let app_password = server.app_password();
+    let env = Env {
+        server: server.url.clone(),
+        config: tempfile::tempdir().unwrap(),
+        work: tempfile::tempdir().unwrap(),
+        extra: vec![("CRAFTCLOUD_EXPERIMENTAL_WEBDAV", "1".to_owned()), ("CRAFTCLOUD_APP_PASSWORD", app_password.clone())],
+    };
+    env.fails(3, &["ls"]);
+
+    // Signing in: the WebDAV address, the user name, the password from the environment; the
+    // check on connect runs and the answer says the mode.
+    let dav = server.base().url().to_owned();
+    let out = env.run(&["login", &dav, "--kind", "webdav", "--user", &server.user, "--json"]);
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success(), "login: {text}");
+    assert!(!text.contains(&app_password), "the password never reaches the output");
+    let signed: Value = serde_json::from_str(text.lines().find(|l| l.starts_with('{')).unwrap_or("null")).unwrap();
+    assert_eq!(
+        (signed["signed_in"].as_bool(), signed["kind"].as_str(), signed["username"].as_str(), signed["mode"].as_str()),
+        (Some(true), Some("webdav"), Some(server.user.as_str()), Some(server.mode.as_str())),
+        "{signed}"
+    );
+    assert_eq!(signed["dav_url"].as_str(), Some(dav.as_str()));
+
+    // `server check` runs the probe afresh: measured, every step, the mode expected.
+    let check = env.ok(&["server", "check"]);
+    assert_eq!(
+        (check["kind"].as_str(), check["mode"].as_str(), check["measured"].as_bool()),
+        (Some("webdav"), Some(server.mode.as_str()), Some(true)),
+        "{check}"
+    );
+    let steps = check["steps"].as_array().unwrap_or_else(|| panic!("{check}"));
+    assert!(steps.len() >= 18 && steps.iter().all(|s| s["what"].is_string() && s["result"].is_string()), "{check}");
+    assert!(!check["checks"].as_array().unwrap().is_empty(), "{check}");
+    if server.mode == Mode::DownloadOnly {
+        assert!(check["refused_because"].is_null(), "download only isn't a refusal: {check}");
+    }
+
+    // Not available on this server: exit code 10, kind `unsupported`, for everything only
+    // CraftCloud's own server has.
+    for args in [
+        &["share", "ls"][..],
+        &["share", "create", "x.txt"],
+        &["server", "users", "ls"],
+        &["server", "info"],
+        &["server", "settings", "show"],
+        &["starred"],
+        &["star", "x.txt"],
+        &["recent"],
+        &["search", "x"],
+        &["usage"],
+        &["cp", "a.txt", "b.txt"],
+    ] {
+        let e = env.fails(10, args);
+        assert_eq!(e["error"]["kind"].as_str(), Some("unsupported"), "{args:?}: {e}");
+        assert!(e["error"]["message"].as_str().unwrap_or_default().contains("not available on this server"), "{args:?}: {e}");
+    }
+
+    let base = format!("cli-test-{}", std::process::id());
+    std::fs::write(env.work.path().join("a.txt"), "version one").unwrap();
+    match server.mode {
+        Mode::TwoWay => file_commands_through_the_trait(&env, &base),
+        _ => writes_are_refused_under_download_only(&env, &base),
+    }
+    env.fails(6, &["status"]);
+
+    // Signing out forgets the app password (the server has no session to end for one).
+    let out = env.ok(&["logout"]);
+    assert_eq!(out["server_session_ended"], false, "{out}");
+    env.fails(3, &["ls"]);
+    // The kept versions of the test's files are CraftCloud's own leftovers in `.craftcloud/versions/`.
+    let mut cloud = kind::Dav::new(&server);
+    cloud.delete(&format!(".craftcloud/versions/{base}"), true);
+}
+
+/// Two-way sync allowed: folders, upload (refused over an existing file, forced with a version
+/// kept), listing, a move that takes the versions along, download, a version restored, the trash
+/// (the client's own on this kind of server) and a restore from it, and the test folder trashed as
+/// one item and then deleted for good. `a.txt` in the work folder holds "version one".
+fn file_commands_through_the_trait(env: &Env, base: &str) {
+    let docs = format!("{base}/Docs");
+    let (a, b) = (format!("{docs}/a.txt"), format!("{docs}/b.txt"));
+    env.ok(&["mkdir", "-p", &docs]);
+    env.fails(5, &["mkdir", &docs]);
+    let up = env.ok(&["put", "a.txt", &format!("{docs}/")]);
+    assert_eq!((up["path"].as_str(), up["replaced"].as_bool()), (Some(a.as_str()), Some(false)));
+    env.fails(5, &["put", "a.txt", &format!("{docs}/")]);
+    std::fs::write(env.work.path().join("a.txt"), "version two!").unwrap();
+    assert_eq!(env.ok(&["put", "a.txt", &a, "--force"])["replaced"], true);
+    let listed = env.ok(&["ls", &docs]);
+    assert_eq!(paths(&listed), std::slice::from_ref(&a));
+    assert_eq!(listed[0]["size"], 12);
+    env.fails(4, &["ls", &format!("{base}/no-such-folder")]);
+    assert_eq!(env.ok(&["versions", &a]).as_array().unwrap().len(), 1, "the kept version");
+
+    env.ok(&["mv", &a, &b]);
+    assert_eq!(paths(&env.ok(&["ls", &docs])), std::slice::from_ref(&b));
+    assert_eq!(env.ok(&["versions", &b]).as_array().unwrap().len(), 1, "the history moved along");
+    env.ok(&["get", &b, "got.txt"]);
+    assert_eq!(std::fs::read_to_string(env.work.path().join("got.txt")).unwrap(), "version two!");
+    env.fails(5, &["get", &b, "got.txt"]);
+    env.ok(&["versions", &b, "restore", "1"]);
+    env.ok(&["get", &b, "got.txt", "--force"]);
+    assert_eq!(std::fs::read_to_string(env.work.path().join("got.txt")).unwrap(), "version one");
+
+    env.ok(&["rm", &b]);
+    assert!(paths(&env.ok(&["ls", &docs])).is_empty());
+    assert!(paths(&env.ok(&["trash", "ls"])).contains(&b), "{}", env.ok(&["trash", "ls"]));
+    env.ok(&["trash", "restore", &b]);
+    assert_eq!(paths(&env.ok(&["ls", &docs])), std::slice::from_ref(&b));
+    env.ok(&["get", &b, "got.txt", "--force"]);
+    assert_eq!(std::fs::read_to_string(env.work.path().join("got.txt")).unwrap(), "version one", "restored whole");
+
+    env.ok(&["rm", base]);
+    env.fails(4, &["ls", base]);
+    // The folder is in the trash (the generic driver lists a trashed folder holding exactly one
+    // thing as that thing, and an entry emptied by a restore may stay behind as an empty folder:
+    // docs/WEBDAV-STORAGE.md § 7.2, "As built (pull request 4a)"); `trash rm` takes each path as
+    // listed, and nothing of the test is left in the trash afterwards.
+    let listed = paths(&env.ok(&["trash", "ls"]));
+    let inside = format!("{base}/");
+    let items: Vec<&String> = listed.iter().filter(|p| *p == base || p.starts_with(&inside)).collect();
+    assert!(!items.is_empty(), "{listed:?}");
+    for item in items {
+        env.ok(&["trash", "rm", item]);
+    }
+    assert!(!paths(&env.ok(&["trash", "ls"])).iter().any(|p| p.starts_with(base)));
+}
+
+/// Download only: reading works, and every write is refused (exit code 10, kind `unsupported`,
+/// naming the mode) before anything is sent.
+fn writes_are_refused_under_download_only(env: &Env, base: &str) {
+    let docs = format!("{base}/Docs");
+    let (a, b) = (format!("{docs}/a.txt"), format!("{docs}/b.txt"));
+    env.ok(&["ls"]);
+    env.ok(&["trash", "ls"]);
+    for args in [&["mkdir", "-p", &docs][..], &["put", "a.txt", &a], &["rm", &a], &["mv", &a, &b], &["trash", "empty", "--yes"]] {
+        let e = env.fails(10, args);
+        assert_eq!(e["error"]["kind"].as_str(), Some("unsupported"), "{args:?}: {e}");
+        assert!(e["error"]["message"].as_str().unwrap_or_default().contains("download only"), "{args:?}: {e}");
+    }
+    assert!(!paths(&env.ok(&["ls"])).iter().any(|p| p.starts_with(base)), "nothing was made");
 }

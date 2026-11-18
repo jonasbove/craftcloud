@@ -15,9 +15,12 @@ non-negotiables in [AGENTS.md](../AGENTS.md), which bind every part of it. Code 
 The facts about the other servers below were **measured on 2026-11-16**: by hand with `curl` against Nextcloud 31,
 ownCloud 10.15 and OpenCloud (rolling), and with a throwaway spike branch that made today's engine talk plain
 WebDAV to all three and ran the live sync suite against them. The spike is not for merging; section 4 lists what
-it taught. **These figures (the server answers, the live-suite counts, "1 of 3 runs") are not reproducible from
-the repository:** neither the curl transcripts nor the spike are in it. Pull request 5 (the live tests against
-these servers) makes them reproducible; until then they stand as measured on that day.
+it taught. **Since pull request 5 the server answers are reproducible from the repository:**
+`tests/other-servers/compose.yaml` starts each server (images pinned by digest; its README says how), the check
+on connect measures it (`craftcloud server check`, or `probe_a_real_server` with `CRAFTCLOUD_PROBE_URL`), and
+the live suite runs against it with `CRAFTCLOUD_TEST_KIND` (section 13), asserting the mode it is expected to
+get. The spike's own counts ("1 of 3 runs", the live-suite numbers of section 4) stand as measured that day; the
+two plain WebDAV servers were measured with the check on connect on 2026-11-18.
 
 ## 1. Intent
 
@@ -111,31 +114,41 @@ What had to change, and what the design does instead:
 | Create a file on OpenCloud | Upload under a temporary name, `MOVE` with `Overwrite: F`, then compare `oc:checksums` SHA1 | Not used: OpenCloud gets download only (Q1) |
 | Find a folder's id | `oc:fileid` | Entries carry an optional file id; moves pair by it where present |
 
-## 5. What the servers do (measured on 2026-11-16, not reproducible from the repository)
+## 5. What the servers do (measured on 2026-11-16; reproducible since pull request 5, section 13)
 
-| Behaviour | OxiCloud 0.10.0 | Nextcloud 31 | ownCloud 10.15 | OpenCloud |
-|---|---|---|---|---|
-| `PUT` with `If-None-Match: *` over an existing file | 412 | 412 | 412 | **ignored: overwrites** |
-| `PUT` with a stale `If-Match` | 412 | 412 | 412 | 412, **not shown to be atomic** (reva#959) |
-| `PUT`'s ETag equals `PROPFIND`'s | yes | yes | yes | yes |
-| ETag changes on every write | yes | yes | yes | yes |
-| ETag survives `MOVE` | yes | yes | yes | yes |
-| Folder ETags follow their contents | **not reliably** (UPSTREAM C8) | yes | yes | yes |
-| `oc:fileid`, stable across `MOVE` | no (404) | yes | yes | yes |
-| `COPY` and `MOVE` | yes | yes | yes | yes |
-| `MOVE`/`COPY` with `Overwrite: F` onto an existing name | 412 | 412 | 412 | 412, but **not atomic** under two creates at once (both won in 1 of 3 runs) |
-| `MOVE` with a stale `If-Match` | (checked before, see `still_at`) | 412 | 412 | **ignored** (reva#961) |
-| `DELETE` with a stale `If-Match` | (REST trash is used) | 412 | 412 | **ignored: deletes** |
-| Where WebDAV `DELETE` goes | gone for good | server trash | server trash | server trash |
-| Restore from the trash | REST | `MOVE` to `trashbin/<user>/restore/<name>` | `MOVE` to the original path | `MOVE`, only through its `spaces/<space>/` URL |
-| Versions | none (CraftCloud keeps them in `.craftcloud/versions/`) | per file id, follow renames (`/remote.php/dav/versions/<user>/versions/<fileid>/`) | per file id (`/remote.php/dav/meta/<fileid>/v/`) | per file id (`/remote.php/dav/meta/<fileid>/v/`) |
-| `oc:checksums` | no | when the client sent one | yes | yes |
-| Quota | REST `/api/auth/me` | OCS user endpoint (WebDAV says `-3`) | WebDAV quota props | WebDAV quota props |
-| `PUT` into a missing folder | 409 | **404** | 409 | 409 |
-| `Depth: infinity` | 403 | 207 | 412 | 400 |
-| Backslash in a name | refused | 400 | 400 | 400 |
-| Browser sign-in | OAuth device flow | Login Flow v2 | OAuth2 app (off by default) | OIDC |
-| App passwords made by the person | no (device flow instead) | yes | yes | to verify |
+The four servers of the design, as measured by hand on 2026-11-16, and the two plain WebDAV servers of the test
+set (`tests/other-servers/compose.yaml`), as measured with the check on connect on 2026-11-18:
+
+| Behaviour | OxiCloud 0.10.0 | Nextcloud 31 | ownCloud 10.15 | OpenCloud | `rclone serve webdav` 1.76.0 (as measured on 2026-11-18) | Apache httpd 2.4.71 `mod_dav` (as measured on 2026-11-18) |
+|---|---|---|---|---|---|---|
+| `PUT` with `If-None-Match: *` over an existing file | 412 | 412 | 412 | **ignored: overwrites** | **ignored: overwrites** (201) | 412 |
+| `PUT` with a stale `If-Match` | 412 | 412 | 412 | 412, **not shown to be atomic** (reva#959) | **ignored: overwrites** (201) | 412 |
+| `PUT`'s ETag equals `PROPFIND`'s | yes | yes | yes | yes | yes | **no ETag in the `PUT` answer** (the listing's is used) |
+| ETag changes on every write | yes | yes | yes | yes | yes (from the modified time, also for the same bytes) | for other bytes; the same bytes keep their tag (`FileETag Digest`, below) |
+| ETag survives `MOVE` | yes | yes | yes | yes | yes | yes |
+| Folder ETags follow their contents | **not reliably** (UPSTREAM C8) | yes | yes | yes | folders have none | **no** |
+| `oc:fileid`, stable across `MOVE` | no (404) | yes | yes | yes | no | no |
+| `COPY` and `MOVE` | yes | yes | yes | yes | yes | yes |
+| `MOVE`/`COPY` with `Overwrite: F` onto an existing name | 412 | 412 | 412 | 412, but **not atomic** under two creates at once (both won in 1 of 3 runs) | 412 | 412 |
+| `MOVE` with a stale `If-Match` | (checked before, see `still_at`) | 412 | 412 | **ignored** (reva#961) | not measured | not measured |
+| `DELETE` with a stale `If-Match` | (REST trash is used) | 412 | 412 | **ignored: deletes** | **ignored: deletes** (204) | 412 |
+| Where WebDAV `DELETE` goes | gone for good | server trash | server trash | server trash | gone for good | gone for good |
+| Restore from the trash | REST | `MOVE` to `trashbin/<user>/restore/<name>` | `MOVE` to the original path | `MOVE`, only through its `spaces/<space>/` URL | client trash (`.craftcloud/trash/`) | client trash |
+| Versions | none (CraftCloud keeps them in `.craftcloud/versions/`) | per file id, follow renames (`/remote.php/dav/versions/<user>/versions/<fileid>/`) | per file id (`/remote.php/dav/meta/<fileid>/v/`) | per file id (`/remote.php/dav/meta/<fileid>/v/`) | none (client versions) | none (client versions) |
+| `oc:checksums` | no | when the client sent one | yes | yes | no | no |
+| Quota | REST `/api/auth/me` | OCS user endpoint (WebDAV says `-3`) | WebDAV quota props | WebDAV quota props | unknown | unknown |
+| `PUT` into a missing folder | 409 | **404** | 409 | 409 | 409 | 409 |
+| `Depth: infinity` | 403 | 207 | 412 | 400 | 207 | 403 |
+| Backslash in a name | refused | 400 | 400 | 400 | not measured | not measured |
+| Browser sign-in | OAuth device flow | Login Flow v2 | OAuth2 app (off by default) | OIDC | none (the WebDAV password, Q6) | none (the WebDAV password, Q6) |
+| App passwords made by the person | no (device flow instead) | yes | yes | **yes** (9.1.1, measured 2026-11-18: `POST /auth-app/tokens` with the account's basic auth, or the web UI's "App tokens"; the token is the WebDAV password) | n/a (the WebDAV password, Q6) | n/a (the WebDAV password, Q6) |
+| **Mode** | two-way (known, Q3) | two-way | two-way | **download only** (Q1) | **download only** (Q2) | **two-way**, with the client's trash and versions |
+
+Apache's default ETag (`FileETag MTime Size`) is marked weak (`W/"…"`) for a second after a write, and a weak tag
+never matches `If-Match` (RFC 7232's strong comparison): with it the check on connect refused Apache at step 6,
+since overwriting the file it had just written with that tag answered 412. The test set's `httpd.conf` therefore
+sets `FileETag Digest`, a strong tag from the content; with it every guard is honoured. A person's Apache with
+the default ETags is refused, rightly: its listing can't be trusted to name the version a `PUT` just made.
 
 ## 6. Approaches considered
 
@@ -537,6 +550,63 @@ As built (pull request 4b, the second of two under § 14's row 4; `crates/native
 - **Left as is:** a trashed item's restored path isn't echoed back when a clash renamed it (the generic `restore`
   reports the original path).
 
+As built (pull request 5, § 14's row 5; `crates/native/tests/live.rs`, `crates/native/tests/live/kind.rs`,
+`apps/craftcloud/tests/cli_live.rs`, `tests/other-servers/`):
+
+- **One suite, the cloud side per kind.** `CRAFTCLOUD_TEST_KIND` picks the server (`oxicloud` by default: the
+  suite CI's `live` job runs, its REST helpers and its 60 s deadline unchanged). The tests themselves changed
+  only in how they reach the cloud: a `Live` corner holds a `Cloud` that is OxiCloud over REST or, for every
+  other kind, the generic WebDAV driver (the trait: `list`, `trash_list`, `restore`, `trash` with its guard for
+  "another client deleted it", `keep_version`, `list_versions`, `capabilities`) plus the test's own raw WebDAV
+  client for what another client or the person does (an unguarded `PUT`, a `DELETE`) and for the cleanup. So
+  when a server's profile lands (rows 6 to 8), the same tests check its trash and versions through the same
+  calls. Until then every other kind runs the generic driver: on Nextcloud and ownCloud that means the client's
+  trash and versions in their drive, which the profiles replace.
+- **The mode is asserted, never assumed.** `Server::from_env` fixes the mode the server must get (§ 5 and § 16
+  per kind; `CRAFTCLOUD_TEST_MODE` for a plain WebDAV server, where it depends on the server); the connect
+  closure returns an error when the check on connect gives another mode, and every `sync` pass asserts
+  `SyncProgress.mode`. The two-way tests run where two-way is expected and say why they don't otherwise; the
+  download-only suite (§ 9) the other way round; `the_server_gets_the_mode_expected` always runs. A kind the run
+  can't do (an unknown word, or another kind without `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`) fails at once in every
+  test, never passes without running; `the_kind_is_checked_before_anything_runs` checks that decision in the
+  gate, without a server.
+- **Sign-in as a person would.** Nextcloud: `GET /ocs/v2.php/core/getapppassword` with the account's basic auth
+  once; ownCloud 10 has no API for it, so the suite goes through the web as a browser does (`curl`: the login
+  page's request token, the sign-in form, Settings › Security's `authtokens` call); plain WebDAV: the WebDAV
+  password (Q6); OpenCloud: `POST /auth-app/tokens` with the account's basic auth once (through the test
+  server's `PROXY_ENABLE_BASIC_AUTH`), the token then being the WebDAV password, which settles § 5's "to
+  verify": OpenCloud 9.1.1 makes app tokens for a person, on by default. The app password is made once per run
+  and never printed; `CRAFTCLOUD_TEST_APP_PASSWORD` hands one in.
+- **The download-only suite** (§ 9, against OpenCloud and `rclone serve webdav`): a cycle writes nothing (the
+  whole server tree, path by path and ETag by ETag, before and after three passes with a local change, a new
+  local file and a local delete); the change and the new file stay here, are said once per version and listed as
+  `not_uploaded`; a cloud change over a local change makes a local conflict copy and nothing goes up; a file
+  deleted in the cloud lands in the local `.craftcloud/trash/<time>-<device>/<path>` with its bytes, a folder of
+  12 only after the mass-delete hold is confirmed, and a file changed here meanwhile stays; a failed listing (a
+  small proxy in the test answers 500 to `PROPFIND` under one folder) ends the pass without a result and nothing
+  under the folder is taken as deleted, until it lists again.
+- **Per-server deadlines.** Nextcloud takes about 4 uploads a second (Q7), so a pass may take 300 s there (the
+  300-file test keeps its files: its check that the activity list is full needs more than 200 uploads); 180 s on
+  ownCloud, OpenCloud and plain WebDAV; OxiCloud's 60 s as before.
+- **What stays OxiCloud's:** the two quota tests (its admin API makes the users), the star in the renamed-folder
+  test and the UI transport's test; the renamed-folder and discarded-deletes tests check the folder's id only where
+  the server has ids (`oc:fileid`). The T-019 check of a version's content time needs OxiCloud's tags.
+- **Cleanup per kind.** OxiCloud as before (REST trash, then purged). Elsewhere the test's top-level folders, its
+  `.craftcloud/versions/<folder>` and the client-trash entries holding only its things are deleted; on Nextcloud
+  and ownCloud they are taken out of the server's trash bin too (`<name>.d<seconds>`), so a run leaves nothing
+  behind but the probe folders in the trash (Q8).
+- **Measured on the plain servers** (§ 5): `rclone serve webdav` 1.76.0 gets download only, as Q2 says; Apache
+  httpd 2.4.71 with `mod_dav` keeps every guard and gets two-way with the client's trash and versions, once its
+  ETags are content digests (its default time-based tags are weak for a second after a write and failed step 6).
+  The suite's `webdav` kind runs against both.
+- **Found by the suite, fixed in pull request 4b:** on Apache two live tests (a trashed folder restored;
+  discarded cloud deletes put back) and the command line's `trash rm` of a folder ended "signed out". Apache
+  answers 301 to a `PROPFIND` or `DELETE` of a folder named without its trailing slash (mod_dir's
+  `DirectorySlash`, on by default); the HTTP layer followed the redirect as a `GET` without the `Authorization`
+  header, and `AppPasswordSession` read the 401 as a revoked password. 4b's "Redirects are never followed"
+  (above) is the fix; the test set keeps Apache as a person's would be, and the suite passes there whole.
+- **No CI job** (core rule 11; § 14 row 9).
+
 ## 8. How each non-negotiable is met
 
 | Non-negotiable | Server has it (honoured, measured) | Server lacks it | OpenCloud as measured |
@@ -675,52 +745,24 @@ local side:
 | `crates/native` probe | Scripted servers that misbehave: answers 2xx to a stale `If-Match` → download only; ignores `If-None-Match` → download only; times out mid-probe → refused, and the probe folder is swept next time; no ETags → refused | `cargo xtask ci` |
 | `crates/native` engine | Today's engine tests run once per driver; a runtime guard failure stops two-way sync | `cargo xtask ci` |
 | `crates/native` golden logs | `crates/native/src/sync/golden_tests.rs` runs whole cycles of 15 scenarios against a small scripted OxiCloud (`fake_server`) and compares, line by line, every request (method, path, the guard headers, `Destination`, `Depth`, `Range`, the bearer token, the body or its hash), the activity lines, the sync state, the saved `state.json` and the final local folder and cloud with the logs in `crates/native/src/sync/golden/` (recorded before pull request 1; `CRAFTCLOUD_BLESS=1` records them again, only for a change meant to alter what goes over the wire). On every log it checks that every `PUT` carries `If-Match` or `If-None-Match: *`, every `MOVE` and `COPY` `Overwrite: F`, and a WebDAV `DELETE` only inside `.craftcloud/` | `cargo xtask ci` |
-| Live | `crates/native/tests/live.rs` with `CRAFTCLOUD_TEST_KIND` (`oxicloud` default, `nextcloud`, `owncloud`, `opencloud`, `webdav`): the same 21 tests, the server-specific helpers (trash, versions, ids) behind the trait; per-server timeouts (Nextcloud is slower); plus a download-only suite against a server that fails the probe | By hand, and in CI (below) |
-| CLI live | `apps/craftcloud/tests/cli_live.rs` for `login --kind webdav`, `server check`, and the `unsupported` answers | Same |
+| Live | `crates/native/tests/live.rs` with `CRAFTCLOUD_TEST_KIND` (`oxicloud` default, `nextcloud`, `owncloud`, `opencloud`, `webdav`; every kind but the first only with `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`): the same tests, the cloud side (trash, versions, ids, cleanup) per kind behind the trait; per-server deadlines (Nextcloud is slower); the mode asserted on every pass; the two-way tests where two-way sync is expected, the download-only suite (section 9) where download only is | By hand (`tests/other-servers/README.md`), and in CI (below) |
+| CLI live | `apps/craftcloud/tests/cli_live.rs` for `login --kind webdav`, `server check`, the file, trash and version commands, and the `unsupported` answers | Same |
 | Windows | The 0.2.0 Windows checks once, against Nextcloud | By hand, before the release |
 
-**Test servers.** A neutral compose file goes into the repository with the live-test pull request
-(`tests/other-servers/compose.yaml`): loopback ports only, passwords from the environment, images pinned by digest
-there (the spike ran OpenCloud's rolling image, which must not be used in CI), and the user `john`:
+**Test servers.** `tests/other-servers/compose.yaml` (pull request 5) is the neutral compose file: loopback ports
+only (`${…_PORT:-…}` variables, 8111 to 8115 by default), passwords from the environment (all required), every
+image pinned by digest (OpenCloud at the stable release 9.1.1, never `rolling` or `latest`), the user `john`
+everywhere but OpenCloud (its built-in `admin`), and the two plain WebDAV servers: `rclone serve webdav`, which
+ignores `If-Match` and `If-None-Match` on `PUT` (golang/go#44492), for the download-only path, and Apache httpd
+with `mod_dav`, which keeps every guard once its ETags are content digests (section 5), for the client's own
+trash and versions. Its README says how to start one server at a time, how the app passwords are made, how each
+suite runs and how to tear the set down (`down -v`). The servers are test containers, never shipped or linked.
 
-```yaml
-# Throwaway servers for CraftCloud's live tests. Loopback only; never for real data.
-services:
-  nextcloud:
-    image: nextcloud:31-apache            # pinned by digest in the pull request
-    ports: ["127.0.0.1:8095:80"]
-    environment:
-      SQLITE_DATABASE: nextcloud
-      NEXTCLOUD_ADMIN_USER: john
-      NEXTCLOUD_ADMIN_PASSWORD: ${NC_PASS:?}
-      NEXTCLOUD_TRUSTED_DOMAINS: "127.0.0.1 localhost"
-  owncloud:
-    image: owncloud/server:10.15          # pinned by digest
-    ports: ["127.0.0.1:8096:8080"]
-    environment:
-      OWNCLOUD_DOMAIN: 127.0.0.1:8096
-      OWNCLOUD_TRUSTED_DOMAINS: 127.0.0.1,localhost
-      OWNCLOUD_DB_TYPE: sqlite
-      OWNCLOUD_ADMIN_USERNAME: john
-      OWNCLOUD_ADMIN_PASSWORD: ${OC_PASS:?}
-  opencloud:
-    image: opencloudeu/opencloud:<release>  # a stable release, pinned by digest
-    entrypoint: ["/bin/sh", "-c", "opencloud init || true; exec opencloud server"]
-    ports: ["127.0.0.1:8097:9200"]
-    environment:
-      OC_URL: https://localhost:8097
-      OC_INSECURE: "true"
-      PROXY_TLS: "false"
-      IDM_CREATE_DEMO_USERS: "false"
-      IDM_ADMIN_PASSWORD: ${OPC_PASS:?}
-  webdav:
-    # Plain WebDAV servers with no trash and no versions: rclone serve webdav, which ignores
-    # If-Match and If-None-Match on PUT, for the download-only path; and one that keeps the
-    # guards, for the client's own trash and versions (Apache mod_dav, to measure then).
-```
-
-The live tests make the app password the way a person would (Nextcloud's and ownCloud's app-password API for the
-test user), so the suite never signs in with the account password either, except to create that app password.
+The live tests make the app password the way a person would (Nextcloud's OCS app-password call; ownCloud's
+Settings › Security through the web session), so the suite never signs in with the account password either,
+except to create that app password (OpenCloud: its `auth-app` token call, `POST /auth-app/tokens`, on by
+default in 9.1.1 and taking the account's basic auth through the test server's `PROXY_ENABLE_BASIC_AUTH`; the
+token is then the WebDAV password). A plain WebDAV server's WebDAV password is the sign-in (Q6).
 
 **CI.** A separate `👷 CI:` pull request adds an `other-servers` job (Linux, a matrix over the four kinds) beside
 today's `live` job. The repository is public, so Linux minutes are free; it runs on pull requests that touch
