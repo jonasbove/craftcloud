@@ -459,6 +459,10 @@ impl RemoteStorage for WebDav {
         Ok(listed.into_iter().find_map(|e| e.quota_available).and_then(|q| u64::try_from(q).ok()))
     }
 
+    /// A path that isn't there any more (404 on the listing or the `DELETE`) counts as purged:
+    /// what this removes is CraftCloud's own leftovers (a pruned version, an emptied trash
+    /// entry's folder, a probe folder), and "already gone" is the state wanted; nothing of the
+    /// person's is ever named here (`OwnPath` can't name it).
     fn purge_own(&mut self, path: &OwnPath) -> Result<(), StorageError> {
         let folder = match self.is_folder(path.as_str()) {
             Ok(folder) => folder,
@@ -730,8 +734,10 @@ pub(crate) mod tests {
         s.move_versions("Docs/a.txt", "Docs/b.txt").unwrap();
         assert_eq!(s.list(".craftcloud/versions/Docs/b.txt").unwrap().len(), 5);
         assert!(matches!(s.list(".craftcloud/versions/Docs/a.txt"), Err(StorageError::NotFound(_))));
-        let deletes = server.seen().iter().filter(|r| r.method == "DELETE").count();
-        assert_eq!(deletes, 2, "the two oldest versions were pruned: {:?}", server.seen());
+        let deletes: Vec<String> = server.seen().iter().filter(|r| r.method == "DELETE").map(|r| r.path.clone()).collect();
+        assert_eq!(deletes.len(), 2, "the two oldest versions were pruned: {:?}", server.seen());
+        let versions_of_a = format!("{BASE_PATH}/.craftcloud/versions/Docs/a.txt/2026");
+        assert!(deletes.iter().all(|p| p.starts_with(&versions_of_a)), "a prune deletes only inside the file's own versions folder: {deletes:?}");
     }
 
     /// Free space comes from `quota-available-bytes` where the server lists it; a negative number
