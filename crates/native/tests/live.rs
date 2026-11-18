@@ -152,7 +152,7 @@ fn connect(server: &Server, device: &str, dir: &Path) -> Result<(WebDav, StoredC
     if let Some(check) = kept {
         save_check(dir, &check)?;
     }
-    let (driver, check) = WebDav::connect(server.session(), device, Some(dir), Limits::default());
+    let (driver, check) = WebDav::connect_with(server.session(), server.profile(), device, Some(dir), Limits::default());
     if check.mode != server.mode {
         let why = check.refused_because.clone().unwrap_or_default();
         return Err(format!("{server}: the check on connect gave {} ({why}); steps: {:#?}", check.mode.words(), check.steps));
@@ -410,6 +410,15 @@ impl Live {
                 let (parent, _) = path.rsplit_once('/').unwrap_or(("", path));
                 self.driver().list(parent).ok()?.into_iter().find(|e| e.path == path && e.is_folder)?.file_id
             }
+        }
+    }
+
+    /// Whether the check on connect confirmed the server keeps its own versions (Nextcloud with its
+    /// profile): then `keep_version` is a no-op and the history follows renames by file id.
+    fn server_versions(&self) -> bool {
+        match &self.cloud {
+            Cloud::Oxi { .. } => false,
+            Cloud::Dav { .. } => self.driver().capabilities().versions == craftcloud_core::storage::Versions::Server,
         }
     }
 
@@ -1110,6 +1119,8 @@ fn versions_follow_renames_and_are_kept_once() {
     let twice = live.versions_of(&renamed2).len();
     if live.kind() == Kind::Oxicloud {
         assert_eq!(twice, 2, "the current bytes once, not twice");
+    } else if live.server_versions() {
+        assert_eq!(twice, 1, "the server keeps the versions itself: keeping one is a no-op");
     } else {
         assert!((2..=3).contains(&twice), "{twice}");
     }

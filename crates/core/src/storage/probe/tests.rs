@@ -245,8 +245,9 @@ fn a_profile_supplies_the_trash_and_versions_checks() {
                 req
             })
         }
-        fn observe(&mut self, resp: &HttpResponse) {
+        fn observe(&mut self, resp: &HttpResponse, learnt: &Learnt) {
             assert_eq!(resp.status, 207);
+            assert!(learnt.folder.starts_with(PROBE_DIR));
             self.sent += 1;
         }
         fn confirmed(&self) -> bool {
@@ -380,6 +381,48 @@ fn requests_resolve_under_the_base() {
     assert_eq!(http.url, format!("{BASE}.craftcloud/probe/Laptop-1/a%20b.txt"));
     assert_eq!(http.header_value("Destination"), Some(format!("{BASE}.craftcloud/probe/Laptop-1/c.txt").as_str()));
     assert!(req.is_write());
+}
+
+/// A known-server check's request on another DAV root (a trash bin) resolves under that root,
+/// its destination too, never under the files base.
+#[test]
+fn a_request_under_another_root_resolves_there() {
+    let root = "https://cloud.example.org/remote.php/dav/trashbin/john";
+    let mut req = Request::under_root(Step::ServerTrash, Method::Move, root, "trash/d.txt.d1795001745", false).with_header("Overwrite", "F");
+    req.destination = Some(("restore/d.txt.d1795001745".into(), false));
+    req.restores = Some(".craftcloud/probe/Laptop-1/d.txt".into());
+    let http = req.to_http(&base());
+    assert_eq!(http.url, format!("{root}/trash/d.txt.d1795001745"));
+    assert_eq!(http.header_value("Destination"), Some(format!("{root}/restore/d.txt.d1795001745").as_str()));
+    assert_eq!(req.root.as_deref(), Some(format!("{root}/").as_str()), "a trailing slash is added");
+    let get = Request::under_root(Step::ServerVersions, Method::Get, &format!("{root}/"), "a b", false).with_body(b"x");
+    assert_eq!(get.to_http(&base()).url, format!("{root}/a%20b"));
+    assert_eq!(get.body, b"x");
+}
+
+/// The scripted server's same-second tag reuse and client-sent checksums (what the Nextcloud
+/// profile's checksum check is tested against, docs/WEBDAV-STORAGE.md § 16, Q13).
+#[test]
+fn the_scripted_server_can_reuse_a_tag_within_a_second_and_list_sent_checksums() {
+    let mut server = FakeDav::new("/dav", Flags { etag_reused_within_second: true, checksums_from_client_only: true, ..Flags::default() });
+    let headers = |h: &[(&str, &str)]| h.iter().map(|(n, v)| ((*n).to_owned(), (*v).to_owned())).collect::<Vec<_>>();
+    let first = server.answer("PUT", "/dav/a.txt", &headers(&[("If-None-Match", "*"), ("OC-Checksum", "SHA1:aaaa")]), b"one");
+    let e1 = first.header("ETag").unwrap().to_owned();
+    let second = server.answer("PUT", "/dav/a.txt", &headers(&[("If-Match", &e1)]), b"two");
+    assert_eq!(second.header("ETag"), Some(e1.as_str()), "within the same second: the tag is kept");
+    assert_eq!(server.checksum("a.txt"), None, "a PUT without OC-Checksum clears it");
+    let listing = server.answer("PROPFIND", "/dav/a.txt", &headers(&[("Depth", "0")]), b"");
+    assert!(!String::from_utf8_lossy(&listing.body).contains("oc:checksum>"), "nothing listed without one");
+    let third = server.answer("PUT", "/dav/a.txt", &headers(&[("If-Match", &e1), ("OC-Checksum", "SHA1:bbbb")]), b"three");
+    assert!(third.is_success());
+    let listing = server.answer("PROPFIND", "/dav/a.txt", &headers(&[("Depth", "0")]), b"");
+    assert!(String::from_utf8_lossy(&listing.body).contains("<oc:checksum>SHA1:bbbb</oc:checksum>"));
+    // Another client's write right behind ours: the same tag, other bytes, no checksum.
+    server.flags.other_writes_after_put = Some(b"theirs".to_vec());
+    let fourth = server.answer("PUT", "/dav/a.txt", &headers(&[("If-Match", &e1), ("OC-Checksum", "SHA1:cccc")]), b"four");
+    assert_eq!(fourth.header("ETag"), Some(e1.as_str()));
+    assert_eq!(server.body("a.txt"), Some(b"theirs".as_slice()));
+    assert_eq!(server.checksum("a.txt"), None);
 }
 
 // --- Words and the saved check ------------------------------------------------------------------

@@ -53,6 +53,7 @@
 
 pub mod oxicloud;
 pub mod probe;
+pub mod profile;
 pub mod versions;
 pub mod webdav;
 

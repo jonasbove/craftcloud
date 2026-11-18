@@ -21,6 +21,9 @@ log = { workspace = true }
 ureq = { version = "3.5", default-features = false, features = ["rustls", "gzip"] }
 gethostname = "1"
 sha2 = "0.10"
+# The checksum sent with every write to a Nextcloud (`OC-Checksum: SHA1:…`) and compared afterwards
+# (docs/WEBDAV-STORAGE.md § 16, Q13). RustCrypto, MIT OR Apache-2.0.
+sha1 = "0.10"
 # Dates the way the Craft apps do them (craft-launcher's house rule).
 jiff = "0.2"
 webbrowser = "1"

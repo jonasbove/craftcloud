@@ -86,8 +86,15 @@ pub fn folder_name() -> String {
 
 /// Why a request the probe asked for may not be sent: the guard it must carry is missing, or it
 /// would delete outside `.craftcloud/probe/`. The probe never builds such a request; this is the
-/// second check, so that a mistake there can't reach a server.
-pub fn guarded(req: &Request) -> Result<(), String> {
+/// second check, so that a mistake there can't reach a server. `probe_folder` is this probe's
+/// folder (`.craftcloud/probe/<device>-<random>`): on another DAV root (a server's trash bin or
+/// versions, which a known-server check reads) only a listing, a `GET` and the restore `MOVE` of
+/// the probe's own file may go, never a `DELETE` (a person's trash is never purged, § 16, Q8) and
+/// never a write.
+pub fn guarded(req: &Request, probe_folder: &str) -> Result<(), String> {
+    if let Some(root) = &req.root {
+        return guarded_on_root(req, root, probe_folder);
+    }
     match req.method {
         Method::Put if req.header_value("If-Match").is_none() && req.header_value("If-None-Match") != Some("*") => {
             Err(format!("refused to send an unguarded PUT to {}", req.path))
@@ -109,13 +116,41 @@ fn inside_probe_dir(path: &str) -> bool {
     path.strip_prefix(PROBE_DIR).is_some_and(|rest| rest.starts_with('/') && rest.len() > 1)
 }
 
+/// A known-server check's request on another DAV root: read freely; move only the probe's own
+/// trashed file back (`trash/<name>` → `restore/<name>`, `Overwrite: F`, and the server said it
+/// came from inside the probe's folder); nothing else.
+fn guarded_on_root(req: &Request, root: &str, probe_folder: &str) -> Result<(), String> {
+    match req.method {
+        Method::Propfind | Method::Get => Ok(()),
+        Method::Move => {
+            let name = req.path.strip_prefix("trash/").filter(|n| !n.is_empty() && !n.contains('/'));
+            let restored = req.destination.as_ref().and_then(|(to, _)| to.strip_prefix("restore/"));
+            let own = req.restores.as_deref().is_some_and(|from| {
+                !probe_folder.is_empty() && from.strip_prefix(probe_folder).is_some_and(|rest| rest.starts_with('/') && rest.len() > 1)
+            });
+            // No `Overwrite` rule here: the restore address is the server's endpoint, not a name in
+            // the person's tree (Nextcloud answers 412 to `Overwrite: F` there); what guards the
+            // move is that it is a restore, of the probe's own file, to where it was.
+            if name.is_none() || restored != name {
+                Err(format!("refused to send a MOVE on {root} that isn't the restore of a trashed item to where it was"))
+            } else if !own {
+                Err(format!("refused to restore {} from {root}: not the probe's own file", req.path))
+            } else {
+                Ok(())
+            }
+        }
+        Method::Delete => Err(format!("refused to delete {} on {root}: a server's trash and versions are the person's, never purged", req.path)),
+        other => Err(format!("refused to send a {} on {root}", other.as_str())),
+    }
+}
+
 /// Runs the probe to its end (or its first failure) and gives the verdict. `folder_name` is this
 /// device's probe folder ([`folder_name`]).
 pub fn run(transport: &mut dyn Transport, base: &Base, folder_name: &str, profile: Profile<'_>, limits: Limits) -> Verdict {
     let mut probe = Probe::new(base.clone(), folder_name, profile);
     let started = Instant::now();
     while let Some(req) = probe.next() {
-        if let Err(why) = guarded(&req) {
+        if let Err(why) = guarded(&req, probe.folder()) {
             probe.fail(&why);
             break;
         }
@@ -367,11 +402,12 @@ mod tests {
             req.headers = headers.iter().map(|(n, v)| ((*n).to_owned(), (*v).to_owned())).collect();
             req
         };
-        assert!(guarded(&put(&[])).unwrap_err().contains("unguarded PUT"));
-        assert!(guarded(&put(&[("If-None-Match", "*")])).is_ok());
-        assert!(guarded(&put(&[("If-Match", "\"e1\"")])).is_ok());
+        let folder = ".craftcloud/probe/x";
+        assert!(guarded(&put(&[]), folder).unwrap_err().contains("unguarded PUT"));
+        assert!(guarded(&put(&[("If-None-Match", "*")]), folder).is_ok());
+        assert!(guarded(&put(&[("If-Match", "\"e1\"")]), folder).is_ok());
         let delete = |path: &str| Request::new(craftcloud_core::storage::probe::Step::CleanUp, Method::Delete, path, true);
-        assert!(guarded(&delete(".craftcloud/probe/Laptop-1")).is_ok());
+        assert!(guarded(&delete(".craftcloud/probe/Laptop-1"), folder).is_ok());
         for outside in [
             "Documents",
             ".craftcloud/versions/a",
@@ -380,15 +416,63 @@ mod tests {
             ".craftcloud/probe/../Documents",
             ".craftcloud/probex/a",
         ] {
-            assert!(guarded(&delete(outside)).is_err(), "{outside}");
+            assert!(guarded(&delete(outside), folder).is_err(), "{outside}");
         }
         let mut mv = Request::new(craftcloud_core::storage::probe::Step::Move, Method::Move, ".craftcloud/probe/x/a.txt", false);
         mv.destination = Some((".craftcloud/probe/x/c.txt".into(), false));
-        assert!(guarded(&mv).unwrap_err().contains("Overwrite"));
+        assert!(guarded(&mv, folder).unwrap_err().contains("Overwrite"));
         mv.headers.push(("Overwrite".into(), "F".into()));
-        assert!(guarded(&mv).is_ok());
+        assert!(guarded(&mv, folder).is_ok());
         mv.destination = Some(("Documents/c.txt".into(), false));
-        assert!(guarded(&mv).unwrap_err().contains("outside"));
+        assert!(guarded(&mv, folder).unwrap_err().contains("outside"));
+    }
+
+    /// On another DAV root (a server's trash bin, which a known-server check reads) the runner
+    /// allows the restore of the probe's own trashed file and nothing else: a `MOVE` of a trashed
+    /// item to anywhere but its restore address is refused, so is one of an item that didn't come
+    /// from the probe's folder, and a `DELETE` there (purging the person's trash, § 16, Q8) always.
+    #[test]
+    fn on_another_root_only_the_probes_own_restore_may_go() {
+        use craftcloud_core::storage::probe::Step;
+        let root = "https://cloud.example.org/remote.php/dav/trashbin/john/";
+        let folder = ".craftcloud/probe/Laptop-1";
+        let restore = |name: &str, to: &str, from: Option<&str>| {
+            let mut req = Request::under_root(Step::ServerTrash, Method::Move, root, &format!("trash/{name}"), false).with_header("Overwrite", "F");
+            req.destination = Some((to.to_owned(), false));
+            req.restores = from.map(str::to_owned);
+            req
+        };
+        let own = Some(".craftcloud/probe/Laptop-1/d.txt");
+        assert!(guarded(&restore("d.txt.d1795001745", "restore/d.txt.d1795001745", own), folder).is_ok(), "the allowed restore");
+        // Reading is fine.
+        assert!(guarded(&Request::under_root(Step::ServerTrash, Method::Propfind, root, "trash", true), folder).is_ok());
+        assert!(guarded(&Request::under_root(Step::ServerVersions, Method::Get, root, "trash/d.txt.d1", false), folder).is_ok());
+        // A MOVE from the trash bin to anywhere else, or of another item, is refused.
+        for (name, to, from, why) in [
+            ("d.txt.d1795001745", "Documents/d.txt", own, "not a restore"),
+            ("d.txt.d1795001745", "restore/other.d1", own, "another name"),
+            ("d.txt.d1795001745", "restore/d.txt.d1795001745", Some("Documents/d.txt"), "not the probe's file"),
+            ("d.txt.d1795001745", "restore/d.txt.d1795001745", Some(".craftcloud/probe/Studio-2/d.txt"), "another probe's file"),
+            ("d.txt.d1795001745", "restore/d.txt.d1795001745", None, "no origin given"),
+            ("sub/d.txt.d1", "restore/sub/d.txt.d1", own, "not a top-level trash item"),
+        ] {
+            assert!(guarded(&restore(name, to, from), folder).is_err(), "{why}");
+        }
+        let mut plain = restore("d.txt.d1795001745", "restore/d.txt.d1795001745", own);
+        plain.headers.clear();
+        assert!(guarded(&plain, folder).is_ok(), "the restore needs no Overwrite header (the server's endpoint, not a name)");
+        // Never a DELETE there, nor any other write.
+        for method in [Method::Delete, Method::Put, Method::Mkcol, Method::Copy] {
+            let req = Request::under_root(Step::ServerTrash, method, root, "trash/d.txt.d1795001745", false)
+                .with_header("Overwrite", "F")
+                .with_header("If-Match", "\"x\"");
+            assert!(guarded(&req, folder).is_err(), "{method:?}");
+        }
+        assert!(
+            guarded(&Request::under_root(Step::ServerTrash, Method::Delete, root, "trash/d.txt.d1", false), folder)
+                .unwrap_err()
+                .contains("never purged")
+        );
     }
 
     #[test]

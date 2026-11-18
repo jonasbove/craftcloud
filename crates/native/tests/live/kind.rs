@@ -31,6 +31,7 @@ use craftcloud_core::http::{HttpRequest, HttpResponse, Method};
 use craftcloud_core::storage::Mode;
 use craftcloud_core::storage::probe::{Base, Listed, PROPFIND_BODY, parse_listing};
 use craftcloud_native::session::AppPasswordSession;
+use craftcloud_native::storage::profile::{self, ServerProfile};
 
 /// The variable that names the kind.
 pub const KIND_VAR: &str = "CRAFTCLOUD_TEST_KIND";
@@ -185,6 +186,16 @@ impl Server {
     /// Whether this kind of server keeps files' ids across a move (`oc:fileid`).
     pub const fn has_file_ids(&self) -> bool {
         matches!(self.kind, Kind::Nextcloud | Kind::Owncloud | Kind::Opencloud)
+    }
+
+    /// What this kind of server adds to the generic driver (docs/WEBDAV-STORAGE.md § 7.4): the
+    /// Nextcloud profile (its trash, versions and quota, the probe's known-server checks); the
+    /// generic one for the rest until their profiles land (§ 14, rows 7 and 8).
+    pub fn profile(&self) -> Box<dyn ServerProfile> {
+        match self.kind {
+            Kind::Nextcloud => Box::new(profile::nextcloud::Nextcloud::new(&self.url, &self.user)),
+            _ => Box::new(profile::Generic),
+        }
     }
 
     /// What the client signs in with: an app password, made once per test run the way a person
