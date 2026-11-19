@@ -924,14 +924,23 @@ As built (pull request 9, § 14's row 9; `.github/workflows/ci.yml`):
   sync tests and 3 command-line tests passed on each. The entries run side by side; with two runs sharing the
   runners an entry took up to 14 minutes.
 - **Known: the Nextcloud entry fails now and then** (2 of the first 4 runs; the other four servers passed all 4).
-  Each time one two-way test, a different one, found the second computer one pass behind:
-  `a_renamed_folder_is_one_move_and_keeps_its_id` (the edit made elsewhere hadn't come down into the folder it
-  had just renamed) and `a_folder_replaced_by_a_file_replaces_it_everywhere` (the file inside the new folder
-  hadn't come down). In both the plan finishes in the cycle after (a move first, the edit next cycle; a type
-  change first, the rest next cycle), the test asks that computer for one pass, and its follow-up cycle a few
-  seconds later has to end before the other computer's last pass does. That reading is from the code, not
-  yet confirmed by a run. The job doesn't try a failed test again; the fix belongs in the suite (a second pass
-  on that computer before the check), in a pull request of its own.
+  Each time one two-way test, a different one, found the second computer without a change the first had made,
+  because that change reached the server only in the first computer's last pass, after the second's. From
+  Nextcloud's access log, kept by the job:
+  - `a_renamed_folder_is_one_move_and_keeps_its_id`: while A's pass was uploading its edit of `Proj2/a.txt` (the
+    old version copied, the `PUT` not yet sent), B, on a cycle of its own, moved `Proj2/` to `Proj3/` on the
+    server. A's `PUT` answered 412, as it must; A uploaded the edit to `Proj3/a.txt` in its next pass. Nothing
+    was lost; the test's passes and the computers' own cycles ran into each other.
+  - `a_folder_replaced_by_a_file_replaces_it_everywhere`: Nextcloud answered **500** to A's `PUT` of `sf/a.txt`,
+    in the same second as the file `sf` was moved to the client trash and the folder `sf/` made. The same `PUT`
+    answered 201 two seconds later, in A's next pass. Why Nextcloud said 500 isn't known: its own log wasn't
+    kept then (it is now, see below).
+
+  The job doesn't try a failed test again. What the suite should do about it (let both computers settle before
+  the check, in these two tests and any like them) is a test change, for a pull request of its own.
+- **Logs kept on a failure:** the container's output (for Nextcloud and ownCloud that is the web server's access
+  log, every request with its status) and, for those two, the server's own log file (`nextcloud.log`,
+  `owncloud.log`), 7 days.
 
 ## 14. Order of work
 

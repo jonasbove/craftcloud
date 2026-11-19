@@ -205,9 +205,10 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   gate too), every night, and by hand. The OxiCloud `live` job and the gate run as before, except that they skip
   the nightly run. The first run: all five green, 26 sync tests and 3 command-line tests each, between 4 min 28 s
   (OpenCloud) and 8 min 44 s (Nextcloud) an entry, side by side. Known: the Nextcloud entry failed in 2 of the
-  first 4 runs, one two-way test each time with the second computer one pass behind
-  ([WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 13, as built); the job doesn't retry, and the suite needs a fix of
-  its own.
+  first 4 runs, one two-way test each time: a change of the first computer reached the server only in its last
+  pass, after the second computer's (once its upload met the other computer's folder move and answered 412, once
+  Nextcloud answered 500 to an upload and took it two seconds later;
+  [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 13, as built). The job doesn't retry; the suite needs a fix of its own.
 - 2026-11-19: Sync: a move the server can't do right now is tried again, never rebuilt as a copy. Found by the live
   suite on Nextcloud, which answered 500 ("locked") to the `MOVE` of a renamed folder while another device was
   writing into it; the client then built the folder again beside the old one. `storage::refused_for_good` names
