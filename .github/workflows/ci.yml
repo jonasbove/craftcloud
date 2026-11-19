@@ -194,6 +194,10 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
+        # The pattern's names are prefixes on purpose: `…/src/sync` is sync.rs, the sync/ folder
+        # and any file that starts so. `run` stays true unless the changed files were read: a
+        # `git fetch` or `git diff` that fails (the commit before a forced push is gone, say)
+        # runs the job.
         run: |
           touched='^(crates/core/src/(storage|reconcile|names|sync|http)|crates/core/src/api/dav|crates/native/src/(storage|sync|session|http|experimental)|crates/native/tests/|apps/craftcloud/tests/|tests/other-servers/|\.github/workflows/ci\.yml$)'
           run=true
