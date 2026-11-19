@@ -1445,8 +1445,7 @@ fn a_write_under_an_unchanged_etag_still_comes_down() {
             assert!(Instant::now() < deadline, "{path} was never uploaded");
             std::thread::sleep(Duration::from_millis(5));
         };
-        // The same size as ours: this branch's runtime watch (§ 7.5) still compares a write with the
-        // next listing, and another client's write of another size right behind ours trips it.
+        // The same size as ours, so nothing but the version tag tells the two writes apart.
         assert!(matches!(live.other().put(&path, b"THEM"), 200..=299));
         let theirs = live.other().list(&dir).unwrap().into_iter().find(|e| e.path == path).unwrap();
         sync(&a);
