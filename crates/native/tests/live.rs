@@ -1,5 +1,5 @@
-//! Two-way sync against a real CraftCloud server, with two local folders playing two computers.
-//! Skipped unless these are set (never in CI):
+//! Two-way sync against a real server, with two local folders playing two computers.
+//! Skipped unless these are set:
 //!
 //! ```text
 //! CRAFTCLOUD_TEST_SERVER=http://127.0.0.1:8093 CRAFTCLOUD_TEST_USER=john \
@@ -7,31 +7,52 @@
 //! cargo test -p craftcloud-native --test live -- --test-threads 1
 //! ```
 //!
-//! On a fresh server it creates the owner with those details first. Use a throwaway container.
+//! That is CraftCloud's own server (OxiCloud), the suite CI's `live` job runs; on a fresh server it
+//! creates the owner with those details first. With `CRAFTCLOUD_TEST_KIND=nextcloud|owncloud|opencloud|webdav`
+//! and `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` the same tests run against another kind of server through
+//! the generic WebDAV driver ([`kind`] says the variables; `tests/other-servers/README.md` how to
+//! start one). Every pass asserts the sync mode the server is expected to get (docs/WEBDAV-STORAGE.md
+//! § 5, § 16): a server that got better or worse is a failure, not a skip. The two-way tests run
+//! where two-way sync is expected; the download-only suite (§ 9, the `download_only_*` tests)
+//! where download only is. Use a throwaway container.
 //!
 //! Each test keeps to a corner of the account of its own ([`Live`]): its top-level folders are
 //! named `live-<test>-<seconds>-<pid>-<name>`, its computers switch off every folder the account
 //! had before it started (as the Folders tab does), and when it ends, failed or not, its folders
 //! and their kept versions go to the trash and from there for good. So what is already on the
 //! account never changes what a test sees, and a run leaves nothing behind. (The quota tests make
-//! a user of their own each run; the server has no call to delete one, so those users stay.)
+//! a user of their own each run; the server has no call to delete one, so those users stay. They
+//! need OxiCloud's admin API, so they run on CraftCloud's own server only, as do the test of its
+//! REST ids and stars and the one of the UI's transport.)
+
+// A module beside this file, not a test program of its own (cargo would build `tests/kind.rs` as one).
+#[path = "live/kind.rs"]
+mod kind;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use craftcloud_core::ServerUrl;
 use craftcloud_core::api::auth::{self, Tokens};
-use craftcloud_core::api::resources::{Kind, Resource};
-use craftcloud_core::api::trash::TrashItem;
+use craftcloud_core::api::resources::{Kind as ResourceKind, Resource};
+use craftcloud_core::api::versions::Version;
 use craftcloud_core::api::{admin, dav, favorites, folders, trash};
-use craftcloud_core::sync::{ActivityKind, Keep, SyncPlan, SyncState};
+use craftcloud_core::storage::Mode;
+use craftcloud_core::storage::probe::{Base, StoredCheck};
+use craftcloud_core::sync::{ActivityKind, Keep, LeftOut, SyncPlan, SyncProgress, SyncState};
 use craftcloud_native::http::{ThreadBackend, execute};
+use craftcloud_native::storage::probe::{Limits, save_check};
+use craftcloud_native::storage::webdav::WebDav;
+use craftcloud_native::storage::{Entry, RemoteStorage, TrashGuard, TrashItem, Trashed};
 use craftcloud_native::sync::{Command, Handle};
+use kind::{Dav, Kind, Server};
 
-fn env() -> Option<(ServerUrl, String, String)> {
-    let server = ServerUrl::parse(&std::env::var("CRAFTCLOUD_TEST_SERVER").ok()?).ok()?;
-    Some((server, std::env::var("CRAFTCLOUD_TEST_USER").ok()?, std::env::var("CRAFTCLOUD_TEST_PASSWORD").ok()?))
+/// CraftCloud's own server named in the environment: (its address, user, password).
+fn oxicloud_env() -> Option<(ServerUrl, String, String)> {
+    let server = Server::from_env().filter(|s| s.kind == Kind::Oxicloud)?;
+    let url = ServerUrl::parse(&server.url).ok()?;
+    Some((url, server.user.clone(), server.account_password().to_owned()))
 }
 
 /// Signs in once per test run (the server limits sign-ins per minute).
@@ -96,7 +117,7 @@ fn root_id(server: &ServerUrl, tokens: &Tokens) -> Result<String, String> {
 }
 
 /// Everything in the trash (CraftCloud's own items too), page by page, soonest to expire first.
-fn trash_all(server: &ServerUrl, tokens: &Tokens) -> Result<Vec<TrashItem>, String> {
+fn trash_all(server: &ServerUrl, tokens: &Tokens) -> Result<Vec<trash::TrashItem>, String> {
     let mut out = Vec::new();
     let mut cursor: Option<String> = None;
     for _ in 0..PAGES {
@@ -111,13 +132,45 @@ fn trash_all(server: &ServerUrl, tokens: &Tokens) -> Result<Vec<TrashItem>, Stri
     Err("the trash listing didn't end".to_owned())
 }
 
+/// The cloud side of a test, by kind: CraftCloud's own server over REST, as these tests always
+/// talked to it, or any other server through the generic WebDAV driver (the trait, so the helpers
+/// keep working when a server's profile lands) and the test's own raw WebDAV client for what
+/// another client or the person does to the cloud.
+enum Cloud {
+    Oxi { server: ServerUrl, tokens: Tokens },
+    Dav { driver: Box<Mutex<WebDav>>, raw: Box<Mutex<Dav>> },
+}
+
+/// The check on connect for this run's server, run once per process: the first connect probes
+/// and keeps the result; every later one finds it saved in its settings folder and reuses it,
+/// the way the product reuses a saved check (`WebDav::connect`). `Err` when the server doesn't
+/// get the mode expected of it, so a pass fails with that and nothing runs on a wrong mode.
+fn connect(server: &Server, device: &str, dir: &Path) -> Result<(WebDav, StoredCheck), String> {
+    static CHECK: Mutex<Option<StoredCheck>> = Mutex::new(None);
+    let kept = CHECK.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    if let Some(check) = kept {
+        save_check(dir, &check)?;
+    }
+    let (driver, check) = WebDav::connect(server.session(), device, Some(dir), Limits::default());
+    if check.mode != server.mode {
+        let why = check.refused_because.clone().unwrap_or_default();
+        return Err(format!("{server}: the check on connect gave {} ({why}); steps: {:#?}", check.mode.words(), check.steps));
+    }
+    *CHECK.lock().unwrap_or_else(PoisonError::into_inner) = Some(check.clone());
+    Ok((driver, check))
+}
+
+/// The kind and the mode this run is about, for [`sync`] (set by the first [`Live`]).
+static RUN: OnceLock<(Kind, Mode)> = OnceLock::new();
+
 /// One test's corner of the account: top-level folders of its own, computers that sync only
 /// those, and a cleanup when the test ends, passed or failed.
 ///
 /// Make it before the test's computers: locals drop in reverse, so the computers stop first.
 struct Live {
-    server: ServerUrl,
-    tokens: Tokens,
+    server: Server,
+    cloud: Cloud,
     /// `live-<test>-<seconds>-<pid>`: every top-level folder of the test is named `<base>-…`.
     base: String,
     /// The top-level folders the account had before the test: switched off on its computers.
@@ -126,19 +179,72 @@ struct Live {
 }
 
 impl Live {
-    /// As the test user (made first on a fresh server); `None` when no test server is set.
+    /// As the test user (made first on a fresh OxiCloud server); `None` when no test server is set.
     fn new(test: &str) -> Option<Self> {
-        let (server, user, password) = env()?;
-        let tokens = sign_in(&server, &user, &password);
-        Some(Self::with(server, tokens, test))
+        let server = Server::from_env()?;
+        let cloud = match server.kind {
+            Kind::Oxicloud => {
+                let url = ServerUrl::parse(&server.url).unwrap_or_else(|e| panic!("{}: {e}", server.url));
+                let tokens = sign_in(&url, &server.user, server.account_password());
+                Cloud::Oxi { server: url, tokens }
+            }
+            _ => {
+                let dir = tempfile::tempdir().unwrap();
+                let (driver, _) = connect(&server, "Tester", dir.path()).unwrap_or_else(|e| panic!("{e}"));
+                Cloud::Dav { driver: Box::new(Mutex::new(driver)), raw: Box::new(Mutex::new(Dav::new(&server))) }
+            }
+        };
+        Some(Self::with(server, cloud, test))
     }
 
-    /// As the account `tokens` belongs to.
-    fn with(server: ServerUrl, tokens: Tokens, test: &str) -> Self {
-        let root = root_id(&server, &tokens).unwrap();
-        let others =
-            children(&server, &tokens, &root).unwrap().into_iter().filter(|r| r.kind() == Kind::Folder).map(|r| r.name().to_owned()).collect();
-        Self { base: format!("live-{test}-{}", run_id()), others, dirs: tempfile::tempdir().unwrap(), server, tokens }
+    /// Only where two-way sync is expected (the download-only suite covers the rest).
+    fn two_way(test: &str) -> Option<Self> {
+        let live = Self::new(test)?;
+        if live.server.mode != Mode::TwoWay {
+            eprintln!("skipped: {} syncs download only; the download_only_* tests cover it", live.server);
+            return None;
+        }
+        Some(live)
+    }
+
+    /// Only where download only is expected.
+    fn download_only(test: &str) -> Option<Self> {
+        let live = Self::new(test)?;
+        if live.server.mode != Mode::DownloadOnly {
+            eprintln!("skipped: {} syncs two-way", live.server);
+            return None;
+        }
+        Some(live)
+    }
+
+    /// As the OxiCloud account `tokens` belongs to.
+    fn oxicloud_with(server: ServerUrl, tokens: Tokens, test: &str) -> Self {
+        let env = Server::from_env().expect("an OxiCloud test server");
+        Self::with(env, Cloud::Oxi { server, tokens }, test)
+    }
+
+    fn with(server: Server, cloud: Cloud, test: &str) -> Self {
+        RUN.get_or_init(|| (server.kind, server.mode));
+        let others = match &cloud {
+            Cloud::Oxi { server, tokens } => {
+                let root = root_id(server, tokens).unwrap();
+                children(server, tokens, &root)
+                    .unwrap()
+                    .into_iter()
+                    .filter(|r| r.kind() == ResourceKind::Folder)
+                    .map(|r| r.name().to_owned())
+                    .collect()
+            }
+            Cloud::Dav { raw, .. } => {
+                let mut raw = raw.lock().unwrap_or_else(PoisonError::into_inner);
+                raw.list("").unwrap_or_else(|e| panic!("{e}")).into_iter().filter(|e| e.is_folder).map(|e| e.name().to_owned()).collect()
+            }
+        };
+        Self { base: format!("live-{test}-{}", run_id()), others, dirs: tempfile::tempdir().unwrap(), server, cloud }
+    }
+
+    fn kind(&self) -> Kind {
+        self.server.kind
     }
 
     /// The test's own path for `rel`, in the cloud and in a sync folder alike: its first part
@@ -161,7 +267,7 @@ impl Live {
     /// others and `off` (new ones too, whichever side makes them), and no files at the top.
     fn plan(&self, local: &Path, off: &[String]) -> SyncPlan {
         SyncPlan {
-            server: self.server.to_string(),
+            server: self.server.url.clone(),
             local_folder: local.display().to_string(),
             excluded: self.others.iter().chain(off).cloned().collect(),
             folders: vec![],
@@ -174,9 +280,159 @@ impl Live {
     }
 
     fn start(&self, plan: SyncPlan, name: &str) -> Handle {
+        self.start_at(plan, name, None)
+    }
+
+    /// Starts a computer; `through` is another address for the server (a forwarder in front of
+    /// it), with the WebDAV base's path kept.
+    fn start_at(&self, mut plan: SyncPlan, name: &str, through: Option<&str>) -> Handle {
         // Setup makes the folder; the sync never does.
         std::fs::create_dir_all(&plan.local_folder).unwrap();
-        craftcloud_native::sync::start(plan, self.tokens.clone(), name.into(), Box::new(|_| {}), Arc::new(|| {}))
+        match &self.cloud {
+            Cloud::Oxi { tokens, .. } => {
+                if let Some(url) = through {
+                    plan.server = url.to_owned();
+                }
+                craftcloud_native::sync::start(plan, tokens.clone(), name.into(), Box::new(|_| {}), Arc::new(|| {}))
+            }
+            Cloud::Dav { .. } => {
+                let mut server = self.server.clone();
+                if let Some(url) = through {
+                    server.set_dav_url(&format!("{}{}/", url.trim_end_matches('/'), self.server.base().path()));
+                }
+                let dir = self.dirs.path().join(format!("settings-{name}"));
+                let device = name.to_owned();
+                craftcloud_native::sync::start_webdav(plan, Box::new(move || connect(&server, &device, &dir)), name.into(), Arc::new(|| {}))
+            }
+        }
+    }
+
+    /// The test's generic driver (other kinds of server).
+    fn driver(&self) -> MutexGuard<'_, WebDav> {
+        match &self.cloud {
+            Cloud::Dav { driver, .. } => driver.lock().unwrap_or_else(PoisonError::into_inner),
+            Cloud::Oxi { .. } => panic!("OxiCloud's helpers go over REST"),
+        }
+    }
+
+    /// The test's raw WebDAV client: what another client, or the person on the server, does to
+    /// the cloud (other kinds of server).
+    fn other(&self) -> MutexGuard<'_, Dav> {
+        match &self.cloud {
+            Cloud::Dav { raw, .. } => raw.lock().unwrap_or_else(PoisonError::into_inner),
+            Cloud::Oxi { .. } => panic!("OxiCloud's helpers go over REST"),
+        }
+    }
+
+    /// One cloud folder, one level (the listing must be whole).
+    fn list(&self, folder: &str) -> Vec<Entry> {
+        match &self.cloud {
+            Cloud::Oxi { server, tokens } => {
+                let listed = execute(&tokens.authorize(dav::list(server, folder))).unwrap();
+                dav::parse_list(&listed).unwrap().into_iter().map(Entry::from).collect()
+            }
+            Cloud::Dav { .. } => self.driver().list(folder).unwrap_or_else(|e| panic!("listing {folder}: {e}")),
+        }
+    }
+
+    /// The newest trashed item that was at `cloud_path`.
+    fn in_trash(&self, cloud_path: &str) -> Option<TrashItem> {
+        self.trash_items().into_iter().rev().find(|i| i.path == cloud_path)
+    }
+
+    /// Everything in the trash, oldest first, as the cloud lists it.
+    fn trash_items(&self) -> Vec<TrashItem> {
+        match &self.cloud {
+            Cloud::Oxi { server, tokens } => trash_all(server, tokens)
+                .unwrap()
+                .into_iter()
+                .filter_map(|i| {
+                    let path = i.resource.cloud_path()?;
+                    Some(TrashItem { id: i.resource.id().to_owned(), path, trashed_at: i.trashed_at.clone() })
+                })
+                .collect(),
+            Cloud::Dav { .. } => self.driver().trash_list().unwrap_or_else(|e| panic!("listing the trash: {e}")),
+        }
+    }
+
+    /// Whether `folder` went to the trash as one item: the folder is listed and nothing inside it
+    /// is an item of its own, or (the generic driver, which lists a trashed folder holding exactly
+    /// one thing as that thing, docs/WEBDAV-STORAGE.md § 7.2, "As built (pull request 4a)"; a
+    /// restore puts the same tree back) exactly one item inside it and not the folder.
+    fn trashed_whole(&self, folder: &str) -> bool {
+        let inside = format!("{folder}/");
+        let items = self.trash_items();
+        let itself = items.iter().any(|i| i.path == folder);
+        let within = items.iter().filter(|i| i.path.starts_with(&inside)).count();
+        (itself && within == 0) || (!itself && within == 1)
+    }
+
+    /// Puts a trashed item back, as the person would.
+    fn restore(&self, item: &TrashItem) {
+        match &self.cloud {
+            Cloud::Oxi { server, tokens } => {
+                let resp = execute(&tokens.authorize(trash::restore(server, &item.id))).unwrap();
+                assert!(resp.is_success(), "restoring {}: {}", item.path, resp.status);
+            }
+            Cloud::Dav { .. } => self.driver().restore(item).unwrap_or_else(|e| panic!("restoring {}: {e}", item.path)),
+        }
+    }
+
+    /// Deletes a cloud folder as another client would: into the trash, whole.
+    fn trash_folder(&self, path: &str) {
+        match &self.cloud {
+            Cloud::Oxi { server, tokens } => {
+                let id = self.folder_id(path).unwrap_or_else(|| panic!("{path} isn't in the cloud"));
+                assert!(execute(&tokens.authorize(folders::trash(server, &id))).unwrap().is_success());
+            }
+            Cloud::Dav { .. } => {
+                let files: Vec<(String, String)> =
+                    self.other().list_all(path).into_iter().filter(|e| !e.is_folder).map(|e| (e.path, e.etag.unwrap_or_default())).collect();
+                let done = self.driver().trash(path, TrashGuard::Folder { files }).unwrap_or_else(|e| panic!("trashing {path}: {e}"));
+                assert_eq!(done, Trashed::Done);
+            }
+        }
+    }
+
+    /// The server's id for the folder at `path`, where the server has ids that survive a move
+    /// (OxiCloud's REST id; `oc:fileid` elsewhere; none on a plain WebDAV server).
+    fn folder_id(&self, path: &str) -> Option<String> {
+        match &self.cloud {
+            Cloud::Oxi { server, tokens } => {
+                let mut id = root_id(server, tokens).unwrap();
+                for part in path.split('/').filter(|p| !p.is_empty()) {
+                    id =
+                        children(server, tokens, &id).unwrap().iter().find(|r| r.kind() == ResourceKind::Folder && r.name() == part)?.id().to_owned();
+                }
+                Some(id)
+            }
+            Cloud::Dav { .. } => {
+                let (parent, _) = path.rsplit_once('/').unwrap_or(("", path));
+                self.driver().list(parent).ok()?.into_iter().find(|e| e.path == path && e.is_folder)?.file_id
+            }
+        }
+    }
+
+    /// The kept versions of a cloud file, newest first.
+    fn versions_of(&self, path: &str) -> Vec<Version> {
+        match &self.cloud {
+            Cloud::Oxi { server, tokens } => {
+                use craftcloud_core::api::versions;
+                versions::parse_list(&execute(&tokens.authorize(versions::list(server, path))).unwrap()).unwrap()
+            }
+            Cloud::Dav { .. } => self.driver().list_versions(path).unwrap_or_else(|e| panic!("versions of {path}: {e}")),
+        }
+    }
+
+    /// Keeps the current cloud bytes of `path` as a version (what an overwrite does first).
+    fn snapshot(&self, path: &str) {
+        match &self.cloud {
+            Cloud::Oxi { server, tokens } => {
+                let mut session = craftcloud_native::session::Session::new(server.clone(), tokens.clone(), Box::new(|_| {}));
+                session.snapshot(path).unwrap();
+            }
+            Cloud::Dav { .. } => self.driver().keep_version(path).unwrap_or_else(|e| panic!("keeping a version of {path}: {e}")),
+        }
     }
 
     /// Whether a cloud path is the test's: in one of its folders, or in their kept versions.
@@ -189,17 +445,24 @@ impl Live {
     /// else the test trashed for good. Never panics: it runs while a failed test unwinds, where a
     /// panic would abort the whole run.
     fn clean_up(&self) -> Result<(), String> {
-        let (server, tokens) = (&self.server, &self.tokens);
+        match &self.cloud {
+            Cloud::Oxi { server, tokens } => self.clean_up_oxicloud(server, tokens),
+            Cloud::Dav { raw, .. } => self.clean_up_dav(&mut raw.lock().unwrap_or_else(PoisonError::into_inner)),
+        }
+    }
+
+    fn clean_up_oxicloud(&self, server: &ServerUrl, tokens: &Tokens) -> Result<(), String> {
         let root = root_id(server, tokens)?;
         let mut trashed: Vec<String> = Vec::new();
         // Looked for again in case a stopped computer's last cycle still made a folder.
         for _ in 0..3 {
             std::thread::sleep(Duration::from_secs(1));
             let top = children(server, tokens, &root)?;
-            let mut found: Vec<String> = top.iter().filter(|r| r.kind() == Kind::Folder && self.mine(r.name())).map(|r| r.id().to_owned()).collect();
-            if let Some(internal) = top.iter().find(|r| r.kind() == Kind::Folder && r.name() == dav::CRAFTCLOUD_DIR)
+            let mut found: Vec<String> =
+                top.iter().filter(|r| r.kind() == ResourceKind::Folder && self.mine(r.name())).map(|r| r.id().to_owned()).collect();
+            if let Some(internal) = top.iter().find(|r| r.kind() == ResourceKind::Folder && r.name() == dav::CRAFTCLOUD_DIR)
                 && let Some(versions) =
-                    children(server, tokens, internal.id())?.into_iter().find(|r| r.kind() == Kind::Folder && r.name() == "versions")
+                    children(server, tokens, internal.id())?.into_iter().find(|r| r.kind() == ResourceKind::Folder && r.name() == "versions")
             {
                 found.extend(children(server, tokens, versions.id())?.iter().filter(|r| self.mine(r.name())).map(|r| r.id().to_owned()));
             }
@@ -219,7 +482,7 @@ impl Live {
         // trashed above has been seen and deleted, and nothing of the test is left.
         let mut expected = trashed;
         for _ in 0..10 {
-            let ours: Vec<TrashItem> =
+            let ours: Vec<trash::TrashItem> =
                 trash_all(server, tokens)?.into_iter().filter(|i| i.resource.cloud_path().is_some_and(|p| self.owns(&p))).collect();
             if ours.is_empty() && expected.is_empty() {
                 return Ok(());
@@ -232,6 +495,61 @@ impl Live {
             std::thread::sleep(Duration::from_secs(1));
         }
         Err(format!("its trash wasn't emptied ({} trashed folders never showed in the trash)", expected.len()))
+    }
+
+    /// Another kind of server: the test's top-level folders, its kept versions
+    /// (`.craftcloud/versions/<folder>`) and the client-trash entries holding only its things are
+    /// deleted (on Nextcloud and ownCloud into the server's trash, and from there too).
+    fn clean_up_dav(&self, raw: &mut Dav) -> Result<(), String> {
+        for _ in 0..3 {
+            std::thread::sleep(Duration::from_secs(1));
+            let mine: Vec<String> = raw.list("")?.into_iter().filter(|e| e.is_folder && self.mine(e.name())).map(|e| e.path).collect();
+            if mine.is_empty() {
+                break;
+            }
+            for folder in mine {
+                let status = raw.delete(&folder, true);
+                if !matches!(status, 200..=299 | 404) {
+                    return Err(format!("deleting {folder} answered {status}"));
+                }
+            }
+        }
+        if let Ok(kept) = raw.list(&format!("{}/versions", dav::CRAFTCLOUD_DIR)) {
+            for folder in kept.into_iter().filter(|e| e.is_folder && self.mine(e.name())) {
+                raw.delete(&folder.path, true);
+            }
+        }
+        if let Ok(entries) = raw.list(dav::TRASH_DIR) {
+            for entry in entries.into_iter().filter(|e| e.is_folder) {
+                let inside = raw.list(&entry.path)?;
+                if !inside.is_empty() && inside.iter().all(|e| self.mine(e.name())) {
+                    raw.delete(&entry.path, true);
+                }
+            }
+        }
+        if matches!(self.kind(), Kind::Nextcloud | Kind::Owncloud) {
+            self.purge_server_trash()?;
+        }
+        Ok(())
+    }
+
+    /// Nextcloud and ownCloud: what the cleanup deleted sits in the server's trash as
+    /// `<name>.d<seconds>`; the test's folders and the client-trash entries that held only its
+    /// things go from there too, so a run leaves nothing behind.
+    fn purge_server_trash(&self) -> Result<(), String> {
+        let mut bin = Dav::at(&self.server, &format!("{}/remote.php/dav/trashbin/{}/trash/", self.server.url, self.server.user));
+        for entry in bin.list("")? {
+            let name = entry.name().rsplit_once(".d").map_or(entry.name(), |(n, _)| n);
+            let ours = self.mine(name)
+                || (entry.is_folder && name.contains('T') && {
+                    let inside = bin.list(&entry.path).unwrap_or_default();
+                    !inside.is_empty() && inside.iter().all(|e| self.mine(e.name()))
+                });
+            if ours {
+                bin.delete(&entry.path, entry.is_folder);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -246,21 +564,31 @@ impl Drop for Live {
     }
 }
 
-/// Runs one more cycle (one that starts after this call) and waits for it to finish.
-fn sync(h: &Handle) {
+/// Runs one more cycle (one that starts after this call) and waits for it to end, however it
+/// ends: the progress then.
+fn sync_ends(h: &Handle) -> SyncProgress {
     static TICKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let n = TICKET.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     h.send(Command::SyncFor(n));
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let (kind, _) = RUN.get().copied().unwrap_or((Kind::Oxicloud, Mode::TwoWay));
+    let deadline = Instant::now() + kind.sync_deadline();
     loop {
         let p = h.progress.lock().unwrap().clone();
         if p.served >= n {
-            assert!(matches!(p.state, SyncState::UpToDate), "{:?}: {:?}", p.state, p.activity);
-            return;
+            return p;
         }
         assert!(Instant::now() < deadline, "no sync finished: {p:?}");
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Runs one more cycle and waits for it to finish up to date, in the sync mode this server is
+/// expected to get (docs/WEBDAV-STORAGE.md § 5, § 16): any other mode fails the test.
+fn sync(h: &Handle) {
+    let p = sync_ends(h);
+    assert!(matches!(p.state, SyncState::UpToDate), "{:?}: {:?}", p.state, p.activity);
+    let (_, expected) = RUN.get().copied().unwrap_or((Kind::Oxicloud, Mode::TwoWay));
+    assert_eq!(p.mode, Some(expected), "the server got another sync mode than expected");
 }
 
 /// Writes a file and waits until it counts as settled (the client waits 2 s after a write).
@@ -278,12 +606,6 @@ fn counted(h: &Handle, folder: &str, files: u64, bytes: u64) {
     assert!(p.unsynced.is_empty(), "nothing is left syncing after a cycle: {:?}", p.unsynced);
 }
 
-/// The trash id of the newest trashed item that was at `cloud_path`.
-fn in_trash(server: &ServerUrl, tokens: &Tokens, cloud_path: &str) -> Option<String> {
-    let items = trash_all(server, tokens).unwrap();
-    items.iter().rev().find(|i| i.resource.cloud_path().as_deref() == Some(cloud_path)).map(|i| i.resource.id().to_owned())
-}
-
 fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
@@ -294,13 +616,58 @@ fn names_in(dir: &Path) -> Vec<String> {
     v
 }
 
+/// The kind in `CRAFTCLOUD_TEST_KIND` must be one of the five, and any but CraftCloud's own needs
+/// the opt-in: a run that names what it can't do fails, never passes without running (no server
+/// needed for this one).
 #[test]
-fn two_computers_stay_in_sync() {
-    let Some(live) = Live::new("two") else {
+fn the_kind_is_checked_before_anything_runs() {
+    use std::ffi::OsStr;
+    assert_eq!(kind::kind_from(None, None), Ok(Kind::Oxicloud));
+    assert_eq!(kind::kind_from(Some(""), None), Ok(Kind::Oxicloud));
+    assert_eq!(kind::kind_from(Some("oxicloud"), None), Ok(Kind::Oxicloud));
+    assert_eq!(kind::kind_from(Some(" NextCloud "), Some(OsStr::new("1"))), Ok(Kind::Nextcloud));
+    for other in ["nextcloud", "owncloud", "opencloud", "webdav"] {
+        let kind = Kind::parse(other).unwrap();
+        assert_eq!(kind::kind_from(Some(other), Some(OsStr::new("1"))), Ok(kind));
+        for off in [None, Some("0"), Some("true"), Some("yes"), Some("01")] {
+            let refused = kind::kind_from(Some(other), off.map(OsStr::new));
+            assert!(refused.as_ref().is_err_and(|e| e.contains(kind::NEEDS_OPT_IN)), "{other} with {off:?}: {refused:?}");
+        }
+    }
+    for unknown in ["dropbox", "oxi cloud", "WebDAV server", "sabre"] {
+        assert!(kind::kind_from(Some(unknown), Some(OsStr::new("1"))).is_err_and(|e| e.contains("unknown kind")), "{unknown}");
+        assert_eq!(Kind::parse(unknown), None);
+    }
+    for kind in Kind::ALL {
+        assert_eq!(Kind::parse(kind.as_str()), Some(kind));
+    }
+}
+
+/// The server gets the sync mode expected of its kind (docs/WEBDAV-STORAGE.md § 5, § 16), measured
+/// by the check on connect and shown by the sync: a server that got better or worse fails here,
+/// whatever else runs.
+#[test]
+fn the_server_gets_the_mode_expected() {
+    let Some(live) = Live::new("mode") else {
         eprintln!("skipped: CRAFTCLOUD_TEST_SERVER not set");
         return;
     };
-    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let root = live.local("M");
+    let m = live.computer(&root, "Mode");
+    sync(&m);
+    let p = m.progress.lock().unwrap();
+    assert_eq!(p.mode, Some(live.server.mode), "{}", live.server);
+    if live.kind() != Kind::Oxicloud {
+        assert_eq!(live.driver().capabilities().names, craftcloud_core::names::NameRules::oxicloud(), "the strict name rules, on every server");
+    }
+}
+
+#[test]
+fn two_computers_stay_in_sync() {
+    let Some(live) = Live::two_way("two") else {
+        eprintln!("skipped: CRAFTCLOUD_TEST_SERVER not set");
+        return;
+    };
     let (a_root, b_root) = (live.local("A"), live.local("B"));
     let a = live.computer(&a_root, "Alpha");
     let b = live.computer(&b_root, "Beta");
@@ -320,8 +687,7 @@ fn two_computers_stay_in_sync() {
     sync(&a);
     sync(&b);
     assert_eq!(read(&b_root.join(&notes)), "two");
-    let versions = execute(&tokens.authorize(dav::list(&server, &dav::versions_folder(&notes)))).unwrap();
-    let kept: Vec<_> = dav::parse_list(&versions).unwrap().into_iter().filter(|e| !e.is_folder).collect();
+    let kept = live.versions_of(&notes);
     assert_eq!(kept.len(), 1, "{kept:?}");
 
     // Both edit the same file: one keeps its version as a conflict copy, on both sides.
@@ -357,8 +723,8 @@ fn two_computers_stay_in_sync() {
     sync(&a);
     sync(&b);
     assert!(!b_root.join(&notes).exists());
-    let trashed = in_trash(&server, &tokens, &notes).expect("the deleted file is in the cloud's trash");
-    execute(&tokens.authorize(trash::restore(&server, &trashed))).unwrap();
+    let trashed = live.in_trash(&notes).expect("the deleted file is in the cloud's trash");
+    live.restore(&trashed);
     sync(&a);
     sync(&b);
     assert_eq!(read(&b_root.join(&notes)), "from B, longer", "restored from the trash, it syncs back");
@@ -374,9 +740,8 @@ fn two_computers_stay_in_sync() {
     std::fs::remove_dir(a_root.join(live.p("Shared/Old"))).unwrap();
     sync(&a);
     sync(&a);
-    assert!(in_trash(&server, &tokens, &live.p("Shared/Old")).is_some(), "the emptied folder is in the trash");
-    let listed = execute(&tokens.authorize(dav::list(&server, &shared))).unwrap();
-    assert!(dav::parse_list(&listed).unwrap().iter().all(|e| e.path != live.p("Shared/Old")), "the empty folder is gone from the cloud");
+    assert!(live.trashed_whole(&live.p("Shared/Old")), "the emptied folder is in the trash: {:?}", live.trash_items());
+    assert!(live.list(&shared).iter().all(|e| e.path != live.p("Shared/Old")), "the empty folder is gone from the cloud");
 
     // The folder watcher: a change on A is synced without asking.
     let before = a.progress.lock().unwrap().cycles;
@@ -416,7 +781,7 @@ fn two_computers_stay_in_sync() {
 
 #[test]
 fn folders_made_anywhere_join_the_sync() {
-    let Some(live) = Live::new("join") else { return };
+    let Some(live) = Live::two_way("join") else { return };
     let (a_root, b_root) = (live.local("A"), live.local("B"));
     let a = live.computer(&a_root, "Alpha");
     let b = live.computer(&b_root, "Beta");
@@ -464,8 +829,7 @@ fn folders_made_anywhere_join_the_sync() {
 
 #[test]
 fn renames_and_moves_are_moves_on_both_sides() {
-    let Some(live) = Live::new("moves") else { return };
-    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let Some(live) = Live::two_way("moves") else { return };
     let (a_root, b_root) = (live.local("A"), live.local("B"));
     let a = live.computer(&a_root, "Alpha");
     let b = live.computer(&b_root, "Beta");
@@ -480,7 +844,7 @@ fn renames_and_moves_are_moves_on_both_sides() {
     std::fs::rename(a_root.join(m("c1.txt")), a_root.join(m("c1-renamed.txt"))).unwrap();
     sync(&a);
     assert!(moved(&a, &m("c1-renamed.txt")), "{:?}", a.progress.lock().unwrap().activity.last());
-    assert!(in_trash(&server, &tokens, &m("c1.txt")).is_none(), "nothing went to the trash");
+    assert!(live.in_trash(&m("c1.txt")).is_none(), "nothing went to the trash");
     sync(&b);
     assert!(moved(&b, &m("c1-renamed.txt")), "{:?}", b.progress.lock().unwrap().activity.last());
     assert_eq!(read(&b_root.join(m("c1-renamed.txt"))), "rename me");
@@ -497,16 +861,9 @@ fn renames_and_moves_are_moves_on_both_sides() {
     assert!(!a_root.join(m("c1-renamed.txt")).exists());
 }
 
-/// The REST id of the top-level cloud folder `name`.
-fn folder_id(server: &ServerUrl, tokens: &Tokens, name: &str) -> Option<String> {
-    let root = root_id(server, tokens).unwrap();
-    children(server, tokens, &root).unwrap().iter().find(|r| r.kind() == Kind::Folder && r.name() == name).map(|r| r.id().to_owned())
-}
-
 #[test]
 fn a_renamed_folder_is_one_move_and_keeps_its_id() {
-    let Some(live) = Live::new("proj") else { return };
-    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let Some(live) = Live::two_way("proj") else { return };
     let (a_root, b_root) = (live.local("A"), live.local("B"));
     let a = live.computer(&a_root, "Alpha");
     let b = live.computer(&b_root, "Beta");
@@ -515,22 +872,33 @@ fn a_renamed_folder_is_one_move_and_keeps_its_id() {
     write(&a_root.join(&proj).join("Sub/b.txt"), "two");
     sync(&a);
     sync(&b);
-    let id = folder_id(&server, &tokens, &proj).expect("the folder is in the cloud");
-    execute(&tokens.authorize(favorites::add(&server, Kind::Folder, &id))).unwrap();
+    // The folder's id, where the server has ids that survive a move (none on a plain WebDAV server).
+    let has_ids = live.kind() == Kind::Oxicloud || live.server.has_file_ids();
+    let id = live.folder_id(&proj);
+    assert_eq!(id.is_some(), has_ids, "{}: {id:?}", live.server);
+    // A star, on CraftCloud's own server (its REST API).
+    let oxi = match &live.cloud {
+        Cloud::Oxi { server, tokens } => Some((server.clone(), tokens.clone())),
+        Cloud::Dav { .. } => None,
+    };
+    if let Some((server, tokens)) = &oxi {
+        execute(&tokens.authorize(favorites::add(server, ResourceKind::Folder, id.as_deref().unwrap()))).unwrap();
+    }
     let moved = |h: &Handle, path: &str| h.progress.lock().unwrap().activity.iter().any(|e| e.kind == ActivityKind::Moved && e.path == path);
 
     // Renamed on A: one MOVE in the cloud. The folder keeps its id and its star; nothing is trashed.
     std::fs::rename(a_root.join(&proj), a_root.join(&proj2)).unwrap();
     sync(&a);
     assert!(moved(&a, &proj2), "{:#?}", a.progress.lock().unwrap().activity.iter().rev().take(4).collect::<Vec<_>>());
-    assert_eq!(folder_id(&server, &tokens, &proj2).as_deref(), Some(id.as_str()), "same folder, new name");
-    assert_eq!(folder_id(&server, &tokens, &proj), None);
-    let stars = favorites::parse_list_all(&execute(&tokens.authorize(favorites::list(&server, Some(200), None))).unwrap()).unwrap();
-    assert!(stars.items.iter().any(|f| f.resource.id() == id), "still starred");
-    assert!(
-        in_trash(&server, &tokens, &format!("{proj}/a.txt")).is_none() && in_trash(&server, &tokens, &proj).is_none(),
-        "nothing went to the trash"
-    );
+    if has_ids {
+        assert_eq!(live.folder_id(&proj2), id, "same folder, new name");
+    }
+    assert!(live.list("").iter().all(|e| e.path != proj), "the old name is gone");
+    if let Some((server, tokens)) = &oxi {
+        let stars = favorites::parse_list_all(&execute(&tokens.authorize(favorites::list(server, Some(200), None))).unwrap()).unwrap();
+        assert!(stars.items.iter().any(|f| Some(f.resource.id()) == id.as_deref()), "still starred");
+    }
+    assert!(live.in_trash(&format!("{proj}/a.txt")).is_none() && live.in_trash(&proj).is_none(), "nothing went to the trash");
 
     // B renames its local folder to match.
     sync(&b);
@@ -549,13 +917,14 @@ fn a_renamed_folder_is_one_move_and_keeps_its_id() {
         assert_eq!(read(&root.join(&proj3).join("Sub/b.txt")), "two");
         assert!(!root.join(&proj2).exists(), "{:?}", names_in(root));
     }
-    assert_eq!(folder_id(&server, &tokens, &proj3).as_deref(), Some(id.as_str()));
+    if has_ids {
+        assert_eq!(live.folder_id(&proj3), id);
+    }
 }
 
 #[test]
 fn a_deleted_folder_goes_to_the_trash_whole() {
-    let Some(live) = Live::new("gone") else { return };
-    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let Some(live) = Live::two_way("gone") else { return };
     let (a_root, b_root) = (live.local("A"), live.local("B"));
     let a = live.computer(&a_root, "Alpha");
     let b = live.computer(&b_root, "Beta");
@@ -574,16 +943,13 @@ fn a_deleted_folder_goes_to_the_trash_whole() {
     // Deleted on A: one item in the trash (the folder), not one per file and folder.
     std::fs::remove_dir_all(a_root.join(&gone)).unwrap();
     sync(&a);
-    let trashed = in_trash(&server, &tokens, &gone).expect("the folder is in the trash");
-    assert!(
-        in_trash(&server, &tokens, &format!("{gone}/0.txt")).is_none() && in_trash(&server, &tokens, &format!("{gone}/Sub")).is_none(),
-        "only the folder"
-    );
+    let trashed = live.in_trash(&gone).expect("the folder is in the trash");
+    assert!(live.in_trash(&format!("{gone}/0.txt")).is_none() && live.in_trash(&format!("{gone}/Sub")).is_none(), "only the folder");
     sync(&b);
     assert!(!b_root.join(&gone).exists());
 
     // Restored, it comes back whole.
-    execute(&tokens.authorize(trash::restore(&server, &trashed))).unwrap();
+    live.restore(&trashed);
     sync(&a);
     sync(&b);
     for root in [&a_root, &b_root] {
@@ -594,7 +960,7 @@ fn a_deleted_folder_goes_to_the_trash_whole() {
 
 #[test]
 fn a_file_and_a_folder_of_one_name_both_survive() {
-    let Some(live) = Live::new("clash") else { return };
+    let Some(live) = Live::two_way("clash") else { return };
     let (a_root, b_root) = (live.local("A"), live.local("B"));
     let a = live.computer(&a_root, "Alpha");
     let b = live.computer(&b_root, "Beta");
@@ -627,8 +993,7 @@ fn a_file_and_a_folder_of_one_name_both_survive() {
 /// folder) is a replacement, not a conflict: the cloud and the other computer follow.
 #[test]
 fn a_folder_replaced_by_a_file_replaces_it_everywhere() {
-    let Some(live) = Live::new("t17") else { return };
-    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let Some(live) = Live::two_way("t17") else { return };
     let (a_root, b_root) = (live.local("A"), live.local("B"));
     let a = live.computer(&a_root, "Laptop");
     let b = live.computer(&b_root, "Studio");
@@ -647,8 +1012,7 @@ fn a_folder_replaced_by_a_file_replaces_it_everywhere() {
     std::fs::write(at(&a_root, "sf/a.txt"), "inside").unwrap();
     write(&at(&a_root, "sw"), "x\n");
     sync(&a);
-    assert!(in_trash(&server, &tokens, &format!("{t17}/sw")).is_some(), "the folder is one trash item");
-    assert!(in_trash(&server, &tokens, &format!("{t17}/sw/in.txt")).is_none());
+    assert!(live.trashed_whole(&format!("{t17}/sw")), "the folder is one trash item: {:?}", live.trash_items());
     sync(&b);
     sync(&a);
     for root in [&a_root, &b_root] {
@@ -682,8 +1046,7 @@ fn a_folder_replaced_by_a_file_replaces_it_everywhere() {
 
 #[test]
 fn a_vanished_sync_folder_is_never_made_again_on_its_own() {
-    let Some(live) = Live::new("vanish") else { return };
-    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let Some(live) = Live::two_way("vanish") else { return };
     let root = live.local("A");
     let a = live.computer(&root, "Alpha");
     let file = live.p("Vanish/a.txt");
@@ -699,8 +1062,7 @@ fn a_vanished_sync_folder_is_never_made_again_on_its_own() {
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(!root.exists(), "the folder is not made again");
-    let listed = execute(&tokens.authorize(dav::list(&server, &live.p("Vanish")))).unwrap();
-    assert!(dav::parse_list(&listed).unwrap().iter().any(|e| e.path == file), "nothing deleted in the cloud");
+    assert!(live.list(&live.p("Vanish")).iter().any(|e| e.path == file), "nothing deleted in the cloud");
 
     // Put back, it syncs again.
     std::fs::rename(live.local("Elsewhere"), &root).unwrap();
@@ -708,16 +1070,9 @@ fn a_vanished_sync_folder_is_never_made_again_on_its_own() {
     assert_eq!(read(&root.join(&file)), "still here");
 }
 
-/// The kept versions of a cloud file.
-fn versions_of(server: &ServerUrl, tokens: &Tokens, path: &str) -> Vec<craftcloud_core::api::versions::Version> {
-    use craftcloud_core::api::versions;
-    versions::parse_list(&execute(&tokens.authorize(versions::list(server, path))).unwrap()).unwrap()
-}
-
 #[test]
 fn versions_follow_renames_and_are_kept_once() {
-    let Some(live) = Live::new("hist") else { return };
-    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let Some(live) = Live::two_way("hist") else { return };
     let root = live.local("A");
     let a = live.computer(&root, "Alpha");
     let (doc, renamed) = (live.p("Hist/doc.txt"), live.p("Hist/renamed.txt"));
@@ -726,29 +1081,38 @@ fn versions_follow_renames_and_are_kept_once() {
     sync(&a);
     write(&root.join(&doc), "two");
     sync(&a);
-    let kept = versions_of(&server, &tokens, &doc);
+    let kept = live.versions_of(&doc);
     assert_eq!(kept.len(), 1);
-    // T-019: the version says when its content was written, before it was replaced.
-    let (modified, replaced) = (kept[0].modified_at().expect("the content's time is kept"), kept[0].replaced_at().unwrap());
-    assert!(modified < replaced, "{modified} < {replaced}");
+    // T-019: the version says when its content was written, before it was replaced (OxiCloud's
+    // listing carries the content's time in the version's tag; a plain listing has only the stamp).
+    if live.kind() == Kind::Oxicloud {
+        let (modified, replaced) = (kept[0].modified_at().expect("the content's time is kept"), kept[0].replaced_at().unwrap());
+        assert!(modified < replaced, "{modified} < {replaced}");
+    }
 
     // A rename takes the history along.
     std::fs::rename(root.join(&doc), root.join(&renamed)).unwrap();
     sync(&a);
-    assert_eq!(versions_of(&server, &tokens, &renamed).len(), 1, "the history moved");
-    assert!(versions_of(&server, &tokens, &doc).is_empty(), "nothing left behind");
+    assert_eq!(live.versions_of(&renamed).len(), 1, "the history moved");
+    assert!(live.versions_of(&doc).is_empty(), "nothing left behind");
 
     // So does a folder rename.
     std::fs::rename(root.join(live.p("Hist")), root.join(live.p("Hist2"))).unwrap();
     sync(&a);
-    assert_eq!(versions_of(&server, &tokens, &renamed2).len(), 1);
-    assert!(versions_of(&server, &tokens, &renamed).is_empty());
+    assert_eq!(live.versions_of(&renamed2).len(), 1);
+    assert!(live.versions_of(&renamed).is_empty());
 
-    // Keeping the same version twice (an overwrite tried again) adds nothing.
-    let mut session = craftcloud_native::session::Session::new(server.clone(), tokens.clone(), Box::new(|_| {}));
-    session.snapshot(&renamed2).unwrap();
-    session.snapshot(&renamed2).unwrap();
-    assert_eq!(versions_of(&server, &tokens, &renamed2).len(), 2, "the current bytes once, not twice");
+    // Keeping the same version twice (an overwrite tried again) adds nothing. (A server whose
+    // version tags carry no content hash can't tell the same bytes from new ones: one more
+    // version there, pruned with the rest; docs/WEBDAV-STORAGE.md § 7.5, "already_kept".)
+    live.snapshot(&renamed2);
+    live.snapshot(&renamed2);
+    let twice = live.versions_of(&renamed2).len();
+    if live.kind() == Kind::Oxicloud {
+        assert_eq!(twice, 2, "the current bytes once, not twice");
+    } else {
+        assert!((2..=3).contains(&twice), "{twice}");
+    }
 }
 
 /// A new user with `quota` bytes, named `<prefix><seconds><pid>` so a test can run again on the
@@ -765,10 +1129,10 @@ fn new_user(server: &ServerUrl, owner: &Tokens, prefix: &str, password: &str, qu
 
 #[test]
 fn a_file_too_big_for_the_quota_waits_without_holding_up_the_rest() {
-    let Some((server, user, password)) = env() else { return };
+    let Some((server, user, password)) = oxicloud_env() else { return };
     let owner = sign_in(&server, &user, &password);
     let (tiny, tokens) = new_user(&server, &owner, "tiny", "correct-horse-tiny", 100_000);
-    let live = Live::with(server.clone(), tokens, "quota");
+    let live = Live::oxicloud_with(server.clone(), tokens, "quota");
     let root = live.local("T");
     let t = live.computer(&root, "Tiny");
     sync(&t);
@@ -798,10 +1162,10 @@ fn a_file_too_big_for_the_quota_waits_without_holding_up_the_rest() {
 
 #[test]
 fn room_freed_by_emptying_the_trash_is_used_once_counted() {
-    let Some((server, user, password)) = env() else { return };
+    let Some((server, user, password)) = oxicloud_env() else { return };
     let owner = sign_in(&server, &user, &password);
     let (_, tokens) = new_user(&server, &owner, "roomy", "correct-horse-roomy", 100_000);
-    let live = Live::with(server.clone(), tokens.clone(), "room");
+    let live = Live::oxicloud_with(server.clone(), tokens.clone(), "room");
     let root = live.local("R");
     let r = live.computer(&root, "Roomy");
     let (first, second) = (live.p("Box/first.bin"), live.p("Box/second.bin"));
@@ -837,8 +1201,7 @@ fn room_freed_by_emptying_the_trash_is_used_once_counted() {
 
 #[test]
 fn an_interrupted_download_resumes_where_it_stopped() {
-    let Some(live) = Live::new("resume") else { return };
-    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let Some(live) = Live::two_way("resume") else { return };
     let (a_root, b_root) = (live.local("A"), live.local("B"));
     let a = live.computer(&a_root, "Alpha");
     let (big, movie) = (live.p("Big"), live.p("Big/movie.bin"));
@@ -849,8 +1212,7 @@ fn an_interrupted_download_resumes_where_it_stopped() {
     sync(&a);
 
     // B got the first half before the connection dropped: its part file, named after the version.
-    let listed = dav::parse_list(&execute(&tokens.authorize(dav::list(&server, &big))).unwrap()).unwrap();
-    let etag = listed.iter().find(|e| e.path == movie).and_then(|e| e.etag.clone()).unwrap();
+    let etag = live.list(&big).iter().find(|e| e.path == movie).and_then(|e| e.etag.clone()).unwrap();
     let version: String = etag.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
     std::fs::create_dir_all(b_root.join(&big)).unwrap();
     std::fs::write(b_root.join(&big).join(format!(".movie.bin.{version}.craftcloud-part")), &bytes[..120_000]).unwrap();
@@ -870,10 +1232,11 @@ struct Forwarder {
 }
 
 impl Forwarder {
-    fn to(server: &ServerUrl) -> Self {
+    /// In front of `server` (`http://host:port`, any path ignored).
+    fn to(server: &str) -> Self {
         use std::io::{Read, Write};
         use std::sync::atomic::Ordering;
-        let target = server.to_string().trim_start_matches("http://").trim_end_matches('/').to_owned();
+        let target = host_port(server);
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let silent = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -914,6 +1277,13 @@ impl Forwarder {
     }
 }
 
+/// `host:port` of an `http://` address (port 80 when it names none).
+fn host_port(url: &str) -> String {
+    let rest = url.trim_start_matches("http://");
+    let authority = rest.split('/').next().unwrap_or(rest);
+    if authority.contains(':') { authority.to_owned() } else { format!("{authority}:80") }
+}
+
 /// Waits (up to `limit`) until the sync's state is what `want` says.
 fn until(h: &Handle, limit: Duration, want: impl Fn(&SyncState) -> bool) {
     let deadline = Instant::now() + limit;
@@ -930,7 +1300,7 @@ fn until(h: &Handle, limit: Duration, want: impl Fn(&SyncState) -> bool) {
 /// Needs a short idle limit: `CRAFTCLOUD_HTTP_IDLE_SECS=5` (skipped otherwise).
 #[test]
 fn a_connection_gone_silent_goes_offline_and_recovers_by_itself() {
-    if env().is_none() {
+    if Server::from_env().is_none() {
         return;
     }
     let idle = craftcloud_native::http::idle();
@@ -938,12 +1308,10 @@ fn a_connection_gone_silent_goes_offline_and_recovers_by_itself() {
         eprintln!("skipped: set CRAFTCLOUD_HTTP_IDLE_SECS=5");
         return;
     }
-    let Some(live) = Live::new("quiet") else { return };
-    let (server, tokens) = (live.server.clone(), live.tokens.clone());
-    let forwarder = Forwarder::to(&server);
+    let Some(live) = Live::two_way("quiet") else { return };
+    let forwarder = Forwarder::to(&live.server.url);
     let root = live.local("S");
-    let plan = SyncPlan { server: forwarder.url.clone(), ..live.plan(&root, &[]) };
-    let s = live.start(plan, "Silent");
+    let s = live.start_at(live.plan(&root, &[]), "Silent", Some(&forwarder.url));
     write(&root.join(live.p("Quiet/before.txt")), "before");
     sync(&s);
 
@@ -963,15 +1331,13 @@ fn a_connection_gone_silent_goes_offline_and_recovers_by_itself() {
     // The network is back: it syncs again by itself (no restart, no command).
     forwarder.silent(false);
     until(&s, craftcloud_native::sync::INTERVAL + idle * 3 + Duration::from_secs(10), |st| *st == SyncState::UpToDate);
-    let listed = execute(&tokens.authorize(dav::list(&server, &live.p("Quiet")))).unwrap();
     let during = live.p("Quiet/during.txt");
-    assert!(dav::parse_list(&listed).unwrap().iter().any(|e| e.path == during), "the change made offline went up");
+    assert!(live.list(&live.p("Quiet")).iter().any(|e| e.path == during), "the change made offline went up");
 }
 
 #[test]
 fn names_the_cloud_cant_take_are_said_once_and_never_sent() {
-    let Some(live) = Live::new("names") else { return };
-    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let Some(live) = Live::two_way("names") else { return };
     let root = live.local("N");
     let n = live.computer(&root, "Names");
     let (slash, colon) = (live.p("Names/back\\slash.txt"), live.p("Names/a:b.txt"));
@@ -981,8 +1347,8 @@ fn names_the_cloud_cant_take_are_said_once_and_never_sent() {
     sync(&n);
     sync(&n);
     sync(&n);
-    let listed = dav::parse_list(&execute(&tokens.authorize(dav::list(&server, &live.p("Names")))).unwrap()).expect("the listing is whole");
-    let names: Vec<&str> = listed.iter().map(dav::Entry::name).collect();
+    let listed = live.list(&live.p("Names"));
+    let names: Vec<&str> = listed.iter().map(|e| e.path.rsplit('/').next().unwrap_or_default()).collect();
     assert!(names.contains(&"ok.txt") && names.contains(&"a:b.txt"), "{names:?}");
     assert!(!names.iter().any(|n| n.contains('\\')), "{names:?}");
     let p = n.progress.lock().unwrap();
@@ -990,14 +1356,13 @@ fn names_the_cloud_cant_take_are_said_once_and_never_sent() {
     assert_eq!(about(&slash, ActivityKind::Skipped), 1, "said once: {:?}", p.activity);
     assert_eq!(about(&colon, ActivityKind::Warning), 1);
     assert_eq!(p.not_synced, std::slice::from_ref(&slash), "never just \"up to date\"");
-    assert_eq!(p.left_out.get(&slash), Some(&craftcloud_core::sync::LeftOut::Name), "left out for good, not a hold");
+    assert_eq!(p.left_out.get(&slash), Some(&LeftOut::Name), "left out for good, not a hold");
     assert!(!p.activity.iter().any(|e| e.kind == ActivityKind::Error), "{:?}", p.activity);
 }
 
 #[test]
 fn a_deleted_nested_or_renamed_folder_is_one_trash_item() {
-    let Some(live) = Live::new("nested") else { return };
-    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let Some(live) = Live::two_way("nested") else { return };
     let root = live.local("A");
     let a = live.computer(&root, "Alpha");
     for dir in ["t11/top", "t11/top/a", "t11/top/a/x", "t11/top/b", "t9/fold"] {
@@ -1015,22 +1380,21 @@ fn a_deleted_nested_or_renamed_folder_is_one_trash_item() {
     std::fs::remove_dir_all(root.join(live.p("t11/top"))).unwrap();
     a.send(Command::ConfirmDeletes);
     sync(&a);
-    assert!(in_trash(&server, &tokens, &live.p("t11/top")).is_some(), "the folder is in the trash");
+    assert!(live.in_trash(&live.p("t11/top")).is_some(), "the folder is in the trash");
     for inner in ["t11/top/f1", "t11/top/a", "t11/top/a/x", "t11/top/a/x/f1", "t11/top/b"] {
-        assert!(in_trash(&server, &tokens, &live.p(inner)).is_none(), "{inner} is not a trash item of its own");
+        assert!(live.in_trash(&live.p(inner)).is_none(), "{inner} is not a trash item of its own");
     }
 
     // A folder renamed earlier: the same.
     std::fs::remove_dir_all(root.join(live.p("t9/fold-ren"))).unwrap();
     sync(&a);
-    assert!(in_trash(&server, &tokens, &live.p("t9/fold-ren")).is_some());
-    assert!(in_trash(&server, &tokens, &live.p("t9/fold-ren/f1")).is_none());
+    assert!(live.in_trash(&live.p("t9/fold-ren")).is_some());
+    assert!(live.in_trash(&live.p("t9/fold-ren/f1")).is_none());
 }
 
 #[test]
 fn the_same_bytes_written_again_are_not_uploaded_again() {
-    let Some(live) = Live::new("same") else { return };
-    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let Some(live) = Live::two_way("same") else { return };
     let (a_root, b_root) = (live.local("A"), live.local("B"));
     let a = live.computer(&a_root, "Alpha");
     let b = live.computer(&b_root, "Beta");
@@ -1044,7 +1408,7 @@ fn the_same_bytes_written_again_are_not_uploaded_again() {
     write(&a_root.join(&up), "base\n");
     sync(&a);
     assert_eq!(ups(&a, &up), 1);
-    assert!(versions_of(&server, &tokens, &up).is_empty());
+    assert!(live.versions_of(&up).is_empty());
     // Downloaded on B, the same.
     write(&b_root.join(&up), "base\n");
     sync(&b);
@@ -1057,7 +1421,7 @@ fn the_same_bytes_written_again_are_not_uploaded_again() {
 
 #[test]
 fn an_edit_made_offline_follows_a_rename_made_elsewhere() {
-    let Some(live) = Live::new("follow") else { return };
+    let Some(live) = Live::two_way("follow") else { return };
     let (a_root, b_root) = (live.local("A"), live.local("B"));
     let a = live.computer(&a_root, "Alpha");
     let b = live.computer(&b_root, "Beta");
@@ -1106,8 +1470,7 @@ fn an_edit_made_offline_follows_a_rename_made_elsewhere() {
 /// (the same folder, its id kept), not uploaded again as new files.
 #[test]
 fn discarded_cloud_deletes_come_back_from_the_trash() {
-    let Some(live) = Live::new("t38") else { return };
-    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let Some(live) = Live::two_way("t38") else { return };
     let root = live.local("A");
     let t38 = live.p("t38");
     std::fs::create_dir_all(root.join(&t38).join("data")).unwrap();
@@ -1118,20 +1481,23 @@ fn discarded_cloud_deletes_come_back_from_the_trash() {
     std::thread::sleep(Duration::from_millis(2_200));
     let a = live.computer(&root, "Alpha");
     sync(&a);
-    let top = folder_id(&server, &tokens, &t38).unwrap();
-    let data_id =
-        || children(&server, &tokens, &top).unwrap().iter().find(|r| r.kind() == Kind::Folder && r.name() == "data").map(|r| r.id().to_owned());
-    let id = data_id().unwrap();
+    let data = format!("{t38}/data");
+    let has_ids = live.kind() == Kind::Oxicloud || live.server.has_file_ids();
+    let id = live.folder_id(&data);
+    assert_eq!(id.is_some(), has_ids, "{}: {id:?}", live.server);
 
-    // Deleted in the cloud: 12 of 13 files would go here too, so the sync holds them.
-    assert!(execute(&tokens.authorize(folders::trash(&server, &id))).unwrap().is_success());
+    // Deleted in the cloud (by another client): 12 of 13 files would go here too, so the sync holds them.
+    live.trash_folder(&data);
     a.send(Command::SyncNow);
     until(&a, Duration::from_secs(60), |s| matches!(s, SyncState::MassDelete { .. }));
     a.send(Command::DiscardDeletes);
     sync(&a);
 
-    assert_eq!(data_id().as_deref(), Some(id.as_str()), "the same folder is back");
-    assert!(in_trash(&server, &tokens, &format!("{t38}/data")).is_none(), "nothing left in the trash");
+    if has_ids {
+        assert_eq!(live.folder_id(&data), id, "the same folder is back");
+    }
+    assert!(live.list(&t38).iter().any(|e| e.path == data && e.is_folder), "the folder is back");
+    assert!(live.in_trash(&data).is_none(), "nothing left in the trash");
     let p = a.progress.lock().unwrap();
     let kept = p.activity.iter().position(|e| e.detail.contains("12 put back from the cloud's trash")).expect("said what came back");
     assert!(!p.activity[kept..].iter().any(|e| e.kind == ActivityKind::Up), "nothing uploaded as new: {:?}", &p.activity[kept..]);
@@ -1142,8 +1508,7 @@ fn discarded_cloud_deletes_come_back_from_the_trash() {
 /// while it waits, and once confirmed it goes to the trash as one item.
 #[test]
 fn a_held_folder_delete_is_one_trash_item_when_confirmed() {
-    let Some(live) = Live::new("t42") else { return };
-    let (server, tokens) = (live.server.clone(), live.tokens.clone());
+    let Some(live) = Live::two_way("t42") else { return };
     let root = live.local("A");
     let (t42, many) = (live.p("t42"), live.p("t42/many"));
     std::fs::create_dir_all(root.join(&many)).unwrap();
@@ -1169,8 +1534,8 @@ fn a_held_folder_delete_is_one_trash_item_when_confirmed() {
     a.send(Command::ConfirmDeletes);
     sync(&a);
     assert!(!root.join(&many).exists());
-    assert!(in_trash(&server, &tokens, &many).is_some(), "the folder is one trash item");
-    assert!(in_trash(&server, &tokens, &format!("{many}/f0.txt")).is_none(), "its files are not trash items of their own");
+    assert!(live.in_trash(&many).is_some(), "the folder is one trash item");
+    assert!(live.in_trash(&format!("{many}/f0.txt")).is_none(), "its files are not trash items of their own");
     let p = a.progress.lock().unwrap();
     let deleted: Vec<_> = p.activity.iter().filter(|e| e.kind == ActivityKind::Deleted).collect();
     assert_eq!(deleted.len(), 1, "one row for the folder: {deleted:?}");
@@ -1179,7 +1544,7 @@ fn a_held_folder_delete_is_one_trash_item_when_confirmed() {
 
 #[test]
 fn the_ui_transport_answers_on_its_thread() {
-    let Some((server, _, _)) = env() else { return };
+    let Some((server, _, _)) = oxicloud_env() else { return };
     let mut backend = ThreadBackend::new(Arc::new(|| {}));
     backend.send(7, auth::status(&server));
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -1192,4 +1557,303 @@ fn the_ui_transport_answers_on_its_thread() {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Download only (docs/WEBDAV-STORAGE.md § 9): a server that can't guard writes (OpenCloud, Q1;
+// `rclone serve webdav`, Q2). Nothing is ever written to it; nothing is ever lost here.
+
+/// Every file and folder under `folder` in the cloud as (path, is_folder, ETag): what a cycle
+/// must leave exactly as it was.
+fn cloud_snapshot(live: &Live, folder: &str) -> Vec<(String, bool, Option<String>)> {
+    live.other().list_all(folder).into_iter().map(|e| (e.path, e.is_folder, e.etag)).collect()
+}
+
+/// Files in the local folder's own trash (`.craftcloud/trash/<entry>/<path>`): (cloud path, bytes).
+fn local_trash(root: &Path) -> Vec<(String, String)> {
+    let trash = root.join(dav::CRAFTCLOUD_DIR).join("trash");
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&trash) else { return out };
+    for entry in entries.flatten() {
+        let mut stack = vec![entry.path()];
+        while let Some(dir) = stack.pop() {
+            for item in std::fs::read_dir(&dir).unwrap().flatten() {
+                if item.path().is_dir() {
+                    stack.push(item.path());
+                } else {
+                    let rel = item.path().strip_prefix(entry.path()).unwrap().to_string_lossy().replace('\\', "/");
+                    out.push((rel, read(&item.path())));
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// How often the activity list says `path` wasn't uploaded.
+fn said_not_uploaded(h: &Handle, path: &str) -> usize {
+    h.progress.lock().unwrap().activity.iter().filter(|e| e.path == path && e.detail.contains("not uploaded")).count()
+}
+
+#[test]
+fn download_only_writes_nothing_to_the_server_and_keeps_local_changes_here() {
+    let Some(live) = Live::download_only("ro") else { return };
+    let ro = live.p("Ro");
+    {
+        let mut other = live.other();
+        other.mkdirs(&format!("{ro}/sub"));
+        assert!(matches!(other.put(&format!("{ro}/a.txt"), b"cloud a"), 201 | 204));
+        assert!(matches!(other.put(&format!("{ro}/sub/b.txt"), b"cloud b"), 201 | 204));
+    }
+    let root = live.local("D");
+    let d = live.computer(&root, "Down");
+    sync(&d);
+    assert_eq!(read(&root.join(&ro).join("a.txt")), "cloud a");
+    assert_eq!(read(&root.join(&ro).join("sub/b.txt")), "cloud b");
+    let before = cloud_snapshot(&live, &ro);
+    assert_eq!(before.len(), 3, "{before:?}");
+
+    // A change here, a new file here, a delete here: nothing of it reaches the server.
+    write(&root.join(&ro).join("a.txt"), "changed here");
+    write(&root.join(&ro).join("new here.txt"), "new here");
+    std::fs::remove_file(root.join(&ro).join("sub/b.txt")).unwrap();
+    for _ in 0..3 {
+        sync(&d);
+    }
+    assert_eq!(cloud_snapshot(&live, &ro), before, "the server is exactly as it was");
+    // The changed file stays as it is here, said once; the new one too; the deleted one comes back.
+    assert_eq!(read(&root.join(&ro).join("a.txt")), "changed here");
+    assert_eq!(read(&root.join(&ro).join("new here.txt")), "new here");
+    assert_eq!(read(&root.join(&ro).join("sub/b.txt")), "cloud b", "a file deleted here comes back from the cloud");
+    let (a, new) = (format!("{ro}/a.txt"), format!("{ro}/new here.txt"));
+    assert_eq!(said_not_uploaded(&d, &a), 1, "{:?}", d.progress.lock().unwrap().activity);
+    assert_eq!(said_not_uploaded(&d, &new), 1);
+    let p = d.progress.lock().unwrap();
+    assert_eq!(p.left_out.get(&a), Some(&LeftOut::NotUploaded));
+    assert_eq!(p.left_out.get(&new), Some(&LeftOut::NotUploaded));
+    assert!(p.not_synced.contains(&a) && p.not_synced.contains(&new), "{:?}", p.not_synced);
+    assert!(!p.activity.iter().any(|e| matches!(e.kind, ActivityKind::Up | ActivityKind::Error)), "{:?}", p.activity);
+    drop(p);
+    // Changed again here: said once more for the new version, not again for the old.
+    write(&root.join(&ro).join("a.txt"), "changed here again");
+    sync(&d);
+    sync(&d);
+    assert_eq!(said_not_uploaded(&d, &a), 2);
+    assert_eq!(cloud_snapshot(&live, &ro), before);
+}
+
+#[test]
+fn download_only_a_cloud_change_over_a_local_change_makes_a_local_conflict_copy() {
+    let Some(live) = Live::download_only("roc") else { return };
+    let roc = live.p("Roc");
+    {
+        let mut other = live.other();
+        other.mkdirs(&roc);
+        assert!(matches!(other.put(&format!("{roc}/doc.txt"), b"v1"), 201 | 204));
+    }
+    let root = live.local("D");
+    let d = live.computer(&root, "Down");
+    sync(&d);
+    assert_eq!(read(&root.join(&roc).join("doc.txt")), "v1");
+
+    // Changed here, then changed in the cloud too: the cloud version comes down, this computer's
+    // becomes a conflict copy here, and nothing goes up.
+    write(&root.join(&roc).join("doc.txt"), "edited here");
+    sync(&d);
+    let before = cloud_snapshot(&live, &roc);
+    assert!(matches!(live.other().put(&format!("{roc}/doc.txt"), b"v2 from the cloud"), 200 | 201 | 204));
+    sync(&d);
+    sync(&d);
+    assert_eq!(read(&root.join(&roc).join("doc.txt")), "v2 from the cloud");
+    let names = names_in(&root.join(&roc));
+    let copy = names.iter().find(|n| n.contains("(conflict ")).unwrap_or_else(|| panic!("{names:?}"));
+    assert!(copy.contains("Down") && copy.ends_with(".txt"), "{copy}");
+    assert_eq!(read(&root.join(&roc).join(copy)), "edited here");
+    let after = cloud_snapshot(&live, &roc);
+    assert_eq!(after.len(), 1, "the conflict copy stayed here: {after:?}");
+    assert_eq!(after[0].0, before[0].0);
+    let p = d.progress.lock().unwrap();
+    assert!(!p.activity.iter().any(|e| e.kind == ActivityKind::Up), "{:?}", p.activity);
+    assert_eq!(p.activity.iter().filter(|e| e.kind == ActivityKind::Conflict).count(), 1, "{:?}", p.activity);
+}
+
+#[test]
+fn download_only_a_file_deleted_in_the_cloud_lands_in_the_local_trash() {
+    let Some(live) = Live::download_only("rod") else { return };
+    let rod = live.p("Rod");
+    {
+        let mut other = live.other();
+        other.mkdirs(&format!("{rod}/many"));
+        assert!(matches!(other.put(&format!("{rod}/one.txt"), b"one"), 201 | 204));
+        assert!(matches!(other.put(&format!("{rod}/keep.txt"), b"keep"), 201 | 204));
+        for i in 0..12 {
+            assert!(matches!(other.put(&format!("{rod}/many/f{i}.txt"), format!("file {i}").as_bytes()), 201 | 204));
+        }
+    }
+    let root = live.local("D");
+    let d = live.computer(&root, "Down");
+    sync(&d);
+    assert_eq!(names_in(&root.join(&rod).join("many")).len(), 12);
+
+    // One file deleted in the cloud: gone from its place here, kept in the local folder's own trash.
+    assert!(matches!(live.other().delete(&format!("{rod}/one.txt"), false), 200 | 204));
+    sync(&d);
+    assert!(!root.join(&rod).join("one.txt").exists());
+    let trashed = local_trash(&root);
+    assert_eq!(trashed, [(format!("{rod}/one.txt"), "one".to_owned())], "{trashed:?}");
+    let said = d
+        .progress
+        .lock()
+        .unwrap()
+        .activity
+        .iter()
+        .any(|e| e.kind == ActivityKind::Deleted && e.path == format!("{rod}/one.txt") && e.detail.contains("kept here"));
+    assert!(said, "{:?}", d.progress.lock().unwrap().activity);
+
+    // A whole folder deleted in the cloud (12 of 13 files): held as a mass delete first, and once
+    // confirmed every file lands in the local trash, none is gone.
+    assert!(matches!(live.other().delete(&format!("{rod}/many"), true), 200 | 204));
+    d.send(Command::SyncNow);
+    until(&d, Duration::from_secs(60), |s| matches!(s, SyncState::MassDelete { .. }));
+    assert_eq!(names_in(&root.join(&rod).join("many")).len(), 12, "held: nothing moved yet");
+    d.send(Command::ConfirmDeletes);
+    sync(&d);
+    assert!(!root.join(&rod).join("many").exists(), "{:?}", names_in(&root.join(&rod)));
+    let trashed = local_trash(&root);
+    assert_eq!(trashed.len(), 13, "{trashed:?}");
+    for i in 0..12 {
+        assert!(trashed.contains(&(format!("{rod}/many/f{i}.txt"), format!("file {i}"))), "{trashed:?}");
+    }
+    assert_eq!(read(&root.join(&rod).join("keep.txt")), "keep");
+    // A file changed here since the last sync stays where it is when the cloud deletes it.
+    write(&root.join(&rod).join("keep.txt"), "changed here");
+    assert!(matches!(live.other().delete(&format!("{rod}/keep.txt"), false), 200 | 204));
+    sync(&d);
+    assert_eq!(read(&root.join(&rod).join("keep.txt")), "changed here", "a change made here is never moved away");
+    assert_eq!(local_trash(&root).len(), 13);
+}
+
+/// A small HTTP proxy in front of the server that answers 500 to every `PROPFIND` under one
+/// cloud path and passes everything else through: a listing that fails, on any server.
+struct FailingProxy {
+    url: String,
+    /// The percent-encoded URL path prefix whose listings fail, or none.
+    failing: Arc<Mutex<Option<String>>>,
+}
+
+impl FailingProxy {
+    fn to(server: &str) -> Self {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let target = host_port(server);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let failing: Arc<Mutex<Option<String>>> = Arc::default();
+        let rule = Arc::clone(&failing);
+        std::thread::spawn(move || {
+            for client in listener.incoming().flatten() {
+                let rule = Arc::clone(&rule);
+                let target = target.clone();
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(client.try_clone().unwrap());
+                    let mut client = client;
+                    // One request per connection: the answer is relayed and both sides closed.
+                    {
+                        // The request head, line by line.
+                        let mut head = Vec::new();
+                        let mut line = String::new();
+                        let mut method_path = (String::new(), String::new());
+                        let mut length = 0usize;
+                        let mut first = true;
+                        loop {
+                            line.clear();
+                            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                                return;
+                            }
+                            if first {
+                                let mut parts = line.split_whitespace();
+                                method_path = (parts.next().unwrap_or_default().to_owned(), parts.next().unwrap_or_default().to_owned());
+                                first = false;
+                            } else if let Some(v) = line.strip_prefix("Content-Length:").or_else(|| line.strip_prefix("content-length:")) {
+                                length = v.trim().parse().unwrap_or(0);
+                            } else if line.to_ascii_lowercase().starts_with("connection:") {
+                                continue;
+                            }
+                            if line == "\r\n" {
+                                break;
+                            }
+                            head.extend_from_slice(line.as_bytes());
+                        }
+                        let mut body = vec![0u8; length];
+                        reader.read_exact(&mut body).unwrap();
+                        let blocked = rule.lock().unwrap().as_ref().is_some_and(|p| method_path.0 == "PROPFIND" && method_path.1.starts_with(p));
+                        if blocked {
+                            let _ = client.write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                            return;
+                        }
+                        let Ok(mut upstream) = std::net::TcpStream::connect(&target) else { return };
+                        let mut request = head;
+                        request.extend_from_slice(b"Connection: close\r\n\r\n");
+                        request.extend_from_slice(&body);
+                        if upstream.write_all(&request).is_err() {
+                            return;
+                        }
+                        let mut answer = Vec::new();
+                        if upstream.read_to_end(&mut answer).is_err() {
+                            return;
+                        }
+                        // The server closed after the answer (asked to); so does this side.
+                        let _ = client.write_all(&answer);
+                    }
+                });
+            }
+        });
+        Self { url, failing }
+    }
+
+    /// Listings of `cloud_path` (a folder, every level under it) fail from now on, or none do.
+    fn fail_listings_under(&self, base: &Base, cloud_path: Option<&str>) {
+        *self.failing.lock().unwrap() = cloud_path.map(|p| {
+            let full = dav::url_under(base.url(), p, true);
+            full.find("://").and_then(|i| full[i + 3..].find('/').map(|j| full[i + 3 + j..].to_owned())).unwrap_or(full)
+        });
+    }
+}
+
+#[test]
+fn download_only_a_failed_listing_holds_everything_under_it() {
+    let Some(live) = Live::download_only("rol") else { return };
+    let (held, other_folder) = (live.p("Held"), live.p("Other"));
+    {
+        let mut other = live.other();
+        other.mkdirs(&format!("{held}/sub"));
+        other.mkdirs(&other_folder);
+        assert!(matches!(other.put(&format!("{held}/a.txt"), b"a"), 201 | 204));
+        assert!(matches!(other.put(&format!("{held}/sub/b.txt"), b"b"), 201 | 204));
+        assert!(matches!(other.put(&format!("{other_folder}/c.txt"), b"c"), 201 | 204));
+    }
+    let proxy = FailingProxy::to(&live.server.url);
+    let root = live.local("D");
+    let d = live.start_at(live.plan(&root, &[]), "Down", Some(&proxy.url));
+    sync(&d);
+    assert_eq!(read(&root.join(&held).join("sub/b.txt")), "b");
+
+    // The folder's listing fails while a file in it is deleted in the cloud: the pass ends without
+    // a result, nothing under the folder is taken as deleted, nothing is moved to the trash.
+    proxy.fail_listings_under(&live.server.base(), Some(&held));
+    assert!(matches!(live.other().delete(&format!("{held}/a.txt"), false), 200 | 204));
+    assert!(matches!(live.other().put(&format!("{other_folder}/c.txt"), b"c2"), 200 | 201 | 204));
+    let p = sync_ends(&d);
+    assert!(matches!(p.state, SyncState::Failed(_)), "a pass with a failed listing doesn't end up to date: {:?}", p.state);
+    assert_eq!(read(&root.join(&held).join("a.txt")), "a", "held, not deleted");
+    assert_eq!(read(&root.join(&held).join("sub/b.txt")), "b");
+    assert!(local_trash(&root).is_empty(), "{:?}", local_trash(&root));
+    assert!(!p.activity.iter().any(|e| e.kind == ActivityKind::Deleted), "{:?}", p.activity);
+
+    // Listed again, the delete is seen and the file goes to the local trash, never away.
+    proxy.fail_listings_under(&live.server.base(), None);
+    sync(&d);
+    assert!(!root.join(&held).join("a.txt").exists());
+    assert_eq!(local_trash(&root), [(format!("{held}/a.txt"), "a".to_owned())]);
+    assert_eq!(read(&root.join(&other_folder).join("c.txt")), "c2");
 }
