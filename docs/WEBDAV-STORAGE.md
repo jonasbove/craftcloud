@@ -124,7 +124,7 @@ set (`tests/other-servers/compose.yaml`), as measured with the check on connect 
 | `PUT` with `If-None-Match: *` over an existing file | 412 | 412 | 412 | **ignored: overwrites** | **ignored: overwrites** (201) | 412 |
 | `PUT` with a stale `If-Match` | 412 | 412 | 412 | 412, **not shown to be atomic** (reva#959) | **ignored: overwrites** (201) | 412 |
 | `PUT`'s ETag equals `PROPFIND`'s | yes | yes | yes | yes | yes | **no ETag in the `PUT` answer** (the listing's is used) |
-| ETag changes on every write | yes | yes | yes | yes | yes (from the modified time, also for the same bytes) | for other bytes; the same bytes keep their tag (`FileETag Digest`, below) |
+| ETag changes on every write (in a later second: Nextcloud and ownCloud reuse the tag within one second, so the checksum check of Q13 closes that window) | yes | yes in a later second; **reused within the same second** (Q13) | yes in a later second; **reused within the same second** (Q13) | yes | yes (from the modified time, also for the same bytes) | for other bytes; the same bytes keep their tag (`FileETag Digest`, below) |
 | ETag survives `MOVE` | yes | yes | yes | yes | yes | yes |
 | Folder ETags follow their contents | **not reliably** (UPSTREAM C8) | yes | yes | yes | folders have none | **no** |
 | `oc:fileid`, stable across `MOVE` | no (404) | yes | yes | yes | no | no |
@@ -607,6 +607,101 @@ As built (pull request 5, § 14's row 5; `crates/native/tests/live.rs`, `crates/
   (above) is the fix; the test set keeps Apache as a person's would be, and the suite passes there whole.
 - **No CI job** (core rule 11; § 14 row 9).
 
+As built (pull request 6, § 14's row 6; `crates/core/src/api/nextcloud.rs`, `crates/native/src/storage/profile.rs`
+and `profile/nextcloud.rs`, `crates/native/src/storage/{webdav,probe}.rs`, `apps/craftcloud/src/cli/{account,check,remote,webdav}.rs`):
+
+- **The profile hook.** `storage::profile::ServerProfile` is what a known kind of server adds to the generic driver,
+  every method with a default that adds nothing: the server's version string (`status.php`), the probe's
+  known-server checks of steps 16 and 17, "verify writes by checksum" (`Option<Checksum>`, Q13), the server's own
+  trash (`trash_list`, `restore`), its versions (`list_versions`, `version_download`) and its quota endpoint.
+  `profile::for_kind(Storage, &Base)` gives the kind's profile (`Generic` for a server nobody knows);
+  `WebDav::connect_with` and `WebDav::with_profile` take it. The driver asks the profile for the trash only where the
+  check confirmed `Trash::Server` (a `DELETE` then lands in the server's trash: a file's with `If-Match`, a folder's
+  after `cloud_holds`), and for the versions only where it confirmed `Versions::Server` (`keep_version` and
+  `move_versions` are then no-ops; the server keeps them by file id). The ownCloud and OpenCloud profiles (rows 7
+  and 8) plug into the same hook.
+- **The probe on another DAV root.** A known-server check's `Request` may name a `root` (the trash bin, the
+  versions) and, for a restore, `restores` (the cloud path the server said the item came from). The runner's
+  `guarded` takes the probe's folder and allows on such a root only a listing, a `GET`, and a `MOVE` from
+  `trash/<name>` to `restore/<name>` of an item whose origin is inside the probe's own folder (no `Overwrite: F`
+  there: the restore address is the server's endpoint, not a name in the person's tree, and Nextcloud 31 answers
+  412 to the header, measured);
+  a `DELETE` there (purging the person's trash, Q8), any other write, or a `MOVE` anywhere else is refused
+  (measured: Nextcloud 31 does move a trashed item to any destination under the files base, so the guard matters).
+  `Learnt` carries `d_exists` and `c_bytes` for the checks.
+- **Nextcloud's profile** knows: the files base `/remote.php/dav/files/<user id>/` (the user id from
+  `current-user-principal`; the login name can differ); the trash bin and its restore `MOVE`; the versions by file
+  id (the listing names the current file among them, which `list_versions` leaves out by its modified time; a
+  restore is a guarded write, below); the OCS
+  user endpoint's `quota.free` (`-3`: no limit); `status.php` for the version string; `missing_parent` 404
+  (recorded by the probe as before). Step 16 deletes the probe's `d.txt`, finds it in the trash bin by its
+  original location, restores it and reads it back; step 17 overwrites `c.txt` once more (in a later second) and
+  needs an earlier version besides the current in the listing. Without a profile, or on a server whose trash bin
+  doesn't answer, both stay `Client`. The answers are recorded in `crates/core/tests/fixtures/nextcloud-31/`
+  (status, Login Flow start and pending poll, OCS user, principal, a folder listing with checksums, a file
+  written without one, versions, the trash bin; the finished poll is the public documentation's shape).
+- **The version tag (Q13, the other direction).** On a profile that verifies writes, everything the driver hands
+  the engine as a file's ETag is `"<etag>";sha1:<hex>` when the server lists a SHA1 for the file, and the bare ETag
+  when it lists none (`WebDav::version_tag`): in `list` (so in `still_at` and `cloud_holds` too), in what a write
+  answers (its ETag with the checksum it sent, after the read-back showed the server lists it) and in a
+  download's `ETag` (from the same `GET`'s `OC-Checksum`, never a second look). `If-Match` always gets the bare ETag
+  (`server_etag`). So a write by someone else that landed within the same second as a write this client synced,
+  and therefore under the ETag it saved, still changes the tag (another checksum, or none), and `reconcile` sees
+  a cloud change exactly as for a new ETag: their bytes come down, or become a conflict copy against a local edit;
+  a guard on the old tag (a trash, a move) doesn't hold. Nothing in the engine, `reconcile` or the saved state's
+  shape changed: the tag lives in the state's existing `etag` string (0.2.0 reads the file as before, § 12), the
+  generic profile and OxiCloud's driver keep bare ETags (a test pins the generic driver's), and the golden logs
+  are identical. A state saved for a Nextcloud by an earlier build of this opt-in holds bare ETags for files it
+  uploaded with a checksum: those come down once more (same bytes), then settle.
+- **A version restore is a guarded write, on every server.** A profile only names where a version's bytes are
+  read (`version_download`, a `GET`); the driver (`WebDav::restore_server_version`) reads the file's version tag,
+  reads the version, and writes it back with its guarded `replace` (`PUT` with `If-Match`, plus the checksum check
+  below). A change landing in between answers 412: nothing is restored, the newer file stays
+  (`Restored::Changed`; the command line exits with code 5, as it does for CraftCloud's own server). Nextcloud's
+  own restore (`MOVE` of the version to `…/versions/<user id>/restore/target`) is never sent: it names no version
+  of the file it replaces, so it is the unguarded write § 7.2 excludes, and since an overwrite within one second
+  leaves no version there (UPSTREAM.md E1) the bytes it replaced could be gone for good. The server keeps the
+  bytes the `PUT` replaces as a version itself. The ownCloud and OpenCloud profiles get the same path.
+- **The checksum check (Q13).** On a profile that asks for it, every `PUT` carries `OC-Checksum: SHA1:<hex>` (the
+  `sha1` crate, RustCrypto, MIT OR Apache-2.0), and after a 2xx a depth-0 listing must show that checksum among
+  `oc:checksums`; anything else is `Written::Conflict`, so the engine makes a conflict copy of the local bytes and
+  downloads the server's, and the activity list says "conflict … yours kept as …". Nextcloud stores the checksum it
+  was sent without checking it, lists it only for a file whose last `PUT` carried one, and sends none in the `PUT`'s
+  answer, so the read-back is one more request per write. The scripted server (`fake::Flags`) has
+  `etag_reused_within_second`, `checksums_from_client_only` and `other_writes_after_put` for it; the driver test and
+  the engine test show the write landing silently without the check and as a conflict copy with it.
+- **Sign-in.** `craftcloud login <server> --kind nextcloud` runs Login Flow v2 (`profile::nextcloud::sign_in`): the
+  browser opens the server's page, the client polls (404 until done, every second, twenty minutes at most) and
+  stores the login name and the app password made for this device, listed on the server under the client's
+  `User-Agent` ("CraftCloud on <host>"). With `--user NAME` an app password made in Settings › Security is taken
+  instead (from `CRAFTCLOUD_APP_PASSWORD` or a prompt), which is what the live suites use. Without `--kind`, and
+  with the opt-in, a server whose `status.php` says Nextcloud is signed in to as one (detection suggests the kind;
+  the check on connect still measures everything). `logout` deletes the app password on the server
+  (`DELETE /ocs/v2.php/core/apppassword`) and then forgets it. The desktop client still refuses every other kind of
+  server until row 10.
+- **The command line** on Nextcloud: the same commands as on another WebDAV server, through the trait; `trash ls`
+  and `trash restore` show and restore the server's own trash, `versions` and `versions … restore` the server's own
+  versions; `trash rm` and `trash empty` answer "not available on this server" (code 10): purging a person's trash is
+  a permanent delete outside `.craftcloud/`, which CraftCloud never sends (Q8). `server check` says the kind and the
+  server's version, and runs the profile's steps 16 and 17.
+- **The scripted server** answers like Nextcloud with `Flags::nextcloud` (`status.php`, OCS, the Login Flow, the
+  principal, a trash bin that every `DELETE` lands in, versions kept on every overwrite, 404 for a missing parent),
+  so the profile, the probe's round trips, the driver and the engine are tested without a server; the live suite
+  (`CRAFTCLOUD_TEST_KIND=nextcloud`) connects with the profile and asserts the server's trash and versions:
+  26 of 26 against Nextcloud 31.0.14 from `tests/other-servers/compose.yaml` on 2026-11-18, in 242 s with the
+  server's trash and versions granted (and 223 s in an earlier run that still got the client's), the two tests
+  pull request 5 saw fail now and then (the renamed folder, the same bytes written again) among them both times;
+  the command line's live test 3 of 3.
+- **Measured while building this, and recorded in UPSTREAM.md E1:** Nextcloud names a version by its second, so an
+  overwrite within the same second as the write before it leaves no version of the earlier bytes (whenever two
+  writes shared a second, the ETag stayed and the versions listing had one entry). The sync never writes a file
+  twice within a second (a cycle lists first); `craftcloud put --force` right after `put` would, and the version it
+  loses is the bytes just uploaded. The live command-line test spaces those two writes on Nextcloud.
+- **Left as is:** pairing moves by `oc:fileid` in `reconcile` (Nextcloud keeps a file's ETag across a `MOVE`, § 5,
+  so renames pair by ETag as before, and the live test checks the folder's id stays); the desktop's sign-in (row
+  10); the client-trash entries a run of the generic driver may have left in a Nextcloud drive, which the profile's
+  `trash ls` doesn't list (`trash restore` still takes them by id).
+
 ## 8. How each non-negotiable is met
 
 | Non-negotiable | Server has it (honoured, measured) | Server lacks it | OpenCloud as measured |
@@ -826,6 +921,7 @@ decision is pending.
 | Q10 | **Where the work lands** | **On `main`**, one shippable pull request at a time, the new server kinds hidden and refused without an explicit opt-in until the 0.3.0 release pull request turns them on (below) | Pull requests 1 to 3 rewrite `crates/native/src/sync.rs`; on a long-lived branch every 0.2.x sync fix landing meanwhile would have to be merged by hand into moved code. The opt-in keeps a 0.2.x hotfix tagged from `main` from shipping `--kind webdav` early |
 | Q11 | **AGENTS.md said the client never sees a password** | **Amended in this change** to: "The client never asks for or stores your account password: it signs in through the server's browser sign-in, or with an app password you make on the server." (modelled on Nextcloud's public Login Flow docs) | It is already true of today's client (device flow only), and it binds the pull requests that follow |
 | Q12 | **AGENTS.md's "WebDAV `DELETE` is permanent" rule** was written for OxiCloud only | **Amended in this change** to: "A delete never removes a file for good: it goes to the server's own trash (OxiCloud: over REST; Nextcloud and ownCloud: their WebDAV `DELETE`, which the check on connect confirms lands in the trash), or to `.craftcloud/trash/` where the server has none. A folder goes as one item, so a restore brings it back whole." | It changes a non-negotiable, so it was decided on its own, not folded into Q11. The rule's meaning stays (never a permanent delete of the person's files; a folder as one item); the wording now says how each server meets it |
+| Q13 | **Nextcloud and ownCloud reuse a file's ETag within one second** (Jonas, 2026-11-18): two writes to one file within the same second can't be told apart by `If-Match`, so a second client's write could land under the first client's tag and be overwritten by its next edit. Two-way sync or not? | **Two-way stays on, and the window is closed by a checksum check.** On these profiles every `PUT` (create and overwrite) carries `OC-Checksum: SHA1:<hex>`; afterwards the server's `oc:checksums` of the file must be that checksum, else the server holds someone else's write under our tag and the engine makes a **conflict copy** of the local bytes, never a silent overwrite, and says so. That closes the window after our write; the other direction (someone else's write lands within the same second as a write this client already synced, so the ETag this client saved still matches and its next `If-Match` would pass) is closed in the listing: on these profiles a file's **version tag is its ETag plus the SHA1 the server lists**, and a tag that differs from the saved one is a cloud change like any other (downloaded, or a conflict copy when the local file changed too). The driver does the check behind the profile's "verify writes by checksum" switch, so ownCloud (row 7) shares the code | Pull request 3 measured it with `curl`: Nextcloud 31 and ownCloud 10.15 keep the tag while the file's modified time in whole seconds is unchanged (3 of 3 rounds each; the file-cache scanner derives the tag from the storage mtime). The probe already waits a second between its own overwrites; the engine can't wait for other clients. Nextcloud lists `oc:checksums` only for a file whose last `PUT` carried `OC-Checksum`, and stores what it is sent without checking it (measured on 31.0.14), so the header goes on every `PUT` and a mismatch, or no checksum at all, means another write; any write without the header (the web page, another client) clears the listed checksum, also when the ETag stays (5 of 5 same-second rounds on 2026-11-18), and a `GET` answers the stored checksum in `OC-Checksum`, so the tag of downloaded bytes comes from the same answer. What stays open: two writes within one second that both carry no checksum and that this client synced in between, which a one-second window makes all but impossible for a sync that lists first. A test against the scripted server reusing the tag shows the write landing silently without the check and a conflict copy with it. UPSTREAM.md E1 proposes a fresh ETag on every write; nothing is filed |
 
 ### The opt-in until 0.3.0 (Q10)
 

@@ -372,3 +372,41 @@ as the Craft apps' releases. These would let it call the shared workflow instead
 > - per-target switches (`has-flatpak`, `has-windows-arm64`, `has-linux-aarch64`), as `has-arch` already is;
 > - optionally, a `notes-file` input and an attestation step.
 
+## E. Nextcloud (github.com/nextcloud/server)
+
+CraftCloud syncs with Nextcloud through its WebDAV, trash bin, versions and OCS endpoints, unmodified; the Nextcloud
+profile is `crates/native/src/storage/profile/nextcloud.rs`. Nothing below is filed.
+
+### E1. A file overwritten within the same second keeps its ETag
+
+> **Two `PUT`s to one file within one second answer the same ETag, so `If-Match` can't tell them apart**
+>
+> Seen on 2026-11-17 and 2026-11-18 with Nextcloud 31.0.14 (and ownCloud 10.15), with `curl`: a `PUT` that
+> overwrites a file within the same second as the write before it answers, and lists, the ETag the earlier write
+> had (3 of 3 rounds). The file cache derives the tag from the storage's modified time in whole seconds, so two
+> writes in one second look like one version. A second client that writes right behind the first gets the first
+> client's tag; the first client's next `PUT` with `If-Match` on that tag then succeeds and overwrites the second
+> client's bytes, which a precondition is there to prevent.
+>
+> The versions have the same grain: a version is named by its second, and an overwrite within the same second as
+> the write before it leaves **no** version of the earlier bytes (6 tries on 2026-11-18: whenever the two writes
+> shared a second, the ETag stayed and the versions listing had one entry). So on Nextcloud "the old bytes are
+> kept before an overwrite" holds only for writes a second apart. CraftCloud's sync never writes a file twice
+> within a second (a cycle lists first); `craftcloud put --force` right after `put` would, and the version it
+> loses is the bytes the person just uploaded.
+>
+> It cuts both ways. A write right behind ours hides under our tag (above). And a write right behind one we
+> already synced hides under the tag we saved: a listing shows the same ETag, so a sync client sees no change,
+> never downloads it, and its own next overwrite passes `If-Match`.
+>
+> CraftCloud works around the ETag part (docs/WEBDAV-STORAGE.md § 16, Q13). For the second direction it reads a
+> file's version as its ETag plus the checksum the server lists (a write without `OC-Checksum` clears the listed
+> checksum even when the ETag stays, and a `GET` answers the stored one). For the first, every `PUT` carries `OC-Checksum: SHA1:…`, the
+> file is read back afterwards, and a listed checksum that isn't ours is taken as someone else's write and kept
+> as a conflict copy. That costs one `PROPFIND` per write and relies on the server storing the checksum it was
+> sent (which it does, without checking it: a wrong `OC-Checksum` is accepted and listed as given).
+>
+> Ask: give a file a fresh ETag on every write (a counter or a hash besides the mtime), as the ETag's contract
+> in RFC 7232 § 2.3 expects, and key versions finer than the second (or keep a same-second version under a
+> distinct name); or, failing that, verify `OC-Checksum` against the bytes received on a plain `PUT`, as the
+> chunked upload does, so a stored checksum is trustworthy.

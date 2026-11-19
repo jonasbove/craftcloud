@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Nextcloud, experimental and off.** With `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, `craftcloud login cloud.example.org
+  --kind nextcloud` signs in to a Nextcloud through the browser the way its own clients do (an app password is made
+  for this computer; your account password never reaches CraftCloud; `--user NAME` takes an app password you made
+  in Settings › Security instead), and the sync uses Nextcloud's own trash and versions once the check on connect
+  has confirmed them: a delete lands in Nextcloud's trash bin, `trash ls|restore` and `versions` work on them, and
+  `trash rm|empty` answer "not available on this server" (CraftCloud never purges a person's trash). Nextcloud
+  reuses a file's version tag when it is overwritten within the same second as the write before it, so every
+  upload carries its checksum and is read back; a write by someone else in that second is kept as a conflict copy,
+  never overwritten. `logout` deletes the app password on the server. **A new kind of server: upgrade all devices
+  together.** Every device that syncs an account on a Nextcloud must run this version or later: no earlier
+  CraftCloud can sync with one (a generic WebDAV sign-in to a Nextcloud, made with an earlier build of this opt-in,
+  keeps its client trash in `.craftcloud/trash/`; sign in again with `--kind nextcloud`).
 - **`craftcloud versions … restore` never overwrites a newer file.** The restore now writes the kept version only if
   the file is still the one it saw; a change made meanwhile (another device, a Craft app) is kept and the restore
   says so (exit code 5). The web's restore already worked this way. Nothing else needs care when updating: the

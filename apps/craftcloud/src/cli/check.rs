@@ -8,10 +8,11 @@
 //! `craftcloud_core::storage::probe::checks`, which the desktop's "What was checked" reuses.
 
 use craftcloud_core::api::auth;
-use craftcloud_core::storage::probe::{Profile, StoredCheck, checks};
+use craftcloud_core::storage::probe::{StoredCheck, checks};
 use craftcloud_core::storage::{Capabilities, mode_for};
 use craftcloud_native::http::execute;
-use craftcloud_native::storage::probe::{self, Limits, save_check};
+use craftcloud_native::storage::probe::{Limits, save_check};
+use craftcloud_native::storage::webdav;
 use serde_json::json;
 
 use super::output::{CliError, Result, print_json};
@@ -50,23 +51,27 @@ pub fn server_check(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
-/// The check on connect against another WebDAV server, run now and saved for the sync.
+/// The check on connect against another WebDAV server (with its profile's known-server checks,
+/// steps 16 and 17, where the kind has a profile), run now and saved for the sync.
 fn webdav_check(ctx: &Ctx) -> Result<()> {
     let mut session = ctx.app_password_session()?;
+    let profile = ctx.profile()?;
     let base = session.base().clone();
-    let verdict = probe::run(&mut session, &base, &probe::folder_name(), Profile::default(), Limits::default());
+    let (verdict, version) = webdav::probe_with(&mut session, &base, profile.as_ref(), Limits::default());
     if session.signed_out {
         return Err(CliError::transport(craftcloud_native::session::APP_PASSWORD_REFUSED.into()));
     }
     let now = jiff::Timestamp::now().strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let check = StoredCheck::from_verdict(&verdict, base.url(), "", &now);
+    let check = StoredCheck::from_verdict(&verdict, base.url(), version.as_deref().unwrap_or(""), &now);
     if let Some(dir) = ctx.dir() {
         save_check(&dir, &check).map_err(CliError::error)?;
     }
+    let kind = profile.kind();
     if ctx.json {
         return print_json(&json!({
             "server": base.url(),
-            "kind": "webdav",
+            "kind": kind.as_str(),
+            "server_version": check.server_version,
             "mode": check.mode.as_str(),
             "measured": true,
             "checked_at": check.checked_at,
@@ -76,7 +81,10 @@ fn webdav_check(ctx: &Ctx) -> Result<()> {
         }));
     }
     println!("server  {}", base.url());
-    println!("kind    another WebDAV server");
+    match kind {
+        craftcloud_core::sync::Storage::Webdav => println!("kind    another WebDAV server"),
+        other => println!("kind    {} {}", other.words(), check.server_version),
+    }
     match &check.refused_because {
         Some(why) => println!("mode    {} ({why})", check.mode.words()),
         None => println!("mode    {} (measured now)", check.mode.words()),
