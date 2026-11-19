@@ -358,6 +358,16 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/server-logs"
           docker compose logs --no-color "$SERVER" > "$RUNNER_TEMP/server-logs/$SERVER.log" 2>&1 || true
+          # Nextcloud's and ownCloud's own log says why a request answered 500; the container's
+          # output has only the web server's access log.
+          case "$SERVER" in
+            nextcloud) app_log=/var/www/html/data/nextcloud.log ;;
+            owncloud) app_log=/mnt/data/files/owncloud.log ;;
+            *) app_log="" ;;
+          esac
+          if [ -n "$app_log" ]; then
+            docker compose exec -T "$SERVER" cat "$app_log" > "$RUNNER_TEMP/server-logs/$SERVER-app.log" 2>/dev/null || true
+          fi
           echo "::group::$SERVER"
           tail -n 200 "$RUNNER_TEMP/server-logs/$SERVER.log"
           echo "::endgroup::"
