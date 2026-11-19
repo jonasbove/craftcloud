@@ -102,6 +102,16 @@ kept versions and the client-trash entries it made when it ends (on Nextcloud an
 trash too). What the check on connect leaves in the server's trash (one probe folder per probe, § 16, Q8)
 stays, as it would for a person.
 
+## In CI
+
+The `other-servers` job of `.github/workflows/ci.yml` runs both suites against each service above, one matrix
+entry per service: it starts only that service from this compose file with a random password made in the job,
+waits for the test account's WebDAV folder to list, and runs `cli_live` and `live` with the variables above
+(`CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` for that job only). It runs on pull requests and pushes that touch the sync,
+the storage drivers, the live tests, this folder or the workflow, every night, and by hand
+(`gh workflow run ci.yml`). A change to a service here (a new image digest, another port) is tried by that job on
+its own pull request; a new service needs a matrix entry there.
+
 ## Tear down
 
 ```sh

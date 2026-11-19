@@ -66,6 +66,7 @@ against the other kinds of server, one at a time: `tests/other-servers/compose.y
 OpenCloud, `rclone serve webdav` and Apache `mod_dav` (images pinned by digest, loopback only), and the same
 `live` and `cli_live` suites run against each with `CRAFTCLOUD_TEST_KIND` and `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`.
 [Its README](tests/other-servers/README.md) has the commands per server and what each is expected to get.
+CI's `other-servers` job does the same on a pull request that touches the sync, the storage drivers or those tests.
 
 ## What the bot does
 

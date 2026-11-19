@@ -258,6 +258,11 @@ README's Status section in step.
   `scripts/smoke-test` (`KEEP=1`) and runs `apps/craftcloud/tests/cli_live.rs` and `crates/native/tests/live.rs`
   against it, the server's logs kept as an artifact when they fail. Linux only: in a private repository macOS and
   Windows minutes cost 10× and 2×.
+  - `other-servers` runs the same two suites against Nextcloud, ownCloud, OpenCloud, `rclone serve webdav` and
+    Apache `mod_dav`, one matrix entry per service of `tests/other-servers/compose.yaml`, with
+    `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` set for that job only. It runs when the `changes` job finds the sync, the
+    storage drivers, the live tests, the test servers or `ci.yml` among the changed files, every night (the only
+    job the nightly run has) and by hand.
 - `.github/workflows/release.yml` (**Release**, replaces the old `desktop.yml`): on `v*` tags and by hand, the
   Craft apps' release file set from `packaging/` (Linux AppImage, deb, rpm, tar.gz, Flatpak and Arch packages for
   x86_64 and aarch64; Windows x64 and arm64 MSI and portable zip; a universal macOS DMG; FreeBSD and Linux riscv64

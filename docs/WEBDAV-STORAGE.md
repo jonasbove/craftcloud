@@ -605,7 +605,7 @@ As built (pull request 5, § 14's row 5; `crates/native/tests/live.rs`, `crates/
   `DirectorySlash`, on by default); the HTTP layer followed the redirect as a `GET` without the `Authorization`
   header, and `AppPasswordSession` read the 401 as a revoked password. 4b's "Redirects are never followed"
   (above) is the fix; the test set keeps Apache as a person's would be, and the suite passes there whole.
-- **No CI job** (core rule 11; § 14 row 9).
+- **No CI job** in this pull request (core rule 11); pull request 9 adds it (§ 13, "CI").
 
 ## 8. How each non-negotiable is met
 
@@ -768,6 +768,62 @@ token is then the WebDAV password). A plain WebDAV server's WebDAV password is t
 today's `live` job. The repository is public, so Linux minutes are free; it runs on pull requests that touch
 `crates/core/src/{storage,reconcile,names}*`, `crates/native/src/{storage,sync}*` or the live tests, nightly, and
 by hand. The OxiCloud `live` job keeps running on every pull request, unchanged.
+
+As built (pull request 9, § 14's row 9; `.github/workflows/ci.yml`):
+
+- **Five matrix entries, not four:** one per service of `tests/other-servers/compose.yaml`. The kind `webdav`
+  runs twice, against `rclone serve webdav` (`CRAFTCLOUD_TEST_MODE=download_only`) and Apache `mod_dav`
+  (`two_way`), since the two plain servers get different modes and both paths need a server. Each entry starts
+  only its own service, with one random password made in the job (masked, never printed), then waits: for
+  Nextcloud and ownCloud first for `status.php` to say the install is done, asked without signing in, then
+  everywhere for the test account's WebDAV folder to list (207). A server that doesn't come up fails the entry
+  with its logs kept; nothing is tried again. Then `cli_live` and `live`, both whatever the first one's result.
+- **The trigger is a `changes` job, not a `paths` filter.** A built-in `paths` filter works on the whole
+  workflow and would stop `gate` and `live` too, and a workflow file of its own couldn't be run by hand before
+  it was on `main`. `changes` reads the changed files (a pull request's against its base, a push's against the
+  commit before) and `other-servers` runs when one is under `crates/core/src/{storage,reconcile,names,sync,http}*`,
+  `crates/core/src/api/dav*`, `crates/native/src/{storage,sync,session,http,experimental}*`,
+  `crates/native/tests/`, `apps/craftcloud/tests/`, `tests/other-servers/` or is `ci.yml` itself: the list above
+  plus the code every request to these servers goes through. When the files can't be read it runs.
+- **Nightly** (03:17 UTC) the workflow runs `other-servers` only; the other jobs skip a scheduled run and are
+  otherwise as they were. By hand (`gh workflow run ci.yml`) everything runs.
+- **The opt-in** (`CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, § 16) is in that job's environment and nowhere else in
+  the workflows.
+- **Until the profiles land** (rows 6 to 8) every entry runs the generic driver, as pull request 5's suite
+  does. The matrix needs no change when they land: the entries name the kinds already, and the suite picks what
+  it checks by kind.
+- **Times** on GitHub's Linux runners (the first run, 2026-11-19; each entry whole, of which three to five
+  minutes are the build packages and the test build): Nextcloud 8 min 44 s (the sync suite 201 s), Apache
+  8 min 16 s (156 s), ownCloud 7 min 40 s (180 s), `rclone` 6 min 18 s (45 s), OpenCloud 4 min 28 s (60 s). 26
+  sync tests and 3 command-line tests passed on each. The entries run side by side; with two runs sharing the
+  runners an entry took up to 14 minutes.
+- **Known: the Nextcloud entry fails more often than not** (4 of the first 6 runs; the other four servers
+  passed all 6). Each time one two-way test failed, one of two, at the point where both computers have work in
+  the same folder: the test asks them for passes in turn, but each also runs cycles of its own, and on
+  Nextcloud the two met. From Nextcloud's access log and its own log, kept by the job:
+  - `a_renamed_folder_is_one_move_and_keeps_its_id`, first time: while A's pass was uploading its edit of
+    `Proj2/a.txt` (the old version copied, the `PUT` not yet sent), B moved `Proj2/` to `Proj3/` on the server.
+    A's `PUT` answered 412, as it must; A uploaded the edit to `Proj3/a.txt` in its next pass, after B's. Nothing
+    was lost; B was one pass behind at the check.
+  - The same test, second time: B's `MOVE` of `Proj2/` answered **500** while A's `PUT` into it was under way
+    (Nextcloud's log: `"/…-Proj2" is locked`, a `LockedException`). B then made `Proj3/` itself in the same pass,
+    moved `Sub/b.txt` into it, uploaded its own old `a.txt` there as a new file and trashed `Proj2/Sub/`. The
+    cloud ended with two folders, `Proj2/a.txt` holding A's edit and `Proj3/a.txt` the old text, which A then
+    downloaded. No bytes were lost, but one folder became two. Whether a folder move the server refuses should
+    end the pass for that folder is a question for the engine, not for this job.
+  - `a_folder_replaced_by_a_file_replaces_it_everywhere`, twice: Nextcloud answered **500** to A's `PUT` of
+    `sf/a.txt`, in the same second as the file `sf` was moved to the client trash and the folder `sf/` made
+    (its log: `file_put_contents(…/sf/<id>.part): Failed to open stream: No such file or directory`: `sf` was
+    not yet a folder on its disk). The same `PUT` answered 201 two seconds later, in A's next pass, after B's.
+    Whether the client sent the `PUT` before the `MKCOL` had answered, or Nextcloud answered the `MKCOL` early,
+    the access log (which has no start times) doesn't say.
+
+  The job doesn't try a failed test again, and nothing in it can make these pass: they are for the suite (let
+  both computers settle before a check) and the engine or Nextcloud's profile (what a 500 from a locked folder
+  means), in pull requests of their own.
+- **Logs kept on a failure:** the container's output (for Nextcloud and ownCloud that is the web server's access
+  log, every request with its status) and, for those two, the server's own log file (`nextcloud.log`,
+  `owncloud.log`), 7 days.
 
 ## 14. Order of work
 
