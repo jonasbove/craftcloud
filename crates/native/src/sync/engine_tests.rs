@@ -1277,6 +1277,44 @@ fn webdav_a_folder_move_the_server_cant_do_right_now_waits_and_is_one_move_next_
     }
 }
 
+/// A second folder moved into the new name of one whose move waits: it waits too. Done now, its
+/// move would make the new name in the cloud (as its parent), and the first folder could never
+/// be moved there as one any more.
+#[test]
+fn webdav_a_folder_moved_into_one_whose_move_waits_waits_with_it() {
+    let (server, dav) = scripted(Flags::default());
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let mut engine = webdav_engine(&server, root, two_way());
+    renamed_folder_scene(&mut engine, &dav);
+    {
+        let mut dav = dav.lock().unwrap();
+        dav.add_folder("X", None);
+        dav.add_file("X/x.txt", b"abcde");
+    }
+    let etag = engine.storage.list("X").unwrap().into_iter().find(|e| e.path == "X/x.txt").unwrap().etag.unwrap();
+    let mut state = synced_state(root);
+    let moved = write(root, "Proj2/Y/x.txt", "abcde");
+    state.files.insert("X/x.txt".into(), Known { etag, ..as_synced(&moved) });
+    state.folders.insert("X".into());
+    save_saved(&engine.state_path(), &Saved { server: engine.plan.server.clone(), state, ..Saved::default() }).unwrap();
+
+    dav.lock().unwrap().flags.answers_once.push(("MOVE".into(), 500));
+    engine.cycle(Deletes::Hold);
+    let wrote = writes(&server);
+    assert!(wrote.len() == 1 && wrote[0].starts_with("MOVE ") && wrote[0].ends_with("/Proj/"), "only the move that failed: {wrote:?}");
+    assert!(!dav.lock().unwrap().has("Proj2") && dav.lock().unwrap().has("X/x.txt"), "{:?}", dav.lock().unwrap().folders());
+    let saved = synced_state(root);
+    assert!(saved.files.contains_key("X/x.txt") && saved.folders.contains("X") && saved.folders.contains("Proj"), "{saved:?}");
+
+    engine.cycle(Deletes::Hold);
+    let wrote = writes(&server)[1..].to_vec();
+    assert!(!wrote.iter().any(|w| w.starts_with("PUT ") || w.starts_with("DELETE ") || w.contains("/trash")), "{wrote:?}");
+    let dav = dav.lock().unwrap();
+    assert_eq!(dav.body("Proj2/Y/x.txt"), Some(b"abcde".as_slice()), "{wrote:?}");
+    assert!(!dav.has("Proj") && !dav.has("X") && dav.has("Proj2/Sub/b.txt"), "{:?}", dav.folders());
+}
+
 /// The same when the server never answers the `MOVE` at all (the connection closes): no answer
 /// says nothing about the folder, so it is not rebuilt.
 #[test]

@@ -782,6 +782,16 @@ impl<S: RemoteStorage> Engine<S> {
             if touches(&m.from) || touches(&m.to) {
                 continue;
             }
+            // Nor around a folder whose move waits: a move into its new name would make that
+            // folder in the cloud (as a parent), and the next pass couldn't plan the waiting move
+            // any more. It waits with it.
+            let overlaps = |place: &str| {
+                waiting.iter().any(|(from, to): &(String, String)| [from.as_str(), to.as_str()].iter().any(|w| within(w, place) || within(place, w)))
+            };
+            if overlaps(&m.from) || overlaps(&m.to) {
+                waiting.push((m.from.clone(), m.to.clone()));
+                continue;
+            }
             self.update(|p| p.current = format!("move folder {} to {}", m.from, m.to));
             let done = match m.side {
                 reconcile::Side::Local => self.move_remote_folder(&m.from, &m.to, remote),
