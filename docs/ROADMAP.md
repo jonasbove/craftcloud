@@ -116,6 +116,17 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-19: CI (M9, pull request 9 of [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14): the live suites against the
+  other servers run in CI. A new `other-servers` job in `ci.yml` has one matrix entry per service of
+  `tests/other-servers/compose.yaml` (Nextcloud 31, ownCloud 10.15, OpenCloud 9.1.1, `rclone serve webdav`,
+  Apache `mod_dav`): it starts that one server with a random password made in the job, waits for the test
+  account's WebDAV folder to list, and runs `cli_live` and `live` with `CRAFTCLOUD_TEST_KIND` and the mode the
+  server must get, `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` set for that job only; the server's logs are kept when it
+  fails. It runs on pull requests and pushes that touch the sync, the storage drivers, the live tests, the test
+  servers or the workflow (a small `changes` job reads the changed files, since a `paths` filter would stop the
+  gate too), every night, and by hand. The OxiCloud `live` job and the gate run as before, except that they skip
+  the nightly run. The first run: all five green, 26 sync tests and 3 command-line tests each, between 4 min 28 s
+  (OpenCloud) and 8 min 44 s (Nextcloud) an entry, side by side.
 - 2026-11-18: Tests (M9, pull request 5 of [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14): the live suite against
   other servers. `crates/native/tests/live.rs` takes `CRAFTCLOUD_TEST_KIND` (`oxicloud` by default, the suite CI
   runs, unchanged; `nextcloud`, `owncloud`, `opencloud`, `webdav`, each only with `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`,
