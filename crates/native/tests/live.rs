@@ -630,10 +630,9 @@ fn synced(h: &Handle) -> SyncProgress {
 fn settle(handles: &[&Handle]) {
     let mut quiet = 0;
     for _ in 0..10 {
-        let done = handles.iter().all(|h| {
-            let p = synced(h);
-            p.files_done == 0 && p.unsynced.is_empty()
-        });
+        // Every computer syncs in every round, whatever the one before it did.
+        let passes: Vec<SyncProgress> = handles.iter().map(|h| synced(h)).collect();
+        let done = passes.iter().all(|p| p.files_done == 0 && p.unsynced.is_empty());
         quiet = if done { quiet + 1 } else { 0 };
         if quiet == 2 {
             return;
