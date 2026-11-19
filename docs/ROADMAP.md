@@ -126,10 +126,10 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   servers or the workflow (a small `changes` job reads the changed files, since a `paths` filter would stop the
   gate too), every night, and by hand. The OxiCloud `live` job and the gate run as before, except that they skip
   the nightly run. The first run: all five green, 26 sync tests and 3 command-line tests each, between 4 min 28 s
-  (OpenCloud) and 8 min 44 s (Nextcloud) an entry, side by side. Known: the Nextcloud entry failed in 2 of the
-  first 4 runs, one two-way test each time: a change of the first computer reached the server only in its last
-  pass, after the second computer's (once its upload met the other computer's folder move and answered 412, once
-  Nextcloud answered 500 to an upload and took it two seconds later;
+  (OpenCloud) and 8 min 44 s (Nextcloud) an entry, side by side. Known: the Nextcloud entry failed in 3 of the
+  first 5 runs, one two-way test each time: a change of the first computer reached the server only in its last
+  pass, after the second computer's (once its upload met the other computer's folder move and answered 412, twice
+  Nextcloud answered 500 to an upload into a folder made that second and took it two seconds later;
   [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 13, as built). The job doesn't retry; the suite needs a fix of its own.
 - 2026-11-18: Tests (M9, pull request 5 of [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14): the live suite against
   other servers. `crates/native/tests/live.rs` takes `CRAFTCLOUD_TEST_KIND` (`oxicloud` by default, the suite CI
