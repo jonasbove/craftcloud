@@ -923,24 +923,30 @@ As built (pull request 9, § 14's row 9; `.github/workflows/ci.yml`):
   8 min 16 s (156 s), ownCloud 7 min 40 s (180 s), `rclone` 6 min 18 s (45 s), OpenCloud 4 min 28 s (60 s). 26
   sync tests and 3 command-line tests passed on each. The entries run side by side; with two runs sharing the
   runners an entry took up to 14 minutes.
-- **Known: the Nextcloud entry fails now and then** (3 of the first 5 runs; the other four servers passed all 5).
-  Each time one two-way test, a different one, found the second computer without a change the first had made,
-  because that change reached the server only in the first computer's last pass, after the second's. From
-  Nextcloud's access log, kept by the job:
-  - `a_renamed_folder_is_one_move_and_keeps_its_id`: while A's pass was uploading its edit of `Proj2/a.txt` (the
-    old version copied, the `PUT` not yet sent), B, on a cycle of its own, moved `Proj2/` to `Proj3/` on the
-    server. A's `PUT` answered 412, as it must; A uploaded the edit to `Proj3/a.txt` in its next pass. Nothing
-    was lost; the test's passes and the computers' own cycles ran into each other.
-  - `a_folder_replaced_by_a_file_replaces_it_everywhere` (twice): Nextcloud answered **500** to A's `PUT` of
-    `sf/a.txt`, in the same second as the file `sf` was moved to the client trash and the folder `sf/` made. The
-    same `PUT` answered 201 two seconds later, in A's next pass. Nextcloud's own log, kept the second time, says
-    it couldn't open its part file in the new folder (`file_put_contents(…/sf/<id>.part): Failed to open stream:
-    No such file or directory`, then Sabre's "Error while copying file to target location"): the upload arrived
-    while `sf` was not yet a folder on its disk. Whether the client sent the `PUT` before the `MKCOL` had
-    answered, or Nextcloud answered the `MKCOL` early, the access log (which has no start times) doesn't say.
+- **Known: the Nextcloud entry fails more often than not** (4 of the first 6 runs; the other four servers
+  passed all 6). Each time one two-way test failed, one of two, at the point where both computers have work in
+  the same folder: the test asks them for passes in turn, but each also runs cycles of its own, and on
+  Nextcloud the two met. From Nextcloud's access log and its own log, kept by the job:
+  - `a_renamed_folder_is_one_move_and_keeps_its_id`, first time: while A's pass was uploading its edit of
+    `Proj2/a.txt` (the old version copied, the `PUT` not yet sent), B moved `Proj2/` to `Proj3/` on the server.
+    A's `PUT` answered 412, as it must; A uploaded the edit to `Proj3/a.txt` in its next pass, after B's. Nothing
+    was lost; B was one pass behind at the check.
+  - The same test, second time: B's `MOVE` of `Proj2/` answered **500** while A's `PUT` into it was under way
+    (Nextcloud's log: `"/…-Proj2" is locked`, a `LockedException`). B then made `Proj3/` itself in the same pass,
+    moved `Sub/b.txt` into it, uploaded its own old `a.txt` there as a new file and trashed `Proj2/Sub/`. The
+    cloud ended with two folders, `Proj2/a.txt` holding A's edit and `Proj3/a.txt` the old text, which A then
+    downloaded. No bytes were lost, but one folder became two. Whether a folder move the server refuses should
+    end the pass for that folder is a question for the engine, not for this job.
+  - `a_folder_replaced_by_a_file_replaces_it_everywhere`, twice: Nextcloud answered **500** to A's `PUT` of
+    `sf/a.txt`, in the same second as the file `sf` was moved to the client trash and the folder `sf/` made
+    (its log: `file_put_contents(…/sf/<id>.part): Failed to open stream: No such file or directory`: `sf` was
+    not yet a folder on its disk). The same `PUT` answered 201 two seconds later, in A's next pass, after B's.
+    Whether the client sent the `PUT` before the `MKCOL` had answered, or Nextcloud answered the `MKCOL` early,
+    the access log (which has no start times) doesn't say.
 
-  The job doesn't try a failed test again. What the suite should do about it (let both computers settle before
-  the check, in these two tests and any like them) is a test change, for a pull request of its own.
+  The job doesn't try a failed test again, and nothing in it can make these pass: they are for the suite (let
+  both computers settle before a check) and the engine or Nextcloud's profile (what a 500 from a locked folder
+  means), in pull requests of their own.
 - **Logs kept on a failure:** the container's output (for Nextcloud and ownCloud that is the web server's access
   log, every request with its status) and, for those two, the server's own log file (`nextcloud.log`,
   `owncloud.log`), 7 days.
