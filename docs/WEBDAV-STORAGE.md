@@ -724,6 +724,26 @@ and `profile/nextcloud.rs`, `crates/native/src/storage/{webdav,probe}.rs`, `apps
 | **Interrupted downloads resume only into the same version** | `Range` with the listed ETag, as today | Without `Range`: start over | Probe |
 | **Quota** | 507 → wait, as today; free space per profile | Unknown: 507 only | WebDAV props |
 
+As built (after pull request 6; `crates/native/src/storage.rs`, `crates/native/src/sync.rs`), for "Renames and
+moves are moves" on every kind of server, CraftCloud's own included:
+
+- **A move the server can't do right now waits.** `storage::refused_for_good` lists the answers to a `MOVE` (or
+  to the `MKCOL` of its new parent) that refuse it for what it is: 400, 414, 422 (a name or request the server
+  won't take), 403, 404 (what was to move is gone), 405 and 501 (no `MOVE`), 409 (the new place's folder is
+  missing or something is in the way), 412 (the new name is taken, `Overwrite: F`). Only those let the engine sync
+  the files another way: a folder file by file (not asked again that run), a file by an upload under the new name.
+- Every other answer is "not now" and says nothing about what was to move: any other 5xx (Nextcloud 31 answers 500
+  to the `MOVE` of a folder in which another request holds a lock), 423, 429, 408, 507, and no answer. A folder
+  whose move waits is taken out of both scanned trees under its old and its new name before the plan is made, and
+  every action under either is dropped, so nothing there is uploaded, downloaded, trashed or forgotten and its files
+  never count towards a mass delete; the state keeps the folder under its old name, so the next pass plans the
+  same move. The activity list says it once, and the new name shows as not synced. A file whose move waits is an
+  error tried again next pass, its state untouched.
+- **Uploads and the trash were already so:** a 5xx to a `PUT` is an error tried again next pass (only 400, 403,
+  414, 415 and 422 wait until the file changes; 507 waits for room), and a trash that fails leaves the state as it
+  was. Nextcloud 31 answers 500 to a `PUT` into a folder made a moment before ("part file: No such file or
+  directory"); the pass after uploads it.
+
 ## 9. Download only, in detail
 
 Download only is the safe mode for a server that can't guard writes. It must still never lose a file, now on the

@@ -1,0 +1,90 @@
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/Sub/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+MOVE /webdav/Old/ | authorization: Bearer a1 | destination: http://SERVER/webdav/New/ | overwrite: F
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+MOVE /webdav/Docs/a.txt | authorization: Bearer a1 | destination: http://SERVER/webdav/Docs/b.txt | overwrite: F
+activity: Error "New" None the cloud couldn't move this folder from Old right now (the server answered 500); it's tried again, and nothing in it syncs until then
+activity: Error "Docs/b.txt" None couldn't move Docs/a.txt to Docs/b.txt in the cloud: the server answered 500 (not now); it's tried again
+state: UpToDate
+saved: Docs/a.txt "e1" 3
+saved: Old/1.txt "o1" 1
+saved: Old/2.txt "o2" 1
+saved: Old/3.txt "o3" 1
+saved: Old/4.txt "o4" 1
+saved: Old/5.txt "o5" 1
+saved: Old/6.txt "o6" 1
+saved: Old/Sub/x.txt "o7" 1
+saved: keep.txt "k1" 4
+saved folders: {"Docs", "Old", "Old/Sub"}
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/Sub/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+MOVE /webdav/Old/ | authorization: Bearer a1 | destination: http://SERVER/webdav/New/ | overwrite: F
+MKCOL /webdav/.craftcloud/ | authorization: Bearer a1
+MKCOL /webdav/.craftcloud/versions/ | authorization: Bearer a1
+MOVE /webdav/.craftcloud/versions/Old/ | authorization: Bearer a1 | destination: http://SERVER/webdav/.craftcloud/versions/New/ | overwrite: F
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+MOVE /webdav/Docs/a.txt | authorization: Bearer a1 | destination: http://SERVER/webdav/Docs/b.txt | overwrite: F
+MKCOL /webdav/.craftcloud/ | authorization: Bearer a1
+MKCOL /webdav/.craftcloud/versions/ | authorization: Bearer a1
+MKCOL /webdav/.craftcloud/versions/Docs/ | authorization: Bearer a1
+MOVE /webdav/.craftcloud/versions/Docs/a.txt/ | authorization: Bearer a1 | destination: http://SERVER/webdav/.craftcloud/versions/Docs/b.txt/ | overwrite: F
+GET /webdav/New/1.txt | authorization: Bearer a1
+activity: Moved "New" None folder, from Old
+activity: Moved "Docs/b.txt" Some(3) from Docs/a.txt
+activity: Down "New/1.txt" Some(16) 
+state: UpToDate
+saved: Docs/b.txt "e1" 3
+saved: New/1.txt "o9" 16
+saved: New/2.txt "o2" 1
+saved: New/3.txt "o3" 1
+saved: New/4.txt "o4" 1
+saved: New/5.txt "o5" 1
+saved: New/6.txt "o6" 1
+saved: New/Sub/x.txt "o7" 1
+saved: keep.txt "k1" 4
+saved folders: {"Docs", "New", "New/Sub"}
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Docs/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/New/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/New/Sub/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+state: UpToDate
+saved: Docs/b.txt "e1" 3
+saved: New/1.txt "o9" 16
+saved: New/2.txt "o2" 1
+saved: New/3.txt "o3" 1
+saved: New/4.txt "o4" 1
+saved: New/5.txt "o5" 1
+saved: New/6.txt "o6" 1
+saved: New/Sub/x.txt "o7" 1
+saved: keep.txt "k1" 4
+saved folders: {"Docs", "New", "New/Sub"}
+== end
+local: Docs/ ""
+local: Docs/b.txt "abc"
+local: New/ ""
+local: New/1.txt "edited elsewhere"
+local: New/2.txt "2"
+local: New/3.txt "3"
+local: New/4.txt "4"
+local: New/5.txt "5"
+local: New/6.txt "6"
+local: New/Sub/ ""
+local: New/Sub/x.txt "x"
+local: keep.txt "keep"
+cloud: Docs/b.txt e1 "abc"
+cloud: New/1.txt o9 "edited elsewhere"
+cloud: New/2.txt o2 "2"
+cloud: New/3.txt o3 "3"
+cloud: New/4.txt o4 "4"
+cloud: New/5.txt o5 "5"
+cloud: New/6.txt o6 "6"
+cloud: New/Sub/x.txt o7 "x"
+cloud: keep.txt k1 "keep"
+cloud folders: [".craftcloud", ".craftcloud/versions", ".craftcloud/versions/Docs", "Docs", "New", "New/Sub"]

@@ -2,7 +2,7 @@
 
 **Stage: early alpha** · version 0.2.0 (share links and version history on the web, the Windows fixes, server hardening)
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-18 · **Change:** minor (version 0.2.0; M9 moves to
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-19 · **Change:** minor (version 0.2.0; M9 moves to
 > 0.3.0; M9 pull requests 1 to 6, the sync engine behind a storage trait, sync modes, the check on connect with `craftcloud server check`, the generic WebDAV driver, the client trash's retention, the Nextcloud profile, the trash and version commands and the runtime watch, all behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in); on Linux the tray counts as up only while a tray
 > host is on the bus, so closing the window on stock GNOME quits instead of leaving an invisible client; a start at
 > login stays in the tray on Windows and X11, and opens the window where there is no tray; an offline desktop window waits before asking who is signed in again; the
@@ -116,6 +116,16 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-19: Sync: a move the server can't do right now is tried again, never rebuilt as a copy. Found by the live
+  suite on Nextcloud, which answered 500 ("locked") to the `MOVE` of a renamed folder while another device was
+  writing into it; the client then built the folder again beside the old one. `storage::refused_for_good` names
+  the answers that refuse a move for what it is (400, 403, 404, 405, 409, 412, 414, 422, 501: files then sync one
+  by one, as before); every other answer, and no answer, is "not now": the folder is set aside for the pass under
+  both names (nothing uploaded, downloaded, trashed or forgotten, no mass delete asked about, the state kept), said
+  once in the activity list, and moved by one `MOVE` on a later pass. One renamed file likewise. On CraftCloud's
+  own server too. Tests: the scripted servers answer a `MOVE` or a `PUT` with a status once
+  (`Flags::answers_once`), over both drivers, and a new golden log; the two live tests that failed sync until
+  nothing changes (`settle`) instead of counting passes, since two computers are at the server at once there.
 - 2026-11-18: Sync (M9, pull request 6 of [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14): Nextcloud. A profile hook
   on the generic driver (`storage::profile::ServerProfile`: the server's version string, the probe's known-server
   checks of steps 16 and 17, "verify writes by checksum", the server's own trash, versions and quota endpoint) and
