@@ -605,7 +605,7 @@ As built (pull request 5, § 14's row 5; `crates/native/tests/live.rs`, `crates/
   `DirectorySlash`, on by default); the HTTP layer followed the redirect as a `GET` without the `Authorization`
   header, and `AppPasswordSession` read the 401 as a revoked password. 4b's "Redirects are never followed"
   (above) is the fix; the test set keeps Apache as a person's would be, and the suite passes there whole.
-- **No CI job** (core rule 11; § 14 row 9).
+- **No CI job** in this pull request (core rule 11); pull request 9 adds it (§ 13, "CI").
 
 As built (pull request 6, § 14's row 6; `crates/core/src/api/nextcloud.rs`, `crates/native/src/storage/profile.rs`
 and `profile/nextcloud.rs`, `crates/native/src/storage/{webdav,probe}.rs`, `apps/craftcloud/src/cli/{account,check,remote,webdav}.rs`):
@@ -894,6 +894,34 @@ token is then the WebDAV password). A plain WebDAV server's WebDAV password is t
 today's `live` job. The repository is public, so Linux minutes are free; it runs on pull requests that touch
 `crates/core/src/{storage,reconcile,names}*`, `crates/native/src/{storage,sync}*` or the live tests, nightly, and
 by hand. The OxiCloud `live` job keeps running on every pull request, unchanged.
+
+As built (pull request 9, § 14's row 9; `.github/workflows/ci.yml`):
+
+- **Five matrix entries, not four:** one per service of `tests/other-servers/compose.yaml`. The kind `webdav`
+  runs twice, against `rclone serve webdav` (`CRAFTCLOUD_TEST_MODE=download_only`) and Apache `mod_dav`
+  (`two_way`), since the two plain servers get different modes and both paths need a server. Each entry starts
+  only its own service, with one random password made in the job (masked, never printed), then waits: for
+  Nextcloud and ownCloud first for `status.php` to say the install is done, asked without signing in, then
+  everywhere for the test account's WebDAV folder to list (207). A server that doesn't come up fails the entry
+  with its logs kept; nothing is tried again. Then `cli_live` and `live`, both whatever the first one's result.
+- **The trigger is a `changes` job, not a `paths` filter.** A built-in `paths` filter works on the whole
+  workflow and would stop `gate` and `live` too, and a workflow file of its own couldn't be run by hand before
+  it was on `main`. `changes` reads the changed files (a pull request's against its base, a push's against the
+  commit before) and `other-servers` runs when one is under `crates/core/src/{storage,reconcile,names,sync,http}*`,
+  `crates/core/src/api/dav*`, `crates/native/src/{storage,sync,session,http,experimental}*`,
+  `crates/native/tests/`, `apps/craftcloud/tests/`, `tests/other-servers/` or is `ci.yml` itself: the list above
+  plus the code every request to these servers goes through. When the files can't be read it runs.
+- **Nightly** (03:17 UTC) the workflow runs `other-servers` only; the other jobs skip a scheduled run and are
+  otherwise as they were. By hand (`gh workflow run ci.yml`) everything runs.
+- **The opt-in** (`CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, § 16) is in that job's environment and nowhere else in
+  the workflows.
+- **Until the profiles land** (rows 6 to 8) every entry runs the generic driver, as pull request 5's suite
+  does. The matrix needs no change when they land: the entries name the kinds already, and the suite picks what
+  it checks by kind.
+- **Times** on GitHub's Linux runners (the first run, 2026-11-19; each entry whole, of which three to five
+  minutes are the build packages and the test build): Nextcloud 8 min 44 s (the sync suite 201 s), Apache
+  8 min 16 s (156 s), ownCloud 7 min 40 s (180 s), `rclone` 6 min 18 s (45 s), OpenCloud 4 min 28 s (60 s). 26
+  sync tests and 3 command-line tests passed on each. The entries run side by side.
 
 ## 14. Order of work
 
