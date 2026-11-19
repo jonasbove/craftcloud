@@ -606,10 +606,56 @@ fn sync_ends(h: &Handle) -> SyncProgress {
 /// Runs one more cycle and waits for it to finish up to date, in the sync mode this server is
 /// expected to get (docs/WEBDAV-STORAGE.md § 5, § 16): any other mode fails the test.
 fn sync(h: &Handle) {
+    synced(h);
+}
+
+/// [`sync`], and the progress it ended with.
+fn synced(h: &Handle) -> SyncProgress {
     let p = sync_ends(h);
     assert!(matches!(p.state, SyncState::UpToDate), "{:?}: {:?}", p.state, p.activity);
     let (_, expected) = RUN.get().copied().unwrap_or((Kind::Oxicloud, Mode::TwoWay));
     assert_eq!(p.mode, Some(expected), "the server got another sync mode than expected");
+    p
+}
+
+/// Syncs these computers round after round until two rounds in a row change nothing on any of
+/// them and nothing is left to try again.
+///
+/// For a change that needs more passes than a test can count: each computer also syncs on its
+/// own (its folder watch, its timer), so two of them can be at the server at once, and a server
+/// may answer "not now" to one request (Nextcloud: 500 to a `MOVE` of a folder another request
+/// holds a lock in, 500 to a `PUT` into a folder made a moment before), which the client tries
+/// again next pass. No sleep and no retry of a failed check: every pass must end up to date, and
+/// a sync that hasn't settled after ten rounds fails.
+fn settle(handles: &[&Handle]) {
+    let mut quiet = 0;
+    for _ in 0..10 {
+        let done = handles.iter().all(|h| {
+            let p = synced(h);
+            p.files_done == 0 && p.unsynced.is_empty()
+        });
+        quiet = if done { quiet + 1 } else { 0 };
+        if quiet == 2 {
+            return;
+        }
+    }
+    let left: Vec<_> = handles.iter().map(|h| h.progress.lock().unwrap().clone()).map(|p| (p.unsynced, p.activity)).collect();
+    panic!("the sync didn't settle in ten rounds: {left:#?}");
+}
+
+/// Nothing became a conflict on this computer, nothing is left unsynced, and no error stayed:
+/// on CraftCloud's own server there was none at all; on another, one is fine only when the same
+/// path synced later (the server answered "not now" once, see [`settle`]).
+fn no_conflicts_or_lasting_errors(live: &Live, h: &Handle) {
+    let p = h.progress.lock().unwrap();
+    assert!(!p.activity.iter().any(|e| e.kind == ActivityKind::Conflict), "{:?}", p.activity);
+    assert!(p.unsynced.is_empty(), "{:?}", p.unsynced);
+    for (i, e) in p.activity.iter().enumerate().filter(|(_, e)| e.kind == ActivityKind::Error) {
+        let came_right = p.activity[i + 1..].iter().any(|later| {
+            later.path == e.path && matches!(later.kind, ActivityKind::Up | ActivityKind::Down | ActivityKind::Moved | ActivityKind::Deleted)
+        });
+        assert!(live.kind() != Kind::Oxicloud && came_right, "an error that stayed: {e:?} in {:?}", p.activity);
+    }
 }
 
 /// Writes a file and waits until it counts as settled (the client waits 2 s after a write).
@@ -930,14 +976,17 @@ fn a_renamed_folder_is_one_move_and_keeps_its_id() {
     // B renames it while offline, A edits a file in it meanwhile: one folder in the end, holding the edit.
     std::fs::rename(b_root.join(&proj2), b_root.join(&proj3)).unwrap();
     write(&a_root.join(&proj2).join("a.txt"), "edited on A");
-    sync(&a);
-    sync(&b);
-    sync(&a);
+    // Both are at the server at once here (B's own pass starts with its rename), so which gets
+    // there first, and how many passes that takes, isn't the test's to say: see `settle`.
+    settle(&[&a, &b]);
     for root in [&a_root, &b_root] {
         assert_eq!(read(&root.join(&proj3).join("a.txt")), "edited on A", "{}", root.display());
         assert_eq!(read(&root.join(&proj3).join("Sub/b.txt")), "two");
         assert!(!root.join(&proj2).exists(), "{:?}", names_in(root));
+        assert_eq!(names_in(&root.join(&proj3)), ["Sub", "a.txt"], "no conflict copies");
     }
+    // One folder in the cloud too: never the new one built beside the old one.
+    assert!(live.list("").iter().all(|e| e.path != proj2), "the old name is gone from the cloud");
     if has_ids {
         assert_eq!(live.folder_id(&proj3), id);
     }
@@ -1034,16 +1083,14 @@ fn a_folder_replaced_by_a_file_replaces_it_everywhere() {
     write(&at(&a_root, "sw"), "x\n");
     sync(&a);
     assert!(live.trashed_whole(&format!("{t17}/sw")), "the folder is one trash item: {:?}", live.trash_items());
-    sync(&b);
-    sync(&a);
+    settle(&[&a, &b]);
     for root in [&a_root, &b_root] {
         assert_eq!(read(&at(root, "sw")), "x\n", "{}", root.display());
         assert_eq!(read(&at(root, "sf/a.txt")), "inside", "{}", root.display());
         assert_eq!(names_in(&root.join(&t17)), ["sf", "sw"], "no conflict copies");
     }
     for h in [&a, &b] {
-        let p = h.progress.lock().unwrap();
-        assert!(!p.activity.iter().any(|e| matches!(e.kind, ActivityKind::Error | ActivityKind::Conflict)), "{:?}", p.activity);
+        no_conflicts_or_lasting_errors(&live, h);
     }
 
     // And back, the other way round on B: the file becomes a folder again, the folder a file.
@@ -1052,16 +1099,14 @@ fn a_folder_replaced_by_a_file_replaces_it_everywhere() {
     std::fs::write(at(&b_root, "sw/again.txt"), "again").unwrap();
     std::fs::remove_dir_all(at(&b_root, "sf")).unwrap();
     write(&at(&b_root, "sf"), "a file again");
-    sync(&b);
-    sync(&a);
+    settle(&[&b, &a]);
     for root in [&a_root, &b_root] {
         assert_eq!(read(&at(root, "sw/again.txt")), "again", "{}", root.display());
         assert_eq!(read(&at(root, "sf")), "a file again", "{}", root.display());
         assert_eq!(names_in(&root.join(&t17)), ["sf", "sw"], "no conflict copies");
     }
     for h in [&a, &b] {
-        let p = h.progress.lock().unwrap();
-        assert!(!p.activity.iter().any(|e| matches!(e.kind, ActivityKind::Error | ActivityKind::Conflict)), "{:?}", p.activity);
+        no_conflicts_or_lasting_errors(&live, h);
     }
 }
 

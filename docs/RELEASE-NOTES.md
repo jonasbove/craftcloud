@@ -10,6 +10,18 @@
   file, `<release_name>-web-<version>.zip` (LoveCraft's is `lovecraft-web-…`, its id `prosecraft-rs`);
   `cargo xtask bump-apps` looks for it and the manifest check refuses an `asset` that doesn't match it. Without
   it the id is used, as before.
+- **A move the server can't do right now is tried again, never rebuilt as a copy.** When the cloud answers the
+  move of a renamed or moved folder with "not now" (any 5xx but 501, 423 Locked, 429, or no answer at all), the
+  client leaves the folder as it is and asks again on the next pass. Until then nothing under its old or its new
+  name is uploaded, downloaded or trashed, and the activity list says so once. Before, any refusal made the client
+  build the folder again under the new name, file by file, and trash the old one: no file was lost, but the folder
+  lost its id (its shares, stars and the server's versions), and when another device wrote into the folder at that
+  moment one folder became two. One renamed file is treated the same way (before, it was uploaded under the new
+  name and the old one came down again). A move refused for what it is (400, 403, 404, 405, 409, 412, 414, 422,
+  501) still syncs file by file, as before. This holds on CraftCloud's own server too: a 5xx to a `MOVE` there now
+  waits instead of copying. Nothing needs care when updating, and devices need not be upgraded together: what the
+  sync skips and how a plan is decided are unchanged, the new client only writes nothing while such a move waits,
+  and an earlier client beside it does what it always did, which every version syncs as an ordinary change.
 - **Nextcloud, experimental and off.** With `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, `craftcloud login cloud.example.org
   --kind nextcloud` signs in to a Nextcloud through the browser the way its own clients do (an app password is made
   for this computer; your account password never reaches CraftCloud; `--user NAME` takes an app password you made

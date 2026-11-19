@@ -128,8 +128,28 @@ pub enum Moved {
     Changed,
     /// The file is listed without a version, so it can't be shown to be the one given: not moved.
     Unversioned,
-    /// The server refused the move with this status.
+    /// The server didn't do the move and answered this status: for what the move is, or only for
+    /// now ([`refused_for_good`] tells them apart).
     Refused(u16),
+}
+
+/// Whether a status that answered a `MOVE` (or the `MKCOL` of its new parent) refuses it for what
+/// it is, so that asking again would get the same answer and the engine may sync the files
+/// another way (one by one):
+///
+/// - 400, 414, 422: a name or a request the server won't take;
+/// - 403: not allowed there;
+/// - 404: what was to move isn't there any more;
+/// - 405, 501: the server has no `MOVE`;
+/// - 409: the new place's folder isn't there, or something is in the way;
+/// - 412: the new name is taken (`Overwrite: F`).
+///
+/// Every other answer is "not now" and says nothing about the folder or the file: any 5xx but
+/// 501 (Nextcloud answers 500 to the move of a folder that another request holds a lock in),
+/// 423 Locked, 429, 408, 507, a sign-in that just ran out, and anything unknown. A move that got
+/// one of those is left as it is and asked again next pass, never rebuilt as a copy.
+pub fn refused_for_good(status: u16) -> bool {
+    matches!(status, 400 | 403 | 404 | 405 | 409 | 412 | 414 | 422 | 501)
 }
 
 /// What must hold for something to go to the trash.

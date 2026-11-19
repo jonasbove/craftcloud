@@ -32,7 +32,7 @@ pub use crate::session::Session;
 use crate::storage::oxicloud::OxiCloud;
 use crate::storage::probe::StoredCheck;
 use crate::storage::webdav::WebDav;
-use crate::storage::{MoveGuard, Moved, RemoteStorage, StorageError, TrashGuard, TrashItem, Trashed, Written};
+use crate::storage::{MoveGuard, Moved, RemoteStorage, StorageError, TrashGuard, TrashItem, Trashed, Written, refused_for_good};
 
 /// What the sync says while the server can't be reached (the error itself goes to the log).
 pub const OFFLINE: &str = "Can't reach the server. Trying again…";
@@ -594,7 +594,10 @@ impl<S: RemoteStorage> Engine<S> {
             }))
             .collect();
         let waiting = mid_save(&unreadable);
-        self.move_folders(&root, &mut state, &mut local, &mut remote, &kept_conflicts, &unreadable)?;
+        let waiting_moves = self.move_folders(&root, &mut state, &mut local, &mut remote, &kept_conflicts, &unreadable)?;
+        // A folder move that waits: the plan doesn't see the folder under either name (so nothing
+        // of it counts as deleted or new), and the state keeps it as it was.
+        let moving_folders = set_aside_waiting_moves(&waiting_moves, &state, &mut local, &mut remote);
         let (actions, held) = match reconcile::reconcile(&state, &local, &remote, confirm == Deletes::Confirm) {
             Ok(actions) => (actions, Vec::new()),
             Err(reconcile::Refusal::TooManyDeletes { .. }) => {
@@ -648,6 +651,7 @@ impl<S: RemoteStorage> Engine<S> {
         let actions = self.hold_moved_out(&root, &state, actions);
         let actions = self.hold_no_room(&local, actions);
         let actions = hold_unreadable(actions, &unreadable);
+        let actions = hold_waiting_moves(actions, &waiting_moves);
         let transfers: Vec<&str> = actions.iter().filter(|a| is_transfer(a)).map(action_path).collect();
         self.update(|p| {
             p.state = SyncState::Downloading;
@@ -658,10 +662,16 @@ impl<S: RemoteStorage> Engine<S> {
             for path in &transfers {
                 p.unsynced.entry((*path).to_owned()).or_insert(FileStatus::Syncing);
             }
+            // A folder whose move waits isn't synced until the move is done.
+            for (_, to) in &waiting_moves {
+                p.unsynced.insert(to.clone(), FileStatus::Error);
+            }
         });
 
         let mut folders: BTreeSet<String> = local.folders.intersection(&remote.folders).cloned().collect();
         folders.extend(held_folders(&state, &held));
+        // Still known as synced under the old name, or the next pass couldn't plan the move again.
+        folders.extend(moving_folders);
         let mut saved = Saved { server: self.plan.server.clone(), state: State::default(), kept_conflicts };
         for action in actions {
             if self.cancel.load(Ordering::Relaxed) {
@@ -741,8 +751,15 @@ impl<S: RemoteStorage> Engine<S> {
 
     /// Does the folder renames and moves of one side on the other, each as one move (see
     /// `reconcile::folder_moves`), and updates the state and the scanned trees to match, so the
-    /// plan sees each folder in its new place on both sides. A move that fails is not tried again
-    /// this run: its files then sync one by one.
+    /// plan sees each folder in its new place on both sides.
+    ///
+    /// A move the cloud refuses for what it is ([`refused_for_good`]), or one that fails
+    /// here, is not tried again this run: its files then sync one by one. A move the cloud
+    /// couldn't do right now (a 5xx, 423 Locked, no answer) says nothing about the folder: it is
+    /// returned as waiting (`from`, `to`) and asked again next pass, and this pass leaves
+    /// everything under both names alone ([`hold_waiting_moves`]). Rebuilding the folder file by
+    /// file on such an answer made two folders of one when another device wrote into it at that
+    /// moment, and lost the folder's id (its shares, stars and server-side versions).
     fn move_folders(
         &mut self,
         root: &Path,
@@ -751,10 +768,11 @@ impl<S: RemoteStorage> Engine<S> {
         remote: &mut Tree<RemoteFile>,
         kept_conflicts: &BTreeSet<String>,
         unreadable: &[Unreadable],
-    ) -> Result<(), Stop> {
+    ) -> Result<Vec<(String, String)>, Stop> {
         // Download only: a folder moved here is never moved in the cloud (and once the runtime
         // watch has tripped, two-way is off for the rest of the run).
         let mode = self.effective_mode();
+        let mut waiting = Vec::new();
         for m in reconcile::restrict_folder_moves(reconcile::folder_moves(state, local, remote), mode) {
             if self.no_folder_move.contains(&(m.from.clone(), m.to.clone())) {
                 continue;
@@ -767,10 +785,15 @@ impl<S: RemoteStorage> Engine<S> {
             self.update(|p| p.current = format!("move folder {} to {}", m.from, m.to));
             let done = match m.side {
                 reconcile::Side::Local => self.move_remote_folder(&m.from, &m.to, remote),
-                reconcile::Side::Remote => move_local_folder(root, &m.from, &m.to),
+                reconcile::Side::Remote => match move_local_folder(root, &m.from, &m.to) {
+                    Ok(()) => FolderMoved::Done,
+                    Err(e) => FolderMoved::Refused(e),
+                },
             };
+            let said = format!("move-waits:{}:{}", m.from, m.to);
             match done {
-                Ok(()) => {
+                FolderMoved::Done => {
+                    self.reported.remove(&said);
                     reconcile::move_state(state, &m.from, &m.to);
                     match m.side {
                         reconcile::Side::Local => reconcile::move_tree(remote, &m.from, &m.to),
@@ -787,35 +810,53 @@ impl<S: RemoteStorage> Engine<S> {
                         p.record(event(ActivityKind::Moved, &m.to, None, detail));
                     });
                 }
-                Err(e) => {
+                FolderMoved::Refused(e) => {
                     log::warn!("moving folder {} to {}: {e}; syncing its files one by one", m.from, m.to);
                     self.no_folder_move.insert((m.from.clone(), m.to.clone()));
                 }
+                FolderMoved::Later(e) => {
+                    log::warn!("moving folder {} to {}: {e}; left as it is and tried again next pass", m.from, m.to);
+                    if self.reported.insert(said) {
+                        let detail = format!(
+                            "the cloud couldn't move this folder from {} right now ({e}); it's tried again, and nothing in it syncs until then",
+                            m.from
+                        );
+                        self.update(|p| p.record(event(ActivityKind::Error, &m.to, None, detail)));
+                    }
+                    waiting.push((m.from.clone(), m.to.clone()));
+                }
             }
         }
-        Ok(())
+        Ok(waiting)
     }
 
     /// One `MOVE` of a folder in the cloud (its new parents made first), with everything in it.
-    fn move_remote_folder(&mut self, from: &str, to: &str, remote: &mut Tree<RemoteFile>) -> Result<(), String> {
+    fn move_remote_folder(&mut self, from: &str, to: &str, remote: &mut Tree<RemoteFile>) -> FolderMoved {
         let parents: Vec<&str> = to.match_indices('/').map(|(i, _)| &to[..i]).collect();
         for parent in parents {
             if remote.folders.contains(parent) {
                 continue;
             }
             match self.storage.make_folder(parent) {
-                Err(StorageError::Status(status)) => return Err(format!("making {parent}: the server answered {status}")),
-                made => made?,
+                Ok(()) => {}
+                Err(StorageError::Status(status)) if refused_for_good(status) => {
+                    return FolderMoved::Refused(format!("making {parent}: the server answered {status}"));
+                }
+                Err(e) => return FolderMoved::Later(format!("making {parent}: {e}")),
             }
             remote.folders.insert(parent.to_owned());
         }
-        if let Moved::Refused(status) = self.storage.move_to(from, to, MoveGuard::Folder)? {
-            return Err(format!("the server answered {status}"));
+        match self.storage.move_to(from, to, MoveGuard::Folder) {
+            Ok(Moved::Refused(status)) if refused_for_good(status) => return FolderMoved::Refused(format!("the server answered {status}")),
+            Ok(Moved::Refused(status)) => return FolderMoved::Later(format!("the server answered {status}")),
+            // No answer, or one that couldn't be read: nothing is known about the folder.
+            Err(e) => return FolderMoved::Later(e.to_string()),
+            Ok(_) => {}
         }
         if let Err(e) = self.storage.move_versions(from, to) {
             log::warn!("{e}");
         }
-        Ok(())
+        FolderMoved::Done
     }
 
     /// Leaves out uploads that didn't fit in the cloud before, while the file is unchanged and the
@@ -1168,6 +1209,11 @@ impl<S: RemoteStorage> Engine<S> {
                     log::warn!("{e}");
                 }
                 return Ok(Some((ActivityKind::Moved, format!("from {from}"))));
+            }
+            // Not now (a 5xx, 423 Locked …): the same move again next pass. Uploading the new name
+            // instead would leave the old one to come down again: two files where there was one.
+            Moved::Refused(status) if !refused_for_good(status) => {
+                return Err(format!("the server answered {status} (not now); it's tried again"));
             }
             Moved::Refused(status) => log::warn!("moving {from} to {to} in the cloud: the server answered {status}; uploading instead"),
             Moved::Unversioned => self.note_unversioned(from),
@@ -1988,6 +2034,45 @@ fn hold_unreadable(actions: Vec<Action>, unreadable: &[Unreadable]) -> Vec<Actio
         return actions;
     }
     actions.into_iter().filter(|a| !action_paths(a).iter().any(|p| unreadable.iter().any(|u| within(&u.path, p)))).collect()
+}
+
+/// What moving a folder in one move did.
+enum FolderMoved {
+    Done,
+    /// Not now (the cloud couldn't, or didn't answer): the same move again next pass.
+    Later(String),
+    /// Not like this, whenever it is asked: the files sync one by one.
+    Refused(String),
+}
+
+/// Whether `path` is under the old or the new name of a folder whose move waits.
+fn in_waiting_move(path: &str, waiting: &[(String, String)]) -> bool {
+    waiting.iter().any(|(from, to)| within(from, path) || within(to, path))
+}
+
+/// Takes the folders whose move waits (`from`, `to`) out of what was scanned on both sides, under
+/// both names, so the plan has nothing to say about them: seen there, the old name's files would
+/// count as deleted here (and a big folder would ask about a mass delete nobody made) and the new
+/// name's as new. The state keeps them; returned are its folders under the old names, which the
+/// pass must save again as they are (the next pass plans the move from them).
+fn set_aside_waiting_moves(waiting: &[(String, String)], state: &State, local: &mut Tree<LocalFile>, remote: &mut Tree<RemoteFile>) -> Vec<String> {
+    if waiting.is_empty() {
+        return Vec::new();
+    }
+    local.files.retain(|p, _| !in_waiting_move(p, waiting));
+    local.folders.retain(|p| !in_waiting_move(p, waiting));
+    remote.files.retain(|p, _| !in_waiting_move(p, waiting));
+    remote.folders.retain(|p| !in_waiting_move(p, waiting));
+    state.folders.iter().filter(|f| in_waiting_move(f, waiting)).cloned().collect()
+}
+
+/// Drops every action under the old or the new name of a folder whose move waits: nothing is
+/// uploaded, downloaded, trashed, made or forgotten there until the move is done.
+fn hold_waiting_moves(actions: Vec<Action>, waiting: &[(String, String)]) -> Vec<Action> {
+    if waiting.is_empty() {
+        return actions;
+    }
+    actions.into_iter().filter(|a| !action_paths(a).iter().any(|p| in_waiting_move(p, waiting))).collect()
 }
 
 /// A free place for a file deleted in the cloud, in the local folder's own trash (download only,
