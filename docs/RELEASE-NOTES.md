@@ -10,6 +10,14 @@
   file, `<release_name>-web-<version>.zip` (LoveCraft's is `lovecraft-web-…`, its id `prosecraft-rs`);
   `cargo xtask bump-apps` looks for it and the manifest check refuses an `asset` that doesn't match it. Without
   it the id is used, as before.
+- **A folder move that keeps failing is never given up, and says so.** A folder whose move the server can't do
+  (below) is asked for again for as long as it takes; it is never copied instead and never dropped. After the first
+  failed try the activity list says so; after the third the window ("A folder move is waiting", with a "Try again"
+  button), the tray icon (the amber "waiting" look) and a notification say it; after the fifth a last notification
+  follows, and the tries go on without another one. Tries one to three come one a pass; the fourth waits 2 minutes,
+  the fifth and every later one 5 minutes ("Sync now", "Try again" and `craftcloud sync` ask at once). `craftcloud
+  status --json` lists such folders as `waiting_moves` with their `attempts`. A move that succeeds clears the count.
+  Nothing needs care when updating: only this client's own retries and messages change.
 - **A move the server can't do right now is tried again, never rebuilt as a copy.** When the cloud answers the
   move of a renamed or moved folder with "not now" (any 5xx but 501, 423 Locked, 429, or no answer at all), the
   client leaves the folder as it is and asks again on the next pass. Until then nothing under its old or its new

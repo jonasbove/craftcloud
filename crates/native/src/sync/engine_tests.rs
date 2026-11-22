@@ -46,11 +46,28 @@ pub(super) fn engine(server: ServerUrl, root: &Path, excluded: &[&str]) -> Engin
         no_room: BTreeMap::new(),
         refused: BTreeMap::new(),
         no_folder_move: BTreeSet::new(),
+        move_tries: BTreeMap::new(),
+        now: test_now,
         platform: Platform::current(),
         parts_swept: None,
         two_way_off: false,
         _watcher: None,
     }
+}
+
+thread_local! {
+    /// How far this thread's test clock is ahead ([`test_now`]).
+    static AHEAD: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
+}
+
+/// The engines' clock in these tests: the real one, moved on by [`time_passes`] (no test sleeps).
+pub(super) fn test_now() -> std::time::Instant {
+    std::time::Instant::now() + AHEAD.get()
+}
+
+/// Moves this thread's test clock on.
+pub(super) fn time_passes(by: Duration) {
+    AHEAD.set(AHEAD.get() + by);
 }
 
 fn activity(engine: &Engine) -> Vec<ActivityEvent> {
@@ -487,6 +504,8 @@ fn engine_with(server: ServerUrl, root: &Path, caps: Capabilities) -> Engine<Wit
         no_room,
         refused,
         no_folder_move,
+        move_tries,
+        now,
         platform,
         parts_swept,
         two_way_off,
@@ -505,6 +524,8 @@ fn engine_with(server: ServerUrl, root: &Path, caps: Capabilities) -> Engine<Wit
         no_room,
         refused,
         no_folder_move,
+        move_tries,
+        now,
         platform,
         parts_swept,
         two_way_off,
@@ -639,6 +660,8 @@ fn webdav_engine(server: &FakeServer, root: &Path, caps: Capabilities) -> Engine
         no_room: BTreeMap::new(),
         refused: BTreeMap::new(),
         no_folder_move: BTreeSet::new(),
+        move_tries: BTreeMap::new(),
+        now: test_now,
         platform: Platform::current(),
         parts_swept: None,
         two_way_off: false,
@@ -1351,6 +1374,112 @@ fn webdav_a_folder_move_that_gets_no_answer_waits() {
     let before = writes(&server).len();
     engine.cycle(Deletes::Hold);
     assert_folder_moved_whole(&engine, &server, &dav, before);
+}
+
+/// A folder move the server keeps answering 500 to is asked again for as long as it takes and
+/// never rebuilt as a copy. The person is told after the first try (an error line), louder after
+/// the third (a warning line, and the move counts as stuck: the window, the tray and a
+/// notification follow that), and a last time after the fifth; the tries after that say nothing
+/// more. The fourth try waits 2 minutes, the fifth and every later one 5. When the server is well
+/// again the folder moves by one `MOVE` and the count is gone.
+#[test]
+fn webdav_a_folder_move_that_keeps_failing_is_told_three_times_spaced_out_and_never_given_up() {
+    let dav: Dav =
+        Arc::new(std::sync::Mutex::new(craftcloud_core::storage::probe::fake::FakeDav::new("/remote.php/dav/files/john", Flags::default())));
+    let (inner, down) = (Arc::clone(&dav), Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    let is_down = Arc::clone(&down);
+    let server = FakeServer::start_full(move |seen: &Seen| {
+        if seen.method == "MOVE" && is_down.load(Ordering::SeqCst) {
+            return crate::fake_server::Answer::new(500, "locked");
+        }
+        let mut dav = inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let resp = dav.answer(&seen.method, &seen.path, &seen.headers, seen.body.as_bytes());
+        let mut answer = crate::fake_server::Answer::new(resp.status, String::from_utf8_lossy(&resp.body).into_owned());
+        for (name, value) in resp.headers {
+            answer = answer.header(&name, value);
+        }
+        answer
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let mut engine = webdav_engine(&server, dir.path(), two_way());
+    renamed_folder_scene(&mut engine, &dav);
+    down.store(true, Ordering::SeqCst);
+
+    // One pass; then: how often the server was asked so far, the lines said about the folder
+    // (their kinds), and the try count shown. Every pass leaves the folder as it was.
+    let pass = |engine: &mut Engine<WebDav>| {
+        engine.cycle(Deletes::Hold);
+        let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        assert_eq!(p.state, SyncState::UpToDate, "{:?}", p.activity);
+        let wrote = writes(&server);
+        assert!(wrote.iter().all(|w| w.starts_with("MOVE ") && w.ends_with("/Proj/")), "nothing but the move is ever sent: {wrote:?}");
+        {
+            let dav = dav.lock().unwrap();
+            assert!(!dav.has("Proj2") && dav.has("Proj/Sub/b.txt"), "never rebuilt as a copy: {:?}", dav.folders());
+            assert!(!dav.folders().iter().any(|f| f.starts_with(".craftcloud/trash")), "{:?}", dav.folders());
+        }
+        let saved = synced_state(dir.path());
+        assert!(saved.files.len() == 10 && saved.folders.contains("Proj/Sub"), "the state is kept: {:?}", saved.files.keys());
+        assert!(p.pending_deletes.is_empty() && p.unsynced.contains_key("Proj2"));
+        let said: Vec<ActivityKind> = p.activity.iter().filter(|e| e.path == "Proj2").map(|e| e.kind).collect();
+        assert_eq!(p.waiting_moves.len(), 1, "{:?}", p.waiting_moves);
+        assert_eq!((p.waiting_moves[0].from.as_str(), p.waiting_moves[0].to.as_str()), ("Proj", "Proj2"));
+        assert_eq!(p.stuck_move().is_some(), p.waiting_moves[0].attempts >= 3);
+        (wrote.len(), said, p.waiting_moves[0].attempts)
+    };
+    use ActivityKind::{Error, Warning};
+    let (minute, second) = (Duration::from_secs(60), Duration::from_secs(1));
+
+    // Tries 1 to 3, one a pass: told after the first, a warning after the third.
+    assert_eq!(pass(&mut engine), (1, vec![Error], 1));
+    assert_eq!(pass(&mut engine), (2, vec![Error], 2));
+    assert_eq!(pass(&mut engine), (3, vec![Error, Warning], 3));
+    // Try 4 not before 2 minutes are over, however many passes run meanwhile.
+    assert_eq!(pass(&mut engine), (3, vec![Error, Warning], 3));
+    time_passes(2 * minute - second);
+    assert_eq!(pass(&mut engine), (3, vec![Error, Warning], 3));
+    time_passes(2 * second);
+    assert_eq!(pass(&mut engine), (4, vec![Error, Warning], 4));
+    // Try 5 not before 5 more minutes: the last notice.
+    time_passes(5 * minute - 2 * second);
+    assert_eq!(pass(&mut engine), (4, vec![Error, Warning], 4));
+    time_passes(3 * second);
+    assert_eq!(pass(&mut engine), (5, vec![Error, Warning, Warning], 5));
+    let last = activity_of(&engine, "Proj2").pop().unwrap();
+    assert!(last.contains("for as long as it takes"), "{last}");
+    // Tries 6 and 7: still asked, every 5 minutes, and nothing more is said.
+    assert_eq!(pass(&mut engine), (5, vec![Error, Warning, Warning], 5));
+    time_passes(5 * minute + second);
+    assert_eq!(pass(&mut engine), (6, vec![Error, Warning, Warning], 6));
+    time_passes(5 * minute + second);
+    assert_eq!(pass(&mut engine), (7, vec![Error, Warning, Warning], 7));
+    // "Sync now" asks at the next pass whatever the wait (what the engine's loop does on it).
+    engine.move_tries.values_mut().for_each(|(_, at)| *at = None);
+    assert_eq!(pass(&mut engine), (8, vec![Error, Warning, Warning], 8));
+
+    // The server is well again: one `MOVE`, and the count is gone with it.
+    down.store(false, Ordering::SeqCst);
+    time_passes(5 * minute + second);
+    let before = writes(&server).len();
+    engine.cycle(Deletes::Hold);
+    assert_folder_moved_whole(&engine, &server, &dav, before);
+    assert!(engine.move_tries.is_empty(), "a success resets the count");
+    let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    assert!(p.waiting_moves.is_empty() && p.stuck_move().is_none());
+
+    // The same folder renamed again, the server down again: counted from one, told again.
+    std::fs::rename(dir.path().join("Proj2"), dir.path().join("Proj3")).unwrap();
+    down.store(true, Ordering::SeqCst);
+    engine.cycle(Deletes::Hold);
+    let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    assert_eq!(p.waiting_moves.iter().map(|m| (m.to.as_str(), m.attempts)).collect::<Vec<_>>(), [("Proj3", 1)]);
+    assert_eq!(p.activity.iter().filter(|e| e.path == "Proj3").map(|e| e.kind).collect::<Vec<_>>(), [Error]);
+}
+
+/// What the activity list says about `path`, oldest first.
+fn activity_of(engine: &Engine<WebDav>, path: &str) -> Vec<String> {
+    let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner);
+    p.activity.iter().filter(|e| e.path == path).map(|e| e.detail.clone()).collect()
 }
 
 /// A server that has no `MOVE` (405) refuses for what it is, not for now: the folder still

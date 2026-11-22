@@ -23,7 +23,8 @@ use craftcloud_core::names::{self, NameRules, Platform};
 use craftcloud_core::reconcile::{self, Action, Known, LocalFile, RemoteFile, State, Tree};
 use craftcloud_core::storage::{Mode, mode_for};
 use craftcloud_core::sync::{
-    ActivityEvent, ActivityKind, ConflictCopy, FileStatus, Keep, LeftOut, SyncPlan, SyncProgress, SyncState, folder_stats, in_plan, local_relative,
+    ActivityEvent, ActivityKind, ConflictCopy, FileStatus, Keep, LeftOut, MOVE_LAST_NOTICE_AFTER, MOVE_WARNS_AFTER, SyncPlan, SyncProgress,
+    SyncState, WaitingMove, folder_stats, in_plan, local_relative, move_retry_wait,
 };
 use serde::{Deserialize, Serialize};
 
@@ -214,6 +215,8 @@ fn start_storage<S: RemoteStorage + 'static>(
             no_room: BTreeMap::new(),
             refused: BTreeMap::new(),
             no_folder_move: BTreeSet::new(),
+            move_tries: BTreeMap::new(),
+            now: Instant::now,
             platform: Platform::current(),
             parts_swept: None,
             two_way_off: false,
@@ -283,6 +286,11 @@ struct Engine<S: RemoteStorage = OxiCloud> {
     refused: BTreeMap<String, LocalFile>,
     /// Folder moves (from, to) that failed: their files are synced one by one instead.
     no_folder_move: BTreeSet<(String, String)>,
+    /// Folder moves (from, to) the cloud couldn't do yet: how often it was asked, and when last
+    /// (`None`: ask at the next pass whatever the wait, after "Sync now"). Never given up.
+    move_tries: BTreeMap<(String, String), (u32, Option<Instant>)>,
+    /// The clock the waits between those tries are measured on (a test moves its own).
+    now: fn() -> Instant,
     /// The name rules of this computer's file system (`names::Platform`).
     platform: Platform,
     /// When leftover part files were last looked for ([`sweep_stale_parts`]).
@@ -353,9 +361,17 @@ impl<S: RemoteStorage> Engine<S> {
             }
             match next {
                 // Asked for by the person: try what didn't fit again too.
-                Ok(Command::SyncNow) => self.no_room.clear(),
+                // And a waiting folder move is asked for now, whatever its wait.
+                Ok(Command::SyncNow) => {
+                    self.no_room.clear();
+                    self.move_tries.values_mut().for_each(|(_, at)| *at = None);
+                }
                 Ok(Command::LocalChange) | Err(RecvTimeoutError::Timeout) => {}
-                Ok(Command::SyncFor(n)) => ticket = n,
+                // `craftcloud sync`: the person asked too, so a waiting folder move is asked for now.
+                Ok(Command::SyncFor(n)) => {
+                    ticket = n;
+                    self.move_tries.values_mut().for_each(|(_, at)| *at = None);
+                }
                 Ok(Command::ConfirmDeletes) => confirm = Deletes::Confirm,
                 Ok(Command::DiscardDeletes) => confirm = Deletes::Discard,
 
@@ -792,6 +808,15 @@ impl<S: RemoteStorage> Engine<S> {
                 waiting.push((m.from.clone(), m.to.clone()));
                 continue;
             }
+            let key = (m.from.clone(), m.to.clone());
+            // Asked before, and the server couldn't: not asked again until its wait is over
+            // (`move_retry_wait`: longer from the fourth try on). It goes on waiting meanwhile.
+            if let Some((failed, Some(at))) = self.move_tries.get(&key)
+                && (self.now)().saturating_duration_since(*at) < move_retry_wait(*failed)
+            {
+                waiting.push(key);
+                continue;
+            }
             self.update(|p| p.current = format!("move folder {} to {}", m.from, m.to));
             let done = match m.side {
                 reconcile::Side::Local => self.move_remote_folder(&m.from, &m.to, remote),
@@ -800,10 +825,9 @@ impl<S: RemoteStorage> Engine<S> {
                     Err(e) => FolderMoved::Refused(e),
                 },
             };
-            let said = format!("move-waits:{}:{}", m.from, m.to);
             match done {
                 FolderMoved::Done => {
-                    self.reported.remove(&said);
+                    self.move_tries.remove(&key);
                     reconcile::move_state(state, &m.from, &m.to);
                     match m.side {
                         reconcile::Side::Local => reconcile::move_tree(remote, &m.from, &m.to),
@@ -822,21 +846,51 @@ impl<S: RemoteStorage> Engine<S> {
                 }
                 FolderMoved::Refused(e) => {
                     log::warn!("moving folder {} to {}: {e}; syncing its files one by one", m.from, m.to);
-                    self.no_folder_move.insert((m.from.clone(), m.to.clone()));
+                    self.move_tries.remove(&key);
+                    self.no_folder_move.insert(key);
                 }
                 FolderMoved::Later(e) => {
-                    log::warn!("moving folder {} to {}: {e}; left as it is and tried again next pass", m.from, m.to);
-                    if self.reported.insert(said) {
-                        let detail = format!(
-                            "the cloud couldn't move this folder from {} right now ({e}); it's tried again, and nothing in it syncs until then",
-                            m.from
-                        );
-                        self.update(|p| p.record(event(ActivityKind::Error, &m.to, None, detail)));
+                    let failed = self.move_tries.get(&key).map_or(0, |(n, _)| *n) + 1;
+                    self.move_tries.insert(key.clone(), (failed, Some((self.now)())));
+                    log::warn!("moving folder {} to {}: {e} (try {failed}); left as it is and tried again", m.from, m.to);
+                    // Said after the first try, louder after the third, a last time after the
+                    // fifth; then it goes on trying without another line.
+                    let from = &m.from;
+                    let note = match failed {
+                        1 => Some((
+                            ActivityKind::Error,
+                            format!(
+                                "the cloud couldn't move this folder from {from} right now ({e}); it's tried again, and nothing in it syncs until then"
+                            ),
+                        )),
+                        MOVE_WARNS_AFTER => Some((
+                            ActivityKind::Warning,
+                            format!(
+                                "the cloud still couldn't move this folder from {from} after {failed} tries ({e}); it's tried again in 2 minutes, then every 5, and nothing in it syncs until then"
+                            ),
+                        )),
+                        MOVE_LAST_NOTICE_AFTER => Some((
+                            ActivityKind::Warning,
+                            format!(
+                                "the cloud couldn't move this folder from {from} in {failed} tries ({e}); it's tried again every 5 minutes for as long as it takes, and nothing in it syncs until then. Something may be holding the folder on the server"
+                            ),
+                        )),
+                        _ => None,
+                    };
+                    if let Some((kind, detail)) = note {
+                        self.update(|p| p.record(event(kind, &m.to, None, detail)));
                     }
-                    waiting.push((m.from.clone(), m.to.clone()));
+                    waiting.push(key);
                 }
             }
         }
+        // A move that is no longer planned (done, refused, or undone by the person) starts afresh.
+        self.move_tries.retain(|key, _| waiting.contains(key));
+        let shown: Vec<WaitingMove> = waiting
+            .iter()
+            .map(|key| WaitingMove { from: key.0.clone(), to: key.1.clone(), attempts: self.move_tries.get(key).map_or(0, |(n, _)| *n) })
+            .collect();
+        self.update(|p| p.waiting_moves = shown);
         Ok(waiting)
     }
 

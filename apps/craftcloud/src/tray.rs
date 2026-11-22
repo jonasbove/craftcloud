@@ -36,6 +36,9 @@ pub struct TrayView {
     pub recent: Vec<String>,
     /// Files are going up or down (not only being checked).
     pub moving: bool,
+    /// A folder move has failed three times or more and still waits for the server
+    /// (`SyncProgress::stuck_move`): the icon warns while the sync is otherwise up to date.
+    pub stuck_move: bool,
 }
 
 /// How long a sync's check may run before the tray says "Checking…". The check every cycle that
@@ -106,6 +109,17 @@ impl Look {
             SyncState::Scanning | SyncState::Downloading => Self::Syncing,
             SyncState::Paused | SyncState::MassDelete { .. } | SyncState::SignedOut => Self::Paused,
             SyncState::Offline(_) | SyncState::FolderMissing | SyncState::Failed(_) => Self::Error,
+        }
+    }
+
+    /// [`Self::of`], with the warning look ("waiting", as for a mass delete) while the sync is
+    /// otherwise fine but a folder move has failed three times or more: part of what was changed
+    /// here isn't in the cloud, and the icon mustn't say everything is. A state with a look of
+    /// its own (syncing, offline, an error) keeps it.
+    fn with_stuck_move(state: &SyncState, stuck_move: bool) -> Self {
+        match Self::of(state) {
+            Self::UpToDate if stuck_move => Self::Paused,
+            look => look,
         }
     }
 
@@ -285,11 +299,11 @@ impl Tray {
             view.recent.clone_into(&mut self.recent_paths.lock().unwrap_or_else(PoisonError::into_inner));
             self.shown_recent = view.recent.clone();
         }
-        self.show_state(&view.state, &view.line);
+        self.show_state(&view.state, &view.line, view.stuck_move);
     }
 
-    fn show_state(&mut self, state: &SyncState, line: &str) {
-        let look = Look::of(state);
+    fn show_state(&mut self, state: &SyncState, line: &str, stuck_move: bool) {
+        let look = Look::with_stuck_move(state, stuck_move);
         if self.shown != Some(look) {
             if let Ok(icon) = draw(look) {
                 let _ = self.icon.set_icon(Some(icon));
@@ -545,7 +559,20 @@ mod tests {
     use super::{Look, MenuState, PROGRESS_EVERY, QUIET_CHECK, TrayView, show_now};
 
     fn view(state: SyncState, line: &str, moving: bool) -> TrayView {
-        TrayView { state, line: line.into(), recent: Vec::new(), moving }
+        TrayView { state, line: line.into(), recent: Vec::new(), moving, stuck_move: false }
+    }
+
+    #[test]
+    fn a_folder_move_that_keeps_failing_shows_the_waiting_look_only_while_all_else_is_fine() {
+        for (state, look) in states() {
+            assert!(Look::with_stuck_move(&state, false) == look, "{state:?}");
+            let stuck = if look == Look::UpToDate { Look::Paused } else { look };
+            assert!(Look::with_stuck_move(&state, true) == stuck, "{state:?}");
+        }
+        // The icon changes when a move gets stuck, though the state and the line could be the same.
+        let fine = view(SyncState::UpToDate, "Up to date", false);
+        let stuck = TrayView { stuck_move: true, ..fine.clone() };
+        assert!(show_now(Some(&fine), &stuck, NO_TIME, NO_TIME));
     }
 
     const NO_TIME: Duration = Duration::ZERO;

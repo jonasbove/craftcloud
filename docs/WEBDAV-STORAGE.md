@@ -739,6 +739,14 @@ moves are moves" on every kind of server, CraftCloud's own included:
   never count towards a mass delete; the state keeps the folder under its old name, so the next pass plans the
   same move. The activity list says it once, and the new name shows as not synced. A file whose move waits is an
   error tried again next pass, its state untouched.
+- **A folder move that keeps failing is never given up and never becomes a copy.** The engine counts the failed
+  tries of each waiting folder move (`SyncProgress::waiting_moves`, `attempts`). Tries one to three come one a pass;
+  the fourth waits 2 minutes after the third, the fifth and every later one 5 minutes after the one before
+  (`core::sync::move_retry_wait`; the folder stays set aside in the passes between; "Sync now" and `craftcloud
+  sync` ask at once). After the first failed try the activity list has an error line; after the third a warning
+  line, and the desktop client's window, tray icon and a notification say that a folder move is waiting; after the
+  fifth a last warning line and a last notification; nothing more is said after that, and the tries go on. A move
+  that is done, refused for what it is, or no longer planned (the person renamed the folder back) clears its count.
 - **Uploads and the trash were already so:** a 5xx to a `PUT` is an error tried again next pass (only 400, 403,
   414, 415 and 422 wait until the file changes; 507 waits for room), and a trash that fails leaves the state as it
   was. Nextcloud 31 answers 500 to a `PUT` into a folder made a moment before ("part file: No such file or

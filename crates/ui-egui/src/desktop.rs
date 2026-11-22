@@ -838,6 +838,7 @@ fn state_line(p: &SyncProgress, t: &Look) -> (String, Color32) {
         SyncState::Scanning => ("Checking…".into(), t.accent_ink),
         SyncState::Downloading if p.files_total == 0 => ("Checking…".into(), t.accent_ink),
         SyncState::Downloading => (format!("Syncing {} of {}", (p.files_done + 1).min(p.files_total), p.files_total), t.accent_ink),
+        SyncState::UpToDate if p.stuck_move().is_some() => ("A folder move is waiting".into(), t.warn),
         SyncState::UpToDate if !p.no_room.is_empty() => (format!("{} not synced", p.no_room.len() + p.not_synced.len()), t.warn),
         SyncState::UpToDate if !p.not_synced.is_empty() => (format!("Up to date · {} not synced", p.not_synced.len()), t.warn),
         SyncState::UpToDate if p.unsynced.values().any(|s| *s == craftcloud_core::sync::FileStatus::Error) => {

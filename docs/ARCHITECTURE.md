@@ -68,7 +68,9 @@ The desktop client keeps chosen server folders in a local folder, two ways.
   folder at the same relative paths is one WebDAV `MOVE` (it keeps its id, shares and stars) or one local rename.
   Changes made meanwhile on the other side move along and sync afterwards; a partial match syncs file by file. A move the
   cloud can't do right now (a 5xx, 423 Locked, no answer) is asked again next pass, and until then nothing under the
-  old or the new name syncs; only a move refused for what it is syncs file by file.
+  old or the new name syncs; only a move refused for what it is syncs file by file. A move that keeps failing is asked for
+  again for as long as it takes (after the third try with longer waits: 2 minutes, then 5), and the window, the tray
+  and a notification say so from the third try on.
 - **A deleted folder** goes to the cloud's trash as one item (so restoring it brings it back whole), when everything
   in it is unchanged in the cloud and nothing new is there; otherwise its files go one by one.
 - **Conflicts** keep both: `name (conflict YYYY-MM-DD HH.MM Device).ext`. A file on one side and a folder of the same

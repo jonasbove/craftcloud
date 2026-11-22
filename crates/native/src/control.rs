@@ -102,6 +102,12 @@ pub struct Status {
     /// saving them); the next pass syncs them. Doesn't change `state` or the exit code.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub waiting: Vec<String>,
+    /// Folders renamed or moved here whose move in the cloud the server couldn't do yet, with how
+    /// often it was asked: tried again for as long as it takes (the next pass for the first
+    /// three tries, then after 2 minutes, then every 5), never rebuilt as a copy; nothing in
+    /// them syncs until then. Doesn't change `state` or the exit code.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting_moves: Vec<WaitingMove>,
     /// What the sync may do with this server: `two_way`, `download_only` or `refused`
     /// (docs/WEBDAV-STORAGE.md § 7.3); empty until the engine's first pass, or from a client that
     /// doesn't say.
@@ -109,6 +115,16 @@ pub struct Status {
     pub mode: String,
     /// The latest activity, oldest first.
     pub activity: Vec<Activity>,
+}
+
+/// A folder move that waits for the server, in `--json` output.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitingMove {
+    /// Cloud paths: where the folder still is in the cloud, and where it is on this computer.
+    pub from: String,
+    pub to: String,
+    /// How often the server was asked and couldn't (0: it waits for another move first).
+    pub attempts: u32,
 }
 
 /// A place the sync left out, in `--json` output.
@@ -252,6 +268,7 @@ impl Status {
             no_room: p.no_room.clone(),
             failed: p.unsynced.iter().filter(|(_, s)| **s == craftcloud_core::sync::FileStatus::Error).map(|(path, _)| path.clone()).collect(),
             waiting: p.waiting.clone(),
+            waiting_moves: p.waiting_moves.iter().map(|m| WaitingMove { from: m.from.clone(), to: m.to.clone(), attempts: m.attempts }).collect(),
             mode: p.mode.map(|m| m.as_str().to_owned()).unwrap_or_default(),
             activity: p.activity[skip..].iter().map(Activity::from).collect(),
         }

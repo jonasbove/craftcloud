@@ -406,6 +406,9 @@ fn show_status(ctx: &Ctx, s: &Status) -> Result<()> {
     for n in &s.no_room {
         println!("not synced {n}  (no room in the cloud)");
     }
+    for m in &s.waiting_moves {
+        println!("not moved  {} → {}  (the server couldn't yet; asked {} times)", m.from, m.to, m.attempts);
+    }
     for n in &s.not_synced {
         println!("{}", not_synced_line(n));
     }
@@ -470,6 +473,15 @@ pub(super) fn state_words(s: &Status) -> String {
         "up_to_date" if !s.no_room.is_empty() => {
             let n = s.no_room.len();
             format!("Up to date · {n} not synced (no room in the cloud: free some, or empty the trash).")
+        }
+        "up_to_date" if !s.waiting_moves.is_empty() => {
+            let n = s.waiting_moves.len();
+            let tries = s.waiting_moves.iter().map(|m| m.attempts).max().unwrap_or(0);
+            format!(
+                "Up to date · {n} folder {} for the server ({tries} {} so far; tried again for as long as it takes, never copied).",
+                if n == 1 { "move waits" } else { "moves wait" },
+                if tries == 1 { "try" } else { "tries" }
+            )
         }
         "up_to_date" if !s.failed.is_empty() => {
             let n = s.failed.len();

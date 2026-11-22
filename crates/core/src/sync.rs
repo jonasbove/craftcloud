@@ -280,6 +280,43 @@ pub struct SyncProgress {
     /// What the sync may do with this server (docs/WEBDAV-STORAGE.md § 7.3), once the engine knows
     /// (`None` before its first cycle). Two-way on CraftCloud's own server.
     pub mode: Option<crate::storage::Mode>,
+    /// Folders renamed or moved here whose move in the cloud the server couldn't do yet: asked
+    /// again, never given up and never rebuilt as a copy; nothing in them syncs until it is done.
+    pub waiting_moves: Vec<WaitingMove>,
+}
+
+/// A folder move that waits for the server ([`SyncProgress::waiting_moves`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WaitingMove {
+    pub from: String,
+    pub to: String,
+    /// How often the server was asked and couldn't (0: it waits for another move, not asked yet).
+    pub attempts: u32,
+}
+
+/// From this many failed tries on, a waiting folder move is a warning in the window, the tray
+/// and a notification, and the tries after it are spaced out ([`move_retry_wait`]).
+pub const MOVE_WARNS_AFTER: u32 = 3;
+/// After this many failed tries the person is told a last time; the tries go on.
+pub const MOVE_LAST_NOTICE_AFTER: u32 = 5;
+
+/// How long the client waits before asking for a folder move again, after `failed` tries: the
+/// next pass for the first three, 2 minutes before the fourth, 5 minutes before the fifth and
+/// before every one after it (it never stops asking).
+pub fn move_retry_wait(failed: u32) -> std::time::Duration {
+    match failed {
+        0..MOVE_WARNS_AFTER => std::time::Duration::ZERO,
+        MOVE_WARNS_AFTER => std::time::Duration::from_secs(2 * 60),
+        _ => std::time::Duration::from_secs(5 * 60),
+    }
+}
+
+impl SyncProgress {
+    /// The waiting folder move tried most often, once one has reached [`MOVE_WARNS_AFTER`]: what
+    /// the window and the tray warn about.
+    pub fn stuck_move(&self) -> Option<&WaitingMove> {
+        self.waiting_moves.iter().filter(|m| m.attempts >= MOVE_WARNS_AFTER).max_by_key(|m| m.attempts)
+    }
 }
 
 /// Why a local place is left out of the sync ([`SyncProgress::left_out`]).

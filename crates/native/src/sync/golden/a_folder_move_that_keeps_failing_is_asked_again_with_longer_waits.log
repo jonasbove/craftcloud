@@ -1,0 +1,95 @@
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/Sub/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+MOVE /webdav/Old/ | authorization: Bearer a1 | destination: http://SERVER/webdav/New/ | overwrite: F
+activity: Error "New" None the cloud couldn't move this folder from Old right now (the server answered 500); it's tried again, and nothing in it syncs until then
+state: UpToDate
+saved: Old/1.txt "o1" 1
+saved: Old/Sub/x.txt "o2" 1
+saved: keep.txt "k1" 4
+saved folders: {"Old", "Old/Sub"}
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/Sub/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+MOVE /webdav/Old/ | authorization: Bearer a1 | destination: http://SERVER/webdav/New/ | overwrite: F
+state: UpToDate
+saved: Old/1.txt "o1" 1
+saved: Old/Sub/x.txt "o2" 1
+saved: keep.txt "k1" 4
+saved folders: {"Old", "Old/Sub"}
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/Sub/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+MOVE /webdav/Old/ | authorization: Bearer a1 | destination: http://SERVER/webdav/New/ | overwrite: F
+activity: Warning "New" None the cloud still couldn't move this folder from Old after 3 tries (the server answered 500); it's tried again in 2 minutes, then every 5, and nothing in it syncs until then
+state: UpToDate
+saved: Old/1.txt "o1" 1
+saved: Old/Sub/x.txt "o2" 1
+saved: keep.txt "k1" 4
+saved folders: {"Old", "Old/Sub"}
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/Sub/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+state: UpToDate
+saved: Old/1.txt "o1" 1
+saved: Old/Sub/x.txt "o2" 1
+saved: keep.txt "k1" 4
+saved folders: {"Old", "Old/Sub"}
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/Sub/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+MOVE /webdav/Old/ | authorization: Bearer a1 | destination: http://SERVER/webdav/New/ | overwrite: F
+state: UpToDate
+saved: Old/1.txt "o1" 1
+saved: Old/Sub/x.txt "o2" 1
+saved: keep.txt "k1" 4
+saved folders: {"Old", "Old/Sub"}
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/Sub/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+state: UpToDate
+saved: Old/1.txt "o1" 1
+saved: Old/Sub/x.txt "o2" 1
+saved: keep.txt "k1" 4
+saved folders: {"Old", "Old/Sub"}
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/Sub/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+MOVE /webdav/Old/ | authorization: Bearer a1 | destination: http://SERVER/webdav/New/ | overwrite: F
+activity: Warning "New" None the cloud couldn't move this folder from Old in 5 tries (the server answered 500); it's tried again every 5 minutes for as long as it takes, and nothing in it syncs until then. Something may be holding the folder on the server
+state: UpToDate
+saved: Old/1.txt "o1" 1
+saved: Old/Sub/x.txt "o2" 1
+saved: keep.txt "k1" 4
+saved folders: {"Old", "Old/Sub"}
+== cycle (hold)
+PROPFIND /webdav/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+PROPFIND /webdav/Old/Sub/ | authorization: Bearer a1 | depth: 1 | content-type: application/xml; charset=utf-8 | body: 165 bytes, sha256 31aa5d18b90e7446
+MOVE /webdav/Old/ | authorization: Bearer a1 | destination: http://SERVER/webdav/New/ | overwrite: F
+MKCOL /webdav/.craftcloud/ | authorization: Bearer a1
+MKCOL /webdav/.craftcloud/versions/ | authorization: Bearer a1
+MOVE /webdav/.craftcloud/versions/Old/ | authorization: Bearer a1 | destination: http://SERVER/webdav/.craftcloud/versions/New/ | overwrite: F
+activity: Moved "New" None folder, from Old
+state: UpToDate
+saved: New/1.txt "o1" 1
+saved: New/Sub/x.txt "o2" 1
+saved: keep.txt "k1" 4
+saved folders: {"New", "New/Sub"}
+== end
+local: New/ ""
+local: New/1.txt "1"
+local: New/Sub/ ""
+local: New/Sub/x.txt "x"
+local: keep.txt "keep"
+cloud: New/1.txt o1 "1"
+cloud: New/Sub/x.txt o2 "x"
+cloud: keep.txt k1 "keep"
+cloud folders: [".craftcloud", ".craftcloud/versions", "New", "New/Sub"]
