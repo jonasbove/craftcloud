@@ -3,22 +3,27 @@
 #
 #   1. install it with the system's package manager, so its dependencies resolve
 #      (apt-get for .deb, dnf for .rpm, pacman for .pkg.tar.zst; install.sh for the .tar.gz;
-#      the AppImage runs extract-and-run, as there is no FUSE in a container)
-#   2. `craftcloud --version` names the expected version and `craftcloud --help` works
+#      the AppImage runs extract-and-run, as there is no FUSE in a container; the .flatpak goes in
+#      with `flatpak install --user --bundle`, its runtime from Flathub, in a privileged container,
+#      as bubblewrap needs namespaces and mounts there)
+#   2. `craftcloud --version` names the expected version and `craftcloud --help` works (the
+#      Flatpak's inside its sandbox, through `flatpak run`)
 #   3. the files are there: the binary on PATH, the desktop entry (desktop-file-validate), the icons,
-#      the AppStream file and the craftcloud:// handler in mimeinfo.cache
+#      the AppStream file and the craftcloud:// handler in mimeinfo.cache (the Flatpak's in its
+#      exports, with the permissions the tray, keychain, notifications and sync folder need)
 #   4. with --server: a sign-in without a browser or keychain (the device code is approved over
 #      the API, as the /device page would), then mkdir, put, ls, get and `sync --once` into a
 #      temporary sync folder, comparing the bytes both ways
 #   5. with --previous: the previous release's package installed first, then upgraded to this one
 #      (skipped, with a notice, when that release is not older)
-#   6. removal: the files under /usr (or ~/.local for the .tar.gz) are gone again
+#   6. removal: the files under /usr (or ~/.local for the .tar.gz and .flatpak) are gone again
 #
 # Usage, on a machine with Docker (the release workflow's package-test job runs exactly this):
 #
 #   packaging/linux/test-package.sh --image debian:12 [--server URL] [--previous OLD-FILE] FILE
 #
-#   FILE is a release file, craftcloud-<version>-linux-<arch>.<deb|rpm|pkg.tar.zst|AppImage|tar.gz>;
+#   FILE is a release file,
+#   craftcloud-<version>-linux-<arch>.<deb|rpm|pkg.tar.zst|AppImage|tar.gz|flatpak>;
 #   the version to expect is taken from its name. The container runs with the host's network, so
 #   --server http://127.0.0.1:<port> reaches a server started on this machine, e.g. with
 #   `KEEP=1 PROJECT=craftcloud-pkgtest scripts/smoke-test craftcloud:dev 8097`. The account is
@@ -64,8 +69,13 @@ if [[ "$INSIDE" = 0 ]]; then
     mounts+=(-v "$(cd "$(dirname "$PREVIOUS")" && pwd):/pkg/old:ro")
     args+=(--previous "/pkg/old/$(basename "$PREVIOUS")")
   fi
+  # flatpak runs the app under bubblewrap, which needs to make namespaces and mounts: Docker's
+  # default seccomp and AppArmor profiles forbid that, so the Flatpak's container is privileged.
+  # It is a throwaway container, removed afterwards, that runs only the release file under test.
+  run_opts=()
+  [[ "$FILE" != *.flatpak ]] || run_opts+=(--privileged)
   echo "==> $(basename "$FILE") in $IMAGE"
-  exec docker run --rm --network host --tmpfs /tmp:exec \
+  exec docker run --rm --network host --tmpfs /tmp:exec "${run_opts[@]}" \
     -e CRAFTCLOUD_TEST_USER -e CRAFTCLOUD_TEST_PASSWORD -e GITHUB_ACTIONS \
     "${mounts[@]}" "$IMAGE" bash /test-package.sh "${args[@]}" "/pkg/new/$(basename "$FILE")"
 fi
@@ -96,15 +106,23 @@ format_of() {
     *.pkg.tar.zst) echo arch ;;
     *.AppImage) echo appimage ;;
     *.tar.gz) echo tar ;;
+    *.flatpak) echo flatpak ;;
     *) return 1 ;;
   esac
 }
 version_of() { basename "$1" | sed -n 's/^craftcloud-\(.*\)-linux-[a-z0-9_]*\..*$/\1/p'; return; }
 
-FMT="$(format_of "$FILE")" || fail "$FILE: not a .deb, .rpm, .pkg.tar.zst, .AppImage or .tar.gz"
+FMT="$(format_of "$FILE")" || fail "$FILE: not a .deb, .rpm, .pkg.tar.zst, .AppImage, .tar.gz or .flatpak"
 VERSION="$(version_of "$FILE")"
 [[ -n "$VERSION" ]] || fail "$FILE: the name is not craftcloud-<version>-linux-<arch>.<ext>"
-WORK="$(mktemp -d)"
+if [[ "$FMT" = flatpak ]]; then
+  # The sandbox has a /tmp of its own; what it shares is the home folder (--filesystem=home), so
+  # the home folder and the round trip's files must not be under /tmp.
+  mkdir -p /home
+  WORK="$(mktemp -d /home/pkgtest.XXXXXX)"
+else
+  WORK="$(mktemp -d)"
+fi
 # Copies: apt reads the file as its own user, the AppImage must be executable, the mount is read-only.
 cp "$FILE" "$WORK/"
 PKG="$WORK/$(basename "$FILE")"
@@ -126,6 +144,11 @@ debug_info() {
     deb) dpkg -l 'craftcloud*' 2>&1 | tail -n +6 || true ;;
     rpm) rpm -qi craftcloud 2>&1 | head -5 || true ;;
     arch) pacman -Qi craftcloud 2>&1 | head -5 || true ;;
+    flatpak)
+      flatpak --version 2>&1 || true
+      flatpak list --user --columns=application,version,branch,runtime 2>&1 || true
+      flatpak info --user --show-permissions "$APP_ID" 2>&1 || true
+      ;;
   esac
   local bin=""
   case "$FMT" in
@@ -158,6 +181,21 @@ case "$FMT" in
     # from today's repositories.
     pacman -Syu --noconfirm --needed desktop-file-utils curl >/dev/null
     ;;
+  flatpak)
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    # dbus: `flatpak run` needs the system bus (it fails with "Could not connect" without one) and a
+    # session bus (its D-Bus proxy); a container has neither, so both are started here.
+    apt-get install -y -qq --no-install-recommends flatpak dbus desktop-file-utils curl ca-certificates >/dev/null
+    mkdir -p /run/dbus
+    dbus-daemon --system --fork
+    export XDG_RUNTIME_DIR=/run/user/0
+    mkdir -p "$XDG_RUNTIME_DIR"
+    chmod 700 "$XDG_RUNTIME_DIR"
+    # The bundle names Flathub for its runtime (flatpak-bundle.sh's --runtime-repo).
+    flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+    ok "flatpak $(flatpak --version | cut -d' ' -f2), Flathub"
+    ;;
 esac
 ok "desktop-file-utils, curl"
 
@@ -171,6 +209,9 @@ case "$FMT" in
     chmod +x "$PKG"
     CC=(env APPIMAGE_EXTRACT_AND_RUN=1 CRAFTCLOUD_NO_DESKTOP_INTEGRATION=1 "$PKG")
     ;;
+  # In its sandbox, each run with a session bus of its own; the CRAFTCLOUD_* variables the round
+  # trip sets pass into it.
+  flatpak) CC=(dbus-run-session -- flatpak run --command=craftcloud "$APP_ID") ;;
 esac
 
 install_file() { # file
@@ -187,6 +228,8 @@ install_file() { # file
       "$WORK/unpacked/$(basename "$file" .tar.gz)/install.sh"
       ;;
     appimage) ;;
+    # --reinstall: a bundle of the same app over an installed one is how a bundle updates.
+    flatpak) flatpak install --user -y --noninteractive --reinstall --bundle "$file" ;;
   esac
   return
 }
@@ -198,13 +241,16 @@ remove_package() {
     arch) pacman -R --noconfirm craftcloud ;;
     tar) "$WORK/unpacked/$(basename "$PKG" .tar.gz)/install.sh" --remove ;;
     appimage) ;;
+    flatpak) flatpak uninstall --user -y --noninteractive "$APP_ID" ;;
   esac
   return
 }
 
 check_version() { # expected version
   local want="$1" out
-  if ! out="$("${CC[@]}" --version 2>&1)"; then
+  # Standard output only: `flatpak run` may warn on standard error (no session bus in a container).
+  if ! out="$("${CC[@]}" --version 2>"$WORK/version.err")"; then
+    cat "$WORK/version.err"
     echo "$out"
     fail "craftcloud --version didn't run"
   fi
@@ -272,6 +318,75 @@ check_appimage_integration() {
   grep -q "^Exec=\"$PKG\" %u" "$desktop" || fail "$desktop doesn't start the AppImage: $(grep '^Exec=' "$desktop")"
   [[ -f "$DATA/icons/hicolor/256x256/apps/$APP_ID.png" ]] || fail "the AppImage's first run didn't add its icons"
   ok "first run added the menu entry and icons to ~/.local/share"
+  # update-desktop-database (desktop-file-utils, installed above) is what AppRun runs for this.
+  grep -qx "x-scheme-handler/craftcloud=.*$APP_ID.desktop.*" "$DATA/applications/mimeinfo.cache" 2>/dev/null ||
+    fail "x-scheme-handler/craftcloud is not in $DATA/applications/mimeinfo.cache after the first run"
+  ok "craftcloud:// handler registered"
+  return
+}
+
+# The Flatpak: installed for the user, its menu entry, icons and handler exported to
+# ~/.local/share/flatpak/exports, its AppStream file in the app, and the permissions it ships with.
+FLATPAK_EXPORTS="$DATA/flatpak/exports/share"
+check_flatpak_files() {
+  flatpak info --user "$APP_ID" >/dev/null || fail "flatpak info doesn't know $APP_ID"
+  ok "installed: $(flatpak info --user "$APP_ID" | grep -E '^ *(Version|Runtime):' | tr -s ' ' | tr '\n' ' ')"
+  local desktop="$FLATPAK_EXPORTS/applications/$APP_ID.desktop"
+  [[ -f "$desktop" ]] || fail "$desktop missing"
+  desktop-file-validate "$desktop" || fail "$desktop doesn't validate"
+  grep -q "^Exec=.*flatpak run .*$APP_ID" "$desktop" || fail "$desktop doesn't start the Flatpak: $(grep '^Exec=' "$desktop")"
+  ok "exported desktop entry validates and runs the Flatpak"
+  local icons=("$FLATPAK_EXPORTS"/icons/hicolor/*/apps/"$APP_ID".png)
+  [[ -f "$FLATPAK_EXPORTS/icons/hicolor/256x256/apps/$APP_ID.png" && "${#icons[@]}" -ge 8 ]] ||
+    fail "icons: found ${icons[*]}"
+  ok "${#icons[@]} icons exported"
+  local meta
+  meta="$(flatpak info --user --show-location "$APP_ID")/files/share/metainfo/$APP_ID.metainfo.xml"
+  grep -q "<release version=\"$CURRENT_VERSION\"" "$meta" 2>/dev/null || fail "$meta missing or not for $CURRENT_VERSION"
+  ok "AppStream file"
+  # flatpak's desktop-database trigger runs update-desktop-database on the exports.
+  grep -qx "x-scheme-handler/craftcloud=.*$APP_ID.desktop.*" "$FLATPAK_EXPORTS/applications/mimeinfo.cache" 2>/dev/null ||
+    fail "x-scheme-handler/craftcloud is not in $FLATPAK_EXPORTS/applications/mimeinfo.cache"
+  ok "craftcloud:// handler registered"
+  # What the tray, the keychain, the notifications and the sync folder need (the manifest's
+  # finish-args); losing one breaks the client only on a desktop, where no test here looks.
+  local perms want
+  perms="$(flatpak info --user --show-permissions "$APP_ID")"
+  for want in org.kde.StatusNotifierWatcher=talk org.freedesktop.secrets=talk org.freedesktop.Notifications=talk; do
+    grep -qx "$want" <<<"$perms" || fail "permission $want missing: $perms"
+  done
+  grep -q '^filesystems=.*\bhome\b' <<<"$perms" || fail "permission filesystems=home missing: $perms"
+  ok "permissions: tray, keychain, notifications, home folder"
+  return
+}
+
+check_flatpak_removed() {
+  if flatpak info --user "$APP_ID" >/dev/null 2>&1; then fail "$APP_ID still installed after removal"; fi
+  local left=()
+  [[ ! -e "$FLATPAK_EXPORTS/applications/$APP_ID.desktop" ]] || left+=("$FLATPAK_EXPORTS/applications/$APP_ID.desktop")
+  local icon
+  for icon in "$FLATPAK_EXPORTS"/icons/hicolor/*/apps/"$APP_ID".png; do
+    [[ ! -e "$icon" ]] || left+=("$icon")
+  done
+  [[ "${#left[@]}" -eq 0 ]] || fail "left behind after removal: ${left[*]}"
+  if grep -q "$APP_ID.desktop" "$FLATPAK_EXPORTS/applications/mimeinfo.cache" 2>/dev/null; then
+    fail "mimeinfo.cache still names $APP_ID.desktop after removal"
+  fi
+  ok "removed: the app, its exported desktop entry, icons and handler"
+  return
+}
+
+check_installed() {
+  case "$FMT" in
+    appimage) check_appimage_integration ;;
+    flatpak) check_flatpak_files ;;
+    *) check_files ;;
+  esac
+  return
+}
+
+check_gone() {
+  if [[ "$FMT" = flatpak ]]; then check_flatpak_removed; else check_removed; fi
   return
 }
 
@@ -288,7 +403,7 @@ same() { # a b
 
 round_trip() {
   local user="$CRAFTCLOUD_TEST_USER" password="$CRAFTCLOUD_TEST_PASSWORD"
-  local rt="$WORK/round-trip"
+  local rt="$HOME/round-trip"
   local sync="$rt/CraftCloud"
   mkdir -p "$rt" "$sync"
   # Settings and tokens in a folder of their own: no keychain in a container, and nothing of the
@@ -381,10 +496,7 @@ CURRENT_VERSION="$VERSION"
 step "2-3. install $(basename "$PKG")"
 install_file "$PKG"
 check_version "$VERSION"
-case "$FMT" in
-  appimage) check_appimage_integration ;;
-  *) check_files ;;
-esac
+check_installed
 
 if [[ -n "$SERVER" ]]; then
   step "4. sync round trip against $SERVER"
@@ -396,7 +508,7 @@ fi
 if [[ "$FMT" != appimage ]]; then
   step "6. remove"
   remove_package
-  check_removed
+  check_gone
 fi
 
 # ---- 5. upgrade from the previous release --------------------------------------------------------
@@ -419,10 +531,10 @@ if [[ -n "$PREVIOUS" ]]; then
       check_version "$OLD_VERSION"
       install_file "$PKG"
       check_version "$VERSION"
-      check_files
+      check_installed
       step "6. remove after the upgrade"
       remove_package
-      check_removed
+      check_gone
     fi
   fi
 else

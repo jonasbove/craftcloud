@@ -174,6 +174,13 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   the first desktop-only app: `web = false` means no pins and no bridge, `fetch-apps` leaves it out of the `-apps`
   image and `bump-apps` passes it by. LoveCraft uses `files --app prosecraft-rs` and `save` for its Open from
   and Save to CraftCloud.
+- 2026-11-22: CI (Release): `package-test` install-tests the Flatpak bundle too (x86_64 and aarch64, Ubuntu
+  24.04): `flatpak install --user --bundle` with the runtime from Flathub, `--version` in the sandbox, the
+  exported menu entry, icons and `craftcloud://` handler, the AppStream file and the permissions the tray,
+  keychain, notifications and sync folder need, the sign-in and sync round trip, the upgrade from the previous
+  release and removal (`packaging/linux/test-package.sh`, in a privileged container for bubblewrap). The
+  AppImage's check now also asserts its `craftcloud://` handler. Run locally on x86_64 with the published 0.1.1
+  and 0.2.0 bundles; the CI rows run on the next Release run.
 - 2026-11-22: Web (M5, for 0.3.0): an **Apps** menu in the web header. When the server has the Craft web apps on
   and at least one switched on (`/craftcloud/config.json`'s `web_apps` and `enabled_apps`, now read by
   `core::RuntimeConfig`), a signed-in person gets APPS between FILES and ADMIN (the app-grid glyph alone on a
