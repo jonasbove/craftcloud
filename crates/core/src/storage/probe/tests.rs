@@ -468,6 +468,20 @@ fn a_saved_check_round_trips_and_an_older_file_reads_safely() {
     assert_eq!(caps.names, NameRules::oxicloud());
     assert_eq!(crate::storage::mode_for(&caps), Mode::Refused, "what the file says decides, never its mode field: the rest is unknown");
     assert!(StoredCheck::from_json(b"not json").is_none());
+    // A check saved before the profile's ceiling existed (no `lowered` in its capabilities) loads,
+    // reads as "no ceiling", and gives the mode it gave; one saved with a ceiling carries it.
+    assert!(json.contains("\"lowered\": null"), "{json}");
+    let older = json.replace(",\n    \"lowered\": null", "");
+    assert!(!older.contains("lowered"), "{older}");
+    let before = StoredCheck::from_json(older.as_bytes()).unwrap();
+    assert_eq!(before, stored, "the same check without the field");
+    let caps = before.capabilities.unwrap();
+    assert_eq!((caps.lowered.clone(), crate::storage::mode_for(&caps)), (None, Mode::TwoWay));
+    let capped = Capabilities { lowered: Some(crate::storage::Lowered { to: Mode::DownloadOnly, why: "a race lost".into() }), ..caps };
+    let with = StoredCheck { capabilities: Some(capped.clone()), mode: Mode::DownloadOnly, ..stored.clone() };
+    let again = StoredCheck::from_json(with.to_json().as_bytes()).unwrap();
+    assert_eq!(again.capabilities.as_ref().map(crate::storage::mode_for), Some(Mode::DownloadOnly));
+    assert_eq!(again.capabilities, Some(capped));
 }
 
 fn rank(mode: Mode) -> u8 {
