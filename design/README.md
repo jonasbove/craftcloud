@@ -26,6 +26,7 @@ JSON directly. The PNGs in `exports/` were exported by FigCraft at 1x, with 2x c
 | **v2 · Files** (1440×900, phone 390×844) | `v2-web-files`, `v2-web-files-light`, `v2-web-files-empty`, `v2-web-files-loading`, `v2-web-files-details` (new in 0.2.0), `v2-web-files-menu`, `v2-web-files-selected`, `v2-web-files-drop`, `v2-web-files-upload`, `v2-web-files-upload-taken`, `v2-web-files-new-folder`, `v2-web-files-rename`, `v2-web-files-move`, `v2-web-files-versions` (new in 0.2.0), `v2-web-files-trash`, `v2-web-files-trash-delete`, `v2-web-files-trash-taken`, `v2-web-files-recent`, `v2-web-files-starred`, `v2-web-files-search`, `v2-web-files-phone`, `v2-web-files-phone-light` |
 | **v2 · Sharing** (1440×900; phone 390×844) | **New in 0.2.0:** `v2-web-share-create`, `v2-web-share-create-light`, `v2-web-share-create-date`, `v2-web-share-create-error`, `v2-web-share-created`, `v2-web-share-created-copied`, `v2-web-share-created-light`, `v2-web-share-account-menu`, `v2-web-share-links`, `v2-web-share-links-revoke`, `v2-web-share-links-empty`. **0.1.0:** `v2-web-share-public-file`, `v2-web-share-public-folder`, `v2-web-share-public-subfolder`, `v2-web-share-public-password`, `v2-web-share-public-password-wrong`, `v2-web-share-public-expired`, `v2-web-share-public-gone`, `v2-web-share-public-phone` (built by `tools/v2_sharing.py`) |
 | **v2 · Single sign-on** (1440×900) | `v2-web-admin-sso`, `v2-web-admin-sso-light`, `v2-web-admin-sso-testing`, `v2-web-admin-sso-works`, `v2-web-admin-sso-fails`, `v2-web-admin-sso-fails-light`, `v2-web-admin-sso-guard`, `v2-web-admin-sso-guard-untested`, `v2-web-admin-sso-env`, `v2-web-login-sso`, `v2-web-login-sso-light`, `v2-web-login-sso-only`, `v2-web-login-sso-error`, `v2-web-login-sso-busy`, `v2-web-login-sso-errors` (1568×1168: every sign-in error) |
+| **v2 · Servers** (960×640 window; tray 560×612) | Each also as `…-light`: `v2-desktop-connect-found`, `v2-desktop-connect-kind`, `v2-desktop-connect-webdav`, `v2-desktop-connect-app-password` (ownCloud), `v2-desktop-connect-app-token` (OpenCloud), `v2-desktop-check-download-only`, `v2-desktop-check-not-possible`, `v2-desktop-activity-download-only`, `v2-desktop-tray-download-only`, `v2-desktop-settings-server`, `v2-desktop-settings-checked` (built by `tools/v2_servers.py`) |
 | Archive (pre-v2) | the 41 earlier frames (launcher-era web frontend, the 2026-11-13 scope, the answers round) |
 
 What each screen shows:
@@ -105,6 +106,29 @@ What each screen shows:
     the folder missing, Open CraftCloud folder and Sync now are off; "Resume syncing" shows only while paused. The
     icon has four looks: up to date, syncing, paused (also signed out and mass delete, whose menu still says Pause
     syncing) and error (also offline and folder missing).
+- **Servers** (`tools/v2_servers.py`; the desktop client on a server that isn't CraftCloud's own,
+  [docs/WEBDAV-STORAGE.md](../docs/WEBDAV-STORAGE.md) § 10 and § 11; frames for approval, not built yet):
+  - **Connect, found:** the Connect sheet as it is, the FOUND badge with "Nextcloud 31 at cloud.example.org", a note
+    on the way on, the link "Another kind of server" (accent_ink, underlined), and the primary SIGN IN IN THE BROWSER.
+  - **The picker:** KIND OF SERVER over a hairline list, rows 40: the name (Body 14 Medium), a FOUND badge on the
+    kind the client detected, and how one signs in to it (Small 12 muted, right). The chosen row has the accent
+    wash, a 2 px accent rule and a check.
+  - **The forms** (step 2, "Sign in"): a sunken box naming the server with the link back to the picker, then the
+    fields. Other WebDAV: WebDAV address, user name, app or WebDAV password. ownCloud: user name and app password;
+    OpenCloud: user name and app token; each with one line on where to make it. Under every password: "A password
+    is never sent over plain http, except to this computer."
+  - **After the check** (step 2 lit as "Check"): the mode as a badge (DOWNLOAD ONLY warn, NOT POSSIBLE bad) with
+    the server, the sentence in Body 14, then WHAT WAS CHECKED and CHECK AGAIN (Secondary). Download only goes on
+    with CONTINUE WITH DOWNLOAD ONLY (Primary) or USE ANOTHER SERVER; Not possible has QUIT and USE ANOTHER SERVER.
+  - **"Download only" beside the state:** a Status badge (warn) 8 px after the header's status text, in every
+    state. The tray menu is the OS's, so its status line ends with "· Download only". Activity's headline reads
+    "Everything is *downloaded*." and files that stay here are listed once with a NOT SYNCED badge (muted).
+  - **Settings › Server:** a panel under Account: KIND, ADDRESS, MODE, LAST CHECK, then WHAT WAS CHECKED,
+    CHECK AGAIN and OPEN IN THE BROWSER.
+  - **What was checked:** a sheet (window − 64 × window − 48) with the mode as a badge in the hero, a meta line
+    (when, how many checks, the mode), a note on where the check writes, and a scrolling list, rows 32: the check
+    (Body 13, 352 wide) and what the server did (Small 12 muted), in the words of `core::storage::probe::checks`.
+    CHECK AGAIN left, DONE right. The buttons on the two panels open the same sheet.
 - **Single sign-on** (page v2 · Single sign-on):
   - **Admin › Server › Single sign-on** (below the web apps, `admin.rs` `sso_ui`): the state badge, two columns
     (button name, issuer URL, client ID, client secret masked / scopes, admin groups and the Off/On rows for

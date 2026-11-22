@@ -21,10 +21,11 @@ import v2  # noqa: E402
 import v2_files  # noqa: E402  (Files: the page "v2 · Files")
 import v2_sharing  # noqa: E402  (Sharing: the page "v2 · Sharing")
 import v2_sso  # noqa: E402  (Single sign-on: the page "v2 · Single sign-on")
+import v2_servers  # noqa: E402  (Other servers on the desktop: the page "v2 · Servers")
 
 
 KEEP_PAGES = ("Tokens & type", "Components", "v2 · Web", "v2 · Desktop",
-              "v2 · Files", "v2 · Sharing", "v2 · Single sign-on")  # one page per v2_*.py module
+              "v2 · Files", "v2 · Sharing", "v2 · Single sign-on", "v2 · Servers")  # one page per v2_*.py module
 
 
 def archive(d):
@@ -80,6 +81,7 @@ def main():
     frames_v2 += v2_files.build(d)  # Files: the page "v2 · Files"
     frames_v2 += v2_sharing.build(d)  # Sharing: the page "v2 · Sharing"
     frames_v2 += v2_sso.build(d)  # Single sign-on: the page "v2 · Single sign-on"
+    frames_v2 += v2_servers.build(d)  # Other servers on the desktop: the page "v2 · Servers"
     archive(d)
     out = os.path.join(DESIGN, "craftcloud.figcraft")
     d.save(out)
