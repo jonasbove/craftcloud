@@ -152,7 +152,7 @@ fn connect(server: &Server, device: &str, dir: &Path) -> Result<(WebDav, StoredC
     if let Some(check) = kept {
         save_check(dir, &check)?;
     }
-    let (driver, check) = WebDav::connect(server.session(), device, Some(dir), Limits::default());
+    let (driver, check) = WebDav::connect_with(server.session(), server.profile(), device, Some(dir), Limits::default());
     if check.mode != server.mode {
         let why = check.refused_because.clone().unwrap_or_default();
         return Err(format!("{server}: the check on connect gave {} ({why}); steps: {:#?}", check.mode.words(), check.steps));
@@ -386,9 +386,21 @@ impl Live {
                 assert!(execute(&tokens.authorize(folders::trash(server, &id))).unwrap().is_success());
             }
             Cloud::Dav { .. } => {
-                let files: Vec<(String, String)> =
-                    self.other().list_all(path).into_iter().filter(|e| !e.is_folder).map(|e| (e.path, e.etag.unwrap_or_default())).collect();
-                let done = self.driver().trash(path, TrashGuard::Folder { files }).unwrap_or_else(|e| panic!("trashing {path}: {e}"));
+                // The guard takes the driver's version tags (on Nextcloud the ETag plus the listed
+                // checksum), so the files are listed through the driver, every level.
+                let mut driver = self.driver();
+                let mut files: Vec<(String, String)> = Vec::new();
+                let mut level = vec![path.to_owned()];
+                while let Some(folder) = level.pop() {
+                    for e in driver.list(&folder).unwrap_or_else(|e| panic!("listing {folder}: {e}")) {
+                        if e.is_folder {
+                            level.push(e.path);
+                        } else {
+                            files.push((e.path, e.etag.unwrap_or_default()));
+                        }
+                    }
+                }
+                let done = driver.trash(path, TrashGuard::Folder { files }).unwrap_or_else(|e| panic!("trashing {path}: {e}"));
                 assert_eq!(done, Trashed::Done);
             }
         }
@@ -410,6 +422,15 @@ impl Live {
                 let (parent, _) = path.rsplit_once('/').unwrap_or(("", path));
                 self.driver().list(parent).ok()?.into_iter().find(|e| e.path == path && e.is_folder)?.file_id
             }
+        }
+    }
+
+    /// Whether the check on connect confirmed the server keeps its own versions (Nextcloud with its
+    /// profile): then `keep_version` is a no-op and the history follows renames by file id.
+    fn server_versions(&self) -> bool {
+        match &self.cloud {
+            Cloud::Oxi { .. } => false,
+            Cloud::Dav { .. } => self.driver().capabilities().versions == craftcloud_core::storage::Versions::Server,
         }
     }
 
@@ -1110,6 +1131,8 @@ fn versions_follow_renames_and_are_kept_once() {
     let twice = live.versions_of(&renamed2).len();
     if live.kind() == Kind::Oxicloud {
         assert_eq!(twice, 2, "the current bytes once, not twice");
+    } else if live.server_versions() {
+        assert_eq!(twice, 1, "the server keeps the versions itself: keeping one is a no-op");
     } else {
         assert!((2..=3).contains(&twice), "{twice}");
     }
@@ -1390,6 +1413,53 @@ fn a_deleted_nested_or_renamed_folder_is_one_trash_item() {
     sync(&a);
     assert!(live.in_trash(&live.p("t9/fold-ren")).is_some());
     assert!(live.in_trash(&live.p("t9/fold-ren/f1")).is_none());
+}
+
+/// Q13, the other direction (docs/WEBDAV-STORAGE.md § 16), on a real Nextcloud: another client
+/// overwrites a file within the same second as this client's upload of it, so the file keeps the
+/// ETag this client saved. The next sync must still bring that write down (the version tag is the
+/// ETag plus the listed checksum, which the write cleared), and nothing is lost on the way.
+#[test]
+fn a_write_under_an_unchanged_etag_still_comes_down() {
+    let Some(live) = Live::two_way("sametag") else { return };
+    if live.kind() != Kind::Nextcloud {
+        eprintln!("skipped: only Nextcloud's profile verifies writes by checksum so far ({})", live.server);
+        return;
+    }
+    let root = live.local("A");
+    let a = live.computer(&root, "Alpha");
+    let dir = live.p("Tag");
+    write(&root.join(&dir).join("seed.txt"), "seed");
+    sync(&a);
+    for n in 0..10 {
+        let path = format!("{dir}/f{n}.txt");
+        write(&root.join(&path), "ours");
+        a.send(Command::SyncNow);
+        // The moment the upload is listed (with our checksum), the other client writes.
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let ours = loop {
+            let listed = live.other().list(&dir).ok().and_then(|l| l.into_iter().find(|e| e.path == path && !e.checksums.is_empty()));
+            if let Some(e) = listed {
+                break e;
+            }
+            assert!(Instant::now() < deadline, "{path} was never uploaded");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        // The same size as ours, so nothing but the version tag tells the two writes apart.
+        assert!(matches!(live.other().put(&path, b"THEM"), 200..=299));
+        let theirs = live.other().list(&dir).unwrap().into_iter().find(|e| e.path == path).unwrap();
+        sync(&a);
+        sync(&a);
+        assert_eq!(read(&root.join(&path)), "THEM", "their write came down ({})", if theirs.etag == ours.etag { "same ETag" } else { "new ETag" });
+        assert_eq!(live.other().get(&path).as_deref(), Some(b"THEM".as_slice()), "and stays in the cloud");
+        if theirs.etag == ours.etag {
+            assert!(theirs.checksums.is_empty(), "the write cleared the listed checksum: {theirs:?}");
+            eprintln!("staged at try {n}: two writes within one second, one ETag");
+            return;
+        }
+        // A later second: an ordinary change (a new ETag). Try again.
+    }
+    panic!("ten tries and the two writes never shared a second");
 }
 
 #[test]

@@ -68,13 +68,17 @@ pub enum Cmd {
         /// Print the address to open instead of opening the browser.
         #[arg(long)]
         no_browser: bool,
-        /// The kind of server: oxicloud (CraftCloud's own, the default) or webdav (any other WebDAV
-        /// server, signed in to with an app or WebDAV password; SERVER is then its WebDAV address,
-        /// e.g. https://cloud.example.org/remote.php/dav/files/NAME/). Experimental: needs
+        /// The kind of server: oxicloud (CraftCloud's own, the default), nextcloud (signed in
+        /// through the browser, Nextcloud's own sign-in; SERVER is its address, e.g.
+        /// cloud.example.org; detected when left out) or webdav (any other WebDAV server, signed in
+        /// to with an app or WebDAV password; SERVER is then its WebDAV address, e.g.
+        /// https://cloud.example.org/remote.php/dav/files/NAME/). Experimental: needs
         /// CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1 until 0.3.0.
         #[arg(long, value_name = "KIND", hide = !craftcloud_native::experimental::experimental_webdav())]
         kind: Option<String>,
-        /// The user name, for a server signed in to with an app or WebDAV password (--kind webdav).
+        /// The user name, for a server signed in to with an app or WebDAV password: required with
+        /// --kind webdav; with --kind nextcloud it signs in with an app password you made in the
+        /// server's Settings › Security instead of the browser.
         #[arg(long, value_name = "NAME", hide = !craftcloud_native::experimental::experimental_webdav())]
         user: Option<String>,
     },

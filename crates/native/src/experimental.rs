@@ -14,10 +14,10 @@ pub const VARIABLE: &str = "CRAFTCLOUD_EXPERIMENTAL_WEBDAV";
 /// The server is never treated as OxiCloud instead, and nothing syncs.
 pub const REFUSED: &str = "This build syncs only with a CraftCloud server; set CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1 to try other servers";
 
-/// What a kind of server that has no driver yet says, with the opt-in on (Nextcloud, ownCloud and
-/// OpenCloud get theirs in later pull requests; such a server is never taken for a plain WebDAV
-/// server, whose client trash and versions don't belong in its drive).
-pub const NOT_YET: &str = "This build can't sync with this kind of server yet (it knows CraftCloud's own server and other WebDAV servers)";
+/// What a kind of server that has no driver yet says, with the opt-in on (ownCloud and OpenCloud
+/// get theirs in later pull requests; such a server is never taken for a plain WebDAV server,
+/// whose client trash and versions don't belong in its drive).
+pub const NOT_YET: &str = "This build can't sync with this kind of server yet (it knows CraftCloud's own server, Nextcloud and other WebDAV servers)";
 
 /// Whether the person running this process switched the other server kinds on.
 pub fn experimental_webdav() -> bool {
@@ -36,8 +36,8 @@ pub fn allowed(settings: &ClientSettings, experimental: bool) -> Result<(), &'st
     match settings.storage {
         Storage::Oxicloud => Ok(()),
         _ if !experimental => Err(REFUSED),
-        Storage::Webdav => Ok(()),
-        Storage::Nextcloud | Storage::Owncloud | Storage::Opencloud => Err(NOT_YET),
+        Storage::Webdav | Storage::Nextcloud => Ok(()),
+        Storage::Owncloud | Storage::Opencloud => Err(NOT_YET),
     }
 }
 
@@ -76,7 +76,8 @@ mod tests {
             assert_eq!(allowed(&with(other), false), Err(REFUSED), "{other:?}");
         }
         assert_eq!(allowed(&with(Storage::Webdav), true), Ok(()));
-        for later in [Storage::Nextcloud, Storage::Owncloud, Storage::Opencloud] {
+        assert_eq!(allowed(&with(Storage::Nextcloud), true), Ok(()));
+        for later in [Storage::Owncloud, Storage::Opencloud] {
             assert_eq!(allowed(&with(later), true), Err(NOT_YET), "{later:?}");
         }
         assert_eq!(REFUSED, "This build syncs only with a CraftCloud server; set CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1 to try other servers");

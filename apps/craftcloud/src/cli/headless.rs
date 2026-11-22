@@ -8,8 +8,6 @@ use std::time::{Duration, Instant};
 
 use craftcloud_core::sync::{ActivityEvent, ClientSettings, SyncPlan, SyncProgress, SyncState};
 use craftcloud_native::control::{self, Activity, Attached, FolderLock, Status};
-use craftcloud_native::storage::probe::Limits;
-use craftcloud_native::storage::webdav::WebDav;
 use craftcloud_native::sync::{Command, Handle};
 use serde_json::json;
 
@@ -32,11 +30,7 @@ fn start(ctx: &Ctx) -> Result<Engine> {
     let device = ctx.device();
     let handle = if ctx.is_webdav() {
         // The driver connects on the sync thread (the check on connect may take a while).
-        let session = ctx.app_password_session()?;
-        let dir = ctx.dir();
-        let device_too = device.clone();
-        let connect: craftcloud_native::sync::Connect =
-            Box::new(move || Ok(WebDav::connect(session, &device_too, dir.as_deref(), Limits::default())));
+        let connect = ctx.webdav_connect()?;
         craftcloud_native::sync::start_webdav(SyncPlan::from(&settings), connect, device, Arc::new(|| {}))
     } else {
         let remote = ctx.remote()?;

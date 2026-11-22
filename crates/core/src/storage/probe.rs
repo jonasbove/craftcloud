@@ -135,12 +135,52 @@ pub struct Request {
     /// so an overwrite within the same second as the write before it would look like no change.
     /// The runner waits a moment first.
     pub settles: bool,
+    /// A known-server check's request on another DAV root than the files base (a server's trash
+    /// bin, its versions): the root's absolute URL, with a trailing slash. `path` and the
+    /// destination then hang under it. The runner allows only what the check needs there
+    /// (a listing, a `GET`, the restore `MOVE` of the probe's own file) and never a `DELETE`.
+    pub root: Option<String>,
+    /// For a restore `MOVE` on another root: the cloud path (under the files base) the server said
+    /// the item came from. The runner allows the move only when that path is inside the probe's
+    /// own folder, so a known-server check can never put back anything but the probe's file.
+    pub restores: Option<String>,
 }
 
 impl Request {
     /// A request of `step` for `path` (a known-server check builds its own this way).
     pub fn new(step: Step, method: Method, path: &str, folder: bool) -> Self {
-        Self { step, method, path: path.to_owned(), folder, headers: Vec::new(), body: Vec::new(), destination: None, settles: false }
+        Self {
+            step,
+            method,
+            path: path.to_owned(),
+            folder,
+            headers: Vec::new(),
+            body: Vec::new(),
+            destination: None,
+            settles: false,
+            root: None,
+            restores: None,
+        }
+    }
+
+    /// A request of `step` under another DAV root (`root`, an absolute URL), for a known-server
+    /// check: `path` is relative to that root.
+    pub fn under_root(step: Step, method: Method, root: &str, path: &str, folder: bool) -> Self {
+        let mut root = root.to_owned();
+        if !root.ends_with('/') {
+            root.push('/');
+        }
+        Self { root: Some(root), ..Self::new(step, method, path, folder) }
+    }
+
+    /// Adds a header (a known-server check builds its requests this way too).
+    pub fn with_header(self, name: &str, value: impl Into<String>) -> Self {
+        self.header(name, value)
+    }
+
+    /// Gives the request a body.
+    pub fn with_body(self, body: &[u8]) -> Self {
+        self.body(body)
     }
 
     fn header(mut self, name: &str, value: impl Into<String>) -> Self {
@@ -163,14 +203,16 @@ impl Request {
         matches!(self.method, Method::Put | Method::Move | Method::Copy | Method::Delete | Method::Mkcol)
     }
 
-    /// The HTTP request to send, with every path resolved under `base`.
+    /// The HTTP request to send, with every path resolved under `base` (or under the request's
+    /// own root, when it has one).
     pub fn to_http(&self, base: &Base) -> HttpRequest {
-        let mut req = HttpRequest::new(self.method, dav::url_under(base.url(), &self.path, self.folder)).body(self.body.clone());
+        let under = self.root.as_deref().unwrap_or(base.url());
+        let mut req = HttpRequest::new(self.method, dav::url_under(under, &self.path, self.folder)).body(self.body.clone());
         for (name, value) in &self.headers {
             req = req.header(name, value.clone());
         }
         if let Some((to, folder)) = &self.destination {
-            req = req.header("Destination", dav::url_under(base.url(), to, *folder));
+            req = req.header("Destination", dav::url_under(under, to, *folder));
         }
         req
     }
@@ -357,6 +399,11 @@ pub struct Learnt {
     pub file_id: Option<String>,
     /// Whether `c.txt` is still there (step 15 may have deleted it on a server that ignores the guard).
     pub c_exists: bool,
+    /// Whether `d.txt` (step 13's copy of `c.txt`, holding `c.txt`'s bytes) is there: what a
+    /// trash check deletes and brings back.
+    pub d_exists: bool,
+    /// What `c.txt` (and so `d.txt`) holds now.
+    pub c_bytes: Vec<u8>,
 }
 
 /// A known-server check (step 16, the trash round trip; step 17, the server's versions), which a
@@ -366,7 +413,7 @@ pub trait ExtraCheck {
     /// The next request, or `None` when the check is done.
     fn next(&self, learnt: &Learnt) -> Option<Request>;
     /// The answer to the last request.
-    fn observe(&mut self, resp: &HttpResponse);
+    fn observe(&mut self, resp: &HttpResponse, learnt: &Learnt);
     /// Whether the check found what it looked for (a trashed file that came back whole, one more
     /// version), once done.
     fn confirmed(&self) -> bool;
@@ -630,7 +677,7 @@ pub struct Probe<'a> {
 impl<'a> Probe<'a> {
     /// A probe in `.craftcloud/probe/<folder_name>/` under `base`.
     pub fn new(base: Base, folder_name: &str, profile: Profile<'a>) -> Self {
-        let learnt = Learnt { folder: format!("{PROBE_DIR}/{folder_name}"), ..Learnt::default() };
+        let learnt = Learnt { folder: format!("{PROBE_DIR}/{folder_name}"), c_bytes: THREE.to_vec(), ..Learnt::default() };
         Self {
             base,
             stage: Stage::ListBase,
@@ -1098,6 +1145,7 @@ impl<'a> Probe<'a> {
 
     fn on_copy(&mut self, resp: &HttpResponse) {
         self.caps.copy = resp.is_success();
+        self.learnt.d_exists = self.caps.copy && self.learnt.c_exists;
         let words = if self.caps.copy { "yes (201)".to_owned() } else { format!("no: answered {}", resp.status) };
         self.note(Step::Copy, true, words);
         self.stage = Stage::PutUpper;
@@ -1199,7 +1247,7 @@ impl<'a> Probe<'a> {
             self.finish_extra(None);
             return self.start_extra();
         };
-        check.observe(resp);
+        check.observe(resp, &self.learnt);
         if check.next(&self.learnt).is_none() {
             let confirmed = check.confirmed();
             self.finish_extra(Some(confirmed));
