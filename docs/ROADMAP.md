@@ -174,6 +174,24 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   the first desktop-only app: `web = false` means no pins and no bridge, `fetch-apps` leaves it out of the `-apps`
   image and `bump-apps` passes it by. LoveCraft uses `files --app prosecraft-rs` and `save` for its Open from
   and Save to CraftCloud.
+- 2026-11-22: Sync (M9, pull request 7 of [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14): ownCloud. `trash rm` and
+  `trash empty` now delete from a server's own trash on the person's command, on Nextcloud too (§ 16, Q14); a
+  version restore is the driver's guarded write. The second
+  profile on pull request 6's hook (`profile/owncloud.rs`, with `core::api::owncloud` for the requests and parsers,
+  recorded from ownCloud 10.15.3 in `crates/core/tests/fixtures/owncloud-10.15/`). `craftcloud login <server>
+  --kind owncloud --user NAME` signs in with an app password made in Settings › Security (no browser flow without an
+  admin); the user id comes from `current-user-principal`; `status.php` suggests the kind without `--kind`;
+  `logout` forgets the password and says where to revoke it. The trash bin is `trash-bin/<user>/`, its items named
+  by file id, a restore a `MOVE` to the item's original path under the files base with `Overwrite: F` (the server
+  would take any destination, so the probe's runner gained a general hook, `destination_under_base`, and allows on
+  the trash root only that one move of the probe's own file); versions are `meta/<file id>/v/<seconds>` without the
+  current file (step 17 lists before and after), a restore the driver's guarded `PUT` of the version's bytes (never the server's unguarded `COPY`); the quota WebDAV's property with
+  `-3` as no limit. Measured and recorded in UPSTREAM.md G1: two writes within one second share the ETag and keep
+  only one version (the later bytes), so Q13's checksum check applies, and ownCloud verifies `OC-Checksum` on
+  receipt. The scripted server got an ownCloud flavour; the profile, the probe's round trips, the driver and two
+  engine tests (the Q13 conflict copy, a cycle's request log) run against it; the live suite's cleanup on ownCloud
+  reads the trash bin through the profile (it had used Nextcloud's path). All behind the opt-in; nothing in the
+  engine changed, OxiCloud's golden logs stand.
 - 2026-11-22: Web (M5, for 0.3.0): an **Apps** menu in the web header. When the server has the Craft web apps on
   and at least one switched on (`/craftcloud/config.json`'s `web_apps` and `enabled_apps`, now read by
   `core::RuntimeConfig`), a signed-in person gets APPS between FILES and ADMIN (the app-grid glyph alone on a
@@ -204,22 +222,6 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   own server too. Tests: the scripted servers answer a `MOVE` or a `PUT` with a status once
   (`Flags::answers_once`), over both drivers, and a new golden log; the two live tests that failed sync until
   nothing changes (`settle`) instead of counting passes, since two computers are at the server at once there.
-- 2026-11-18: Sync (M9, pull request 7 of [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14): ownCloud. The second
-  profile on pull request 6's hook (`profile/owncloud.rs`, with `core::api::owncloud` for the requests and parsers,
-  recorded from ownCloud 10.15.3 in `crates/core/tests/fixtures/owncloud-10.15/`). `craftcloud login <server>
-  --kind owncloud --user NAME` signs in with an app password made in Settings › Security (no browser flow without an
-  admin); the user id comes from `current-user-principal`; `status.php` suggests the kind without `--kind`;
-  `logout` forgets the password and says where to revoke it. The trash bin is `trash-bin/<user>/`, its items named
-  by file id, a restore a `MOVE` to the item's original path under the files base with `Overwrite: F` (the server
-  would take any destination, so the probe's runner gained a general hook, `destination_under_base`, and allows on
-  the trash root only that one move of the probe's own file); versions are `meta/<file id>/v/<seconds>` without the
-  current file (step 17 lists before and after), a restore the driver's guarded `PUT` of the version's bytes (never the server's unguarded `COPY`); the quota WebDAV's property with
-  `-3` as no limit. Measured and recorded in UPSTREAM.md G1: two writes within one second share the ETag and keep
-  only one version (the later bytes), so Q13's checksum check applies, and ownCloud verifies `OC-Checksum` on
-  receipt. The scripted server got an ownCloud flavour; the profile, the probe's round trips, the driver and two
-  engine tests (the Q13 conflict copy, a cycle's request log) run against it; the live suite's cleanup on ownCloud
-  reads the trash bin through the profile (it had used Nextcloud's path). All behind the opt-in; nothing in the
-  engine changed, OxiCloud's golden logs stand.
 - 2026-11-18: Sync (M9, pull request 6 of [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14): Nextcloud. A profile hook
   on the generic driver (`storage::profile::ServerProfile`: the server's version string, the probe's known-server
   checks of steps 16 and 17, "verify writes by checksum", the server's own trash, versions and quota endpoint) and

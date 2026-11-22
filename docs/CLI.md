@@ -208,8 +208,8 @@ probe file found in the trash bin and restored; an overwrite that left a version
 `DELETE` into Nextcloud's trash bin, `trash ls` and `trash restore` show and restore it, `versions` and
 `versions … restore` are Nextcloud's versions by file id (they follow renames; a restore writes the version's
 bytes back only if the file is still the one last seen, else it restores nothing and exits with code 5), and `trash rm` and `trash empty`
-answer "not available on this server" (code 10), since CraftCloud never purges a person's trash; empty it on the
-web page. Nextcloud reuses a file's version tag when it is overwritten within the same second as the write before
+delete from Nextcloud's trash bin for good, as they do on CraftCloud's server (`trash empty` asks first unless
+`--yes`); only these two commands ever do, never the sync or the check on connect. Nextcloud reuses a file's version tag when it is overwritten within the same second as the write before
 it, so every upload carries its SHA1 checksum (`OC-Checksum`) and is read back: a checksum that isn't the one
 uploaded means someone else wrote the file in that second, and the sync keeps both as a conflict copy. Storage use
 comes from Nextcloud's OCS user endpoint.
@@ -221,7 +221,7 @@ uses ownCloud's own trash bin and versions once the check on connect has confirm
 a delete is a WebDAV `DELETE` into the trash bin, `trash ls` shows each item by the path it had, `trash restore`
 moves it back (or to `--as PATH`; a taken name gets `NAME (restored).EXT`), `versions` and `versions … restore` are
 ownCloud's versions by file id (a restore reads the version and writes it over the file only if the file is still as it was, exit code 5 when it changed meanwhile; the server keeps the replaced file
-as a version), and `trash rm` and `trash empty` answer code 10, as on Nextcloud. ownCloud also reuses a file's
+as a version), and `trash rm` and `trash empty` delete from ownCloud's trash bin for good, as on Nextcloud. ownCloud also reuses a file's
 version tag within one second, so every upload carries its SHA1 checksum, which ownCloud checks on receipt, and is
 read back. Storage use is WebDAV's quota property. `logout` forgets the app password here and says where to revoke
 it on the server. OpenCloud gets its profile in a later pull request; until then `--kind opencloud` is refused.

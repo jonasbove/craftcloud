@@ -352,6 +352,12 @@ pub fn trashbin_restore(trashbin_root: &str, name: &str) -> HttpRequest {
         .header("Destination", crate::api::dav::url_under(trashbin_root, &format!("restore/{name}"), false))
 }
 
+/// `DELETE` one trashed item for good: `trash/<name>` under the trash bin's root. Only ever on the
+/// person's own command (`craftcloud trash rm`, `trash empty`), for a name a listing just gave.
+pub fn trashbin_delete(trashbin_root: &str, name: &str, is_folder: bool) -> HttpRequest {
+    HttpRequest::new(Method::Delete, crate::api::dav::url_under(trashbin_root, &format!("trash/{name}"), is_folder))
+}
+
 /// `PROPFIND` of a file's versions, one level.
 pub fn versions_list(versions_root: &str, file_id: &str) -> HttpRequest {
     HttpRequest::new(Method::Propfind, crate::api::dav::url_under(versions_root, &format!("versions/{file_id}"), true))
@@ -515,6 +521,10 @@ mod tests {
         // No `Overwrite: F`: the restore address isn't a name in the person's tree, and Nextcloud 31
         // answers 412 to the header there (measured); the server puts the item back where it was.
         assert_eq!(restore.header_value("Overwrite"), None);
+        // Deleting one for good (the person's `trash rm`): only ever the item under `trash/`.
+        let purge = trashbin_delete(root.url(), &file.name, false);
+        assert_eq!(purge.method, Method::Delete);
+        assert_eq!(purge.url, format!("https://cloud.example.org/remote.php/dav/trashbin/john/trash/{}", file.name));
     }
 
     #[test]

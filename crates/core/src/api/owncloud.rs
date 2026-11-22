@@ -125,6 +125,12 @@ pub fn trash_restore(trash_root: &str, id: &str, is_folder: bool, files_base: &s
         .header("Overwrite", "F")
 }
 
+/// `DELETE` one trashed item for good: `<trash root>/<id>`. Only ever on the person's own command
+/// (`craftcloud trash rm`, `trash empty`), for an id a listing just gave.
+pub fn trash_delete(trash_root: &str, id: &str, is_folder: bool) -> HttpRequest {
+    HttpRequest::new(Method::Delete, crate::api::dav::url_under(trash_root, id, is_folder))
+}
+
 /// `PROPFIND` of a file's versions, one level (`<meta root>/v/`).
 pub fn versions_list(meta_root: &str) -> HttpRequest {
     HttpRequest::new(Method::Propfind, crate::api::dav::url_under(meta_root, "v", true))
@@ -259,6 +265,10 @@ mod tests {
         let restore = trash_restore(root.url(), &folder.name, true, &files, "Docs/Sub");
         assert_eq!(restore.url, "https://cloud.example.org/remote.php/dav/trash-bin/john/1669/");
         assert_eq!(restore.header_value("Destination"), Some("https://cloud.example.org/remote.php/dav/files/john/Docs/Sub/"));
+        // Deleting one for good (the person's `trash rm`): only ever the item under the trash bin.
+        let purge = trash_delete(root.url(), &file.name, false);
+        assert_eq!((purge.method, purge.url.as_str()), (Method::Delete, "https://cloud.example.org/remote.php/dav/trash-bin/john/1668"));
+        assert_eq!(trash_delete(root.url(), &folder.name, true).url, "https://cloud.example.org/remote.php/dav/trash-bin/john/1669/");
     }
 
     #[test]

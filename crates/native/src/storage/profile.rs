@@ -59,6 +59,27 @@ pub trait ServerProfile: Send {
         Err(StorageError::Failed(format!("restoring {} from this server's trash isn't known", item.path)))
     }
 
+    /// Deletes one item of the server's own trash **for good**: only ever on the person's own
+    /// command (`craftcloud trash rm`, § 16), never by the engine, the check on connect or any
+    /// retention. A profile sends the `DELETE` only for an item a fresh listing of the trash
+    /// names, on the trash's own address, never under the files base.
+    fn trash_purge(&self, _transport: &mut dyn Transport, item: &TrashItem) -> Result<(), StorageError> {
+        Err(StorageError::Failed(format!("deleting {} from this server's trash isn't known", item.path)))
+    }
+
+    /// Empties the server's own trash for good, on the person's own command (`craftcloud trash
+    /// empty`): every item a fresh listing names, one [`Self::trash_purge`] each.
+    fn trash_empty(&self, transport: &mut dyn Transport) -> Result<(), StorageError> {
+        for item in self.trash_list(transport)? {
+            match self.trash_purge(transport, &item) {
+                // Gone meanwhile (inside a folder purged just before, or by someone else).
+                Ok(()) | Err(StorageError::NotFound(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
     /// The server's own earlier versions of `path` (only asked where the check on connect
     /// confirmed `Versions::Server`), newest first.
     fn list_versions(&self, _transport: &mut dyn Transport, _base: &Base, path: &str) -> Result<Vec<Version>, StorageError> {

@@ -547,31 +547,11 @@ fn the_command_line_on_another_kind_of_server() {
     }
     env.fails(6, &["status"]);
 
-    // The kept versions of the test's files are CraftCloud's own leftovers in `.craftcloud/versions/`;
-    // on a server with its own trash the test's folder sits there, and goes from there too. Before
-    // signing out: on Nextcloud `logout` deletes the app password these requests use.
+    // The kept versions of the test's files are CraftCloud's own leftovers in `.craftcloud/versions/`
+    // (none where the server keeps its own). Before signing out: on Nextcloud `logout` deletes the
+    // app password these requests use.
     let mut cloud = kind::Dav::new(&server);
     cloud.delete(&format!(".craftcloud/versions/{base}"), true);
-    if server_trash && server.kind == kind::Kind::Nextcloud {
-        let mut bin = kind::Dav::at(&server, &format!("{}/remote.php/dav/trashbin/{}/trash/", server.url, server.user));
-        for entry in bin.list("").unwrap_or_default() {
-            if entry.name().starts_with(&format!("{base}.d")) {
-                bin.delete(&entry.path, entry.is_folder);
-            }
-        }
-    } else if server_trash {
-        // ownCloud names a trashed item by its file id; `trash ls` says where each was.
-        let mut bin = kind::Dav::at(&server, &format!("{}/remote.php/dav/trash-bin/{}/", server.url, server.user));
-        let listed = bin.list("").unwrap_or_default();
-        for item in env.ok(&["trash", "ls"]).as_array().cloned().unwrap_or_default() {
-            let (Some(path), Some(id)) = (item["path"].as_str(), item["id"].as_str()) else { continue };
-            if path == base || path.starts_with(&format!("{base}/")) {
-                let is_folder = listed.iter().find(|e| e.path == id).is_some_and(|e| e.is_folder);
-                bin.delete(id, is_folder);
-            }
-        }
-    }
-
     // Signing out forgets the app password; on Nextcloud it is deleted on the server too (ownCloud
     // has no call for it: the person revokes it in Settings › Security).
     let out = env.ok(&["logout"]);
@@ -634,16 +614,17 @@ fn file_commands_through_the_trait(env: &Env, base: &str, server_trash: bool) {
     let inside = format!("{base}/");
     let items: Vec<&String> = listed.iter().filter(|p| *p == base || p.starts_with(&inside)).collect();
     assert!(!items.is_empty(), "{listed:?}");
-    if server_trash {
-        let e = env.fails(10, &["trash", "rm", items[0]]);
-        assert!(e["error"]["message"].as_str().unwrap_or_default().contains("server's own trash"), "{e}");
-        env.fails(10, &["trash", "empty", "--yes"]);
-        return;
-    }
+    // The same on a server's own trash: the person asked, so the items go from there for good
+    // (docs/WEBDAV-STORAGE.md § 16); nothing else in that trash is touched.
+    let others: Vec<String> = listed.iter().filter(|p| *p != base && !p.starts_with(&inside)).cloned().collect();
     for item in items {
         env.ok(&["trash", "rm", item]);
     }
-    assert!(!paths(&env.ok(&["trash", "ls"])).iter().any(|p| p.starts_with(base)));
+    let left = paths(&env.ok(&["trash", "ls"]));
+    assert!(!left.iter().any(|p| p.starts_with(base)), "{left:?}");
+    if server_trash {
+        assert_eq!(left, others, "nothing else in the server's trash was deleted");
+    }
 }
 
 /// Download only: reading works, and every write is refused (exit code 10, kind `unsupported`,

@@ -237,6 +237,26 @@ impl WebDav {
         }
     }
 
+    /// Deletes one item of the server's own trash for good. **Only for the person's own command**
+    /// (`craftcloud trash rm`, § 16): the engine, the check on connect and the retention never
+    /// call it. Only where the check confirmed the server's trash, and only an item of it (never a
+    /// path in CraftCloud's own trash, which goes through [`RemoteStorage::purge_own`]).
+    pub fn purge_server_trash_item(&mut self, item: &TrashItem) -> Result<(), StorageError> {
+        if !self.server_trash() || OwnPath::new(&item.id).is_some() {
+            return Err(StorageError::Failed(format!("{} isn't an item of this server's own trash", item.path)));
+        }
+        self.profile.trash_purge(&mut self.session, item)
+    }
+
+    /// Empties the server's own trash for good. **Only for the person's own command**
+    /// (`craftcloud trash empty`), as [`Self::purge_server_trash_item`].
+    pub fn empty_server_trash(&mut self) -> Result<(), StorageError> {
+        if !self.server_trash() {
+            return Err(StorageError::Failed("this server's own trash isn't in use".into()));
+        }
+        self.profile.trash_empty(&mut self.session)
+    }
+
     pub fn base(&self) -> &Base {
         &self.base
     }

@@ -1660,8 +1660,22 @@ fn owncloud_engine(server: &FakeServer, root: &Path) -> Engine<WebDav> {
     engine
 }
 
+/// [`webdav_scene`] with the state's tags as the ownCloud profile lists them: ownCloud lists a
+/// checksum for every file, so a version tag there is the ETag and the SHA1 (`WebDav::version_tag`).
+fn owncloud_scene(server: &FakeServer, dav: &Arc<std::sync::Mutex<craftcloud_core::storage::probe::fake::FakeDav>>, root: &Path) -> State {
+    let mut state = webdav_scene(server, dav, root);
+    let listed = owncloud_engine(server, root).storage.list("Docs").unwrap();
+    for (path, known) in state.files.iter_mut() {
+        if let Some(tag) = listed.iter().find(|e| &e.path == path).and_then(|e| e.etag.clone()) {
+            assert!(tag.contains(";sha1:"), "{tag}");
+            known.etag = tag;
+        }
+    }
+    state
+}
+
 /// One two-way cycle over the ownCloud profile, its request log: every `PUT` carries
-/// `OC-Checksum` and is read back once (Q13), the overwrite makes no `COPY` (the server keeps the
+/// `OC-Checksum` and is read back right after it (Q13), the overwrite makes no `COPY` (the server keeps the
 /// version by file id), the file deleted here goes by one `DELETE` with `If-Match` into the
 /// server's trash (no `MOVE` into `.craftcloud/trash/`), and nothing is deleted outside the files
 /// base. OxiCloud's engine isn't touched by any of it: its golden logs stand.
@@ -1670,7 +1684,7 @@ fn webdav_owncloud_cycle_writes_with_checksums_and_deletes_into_the_servers_tras
     let (server, dav) = scripted(Flags { owncloud: true, ..Flags::default() });
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    let state = webdav_scene(&server, &dav, root);
+    let state = owncloud_scene(&server, &dav, root);
     let mut engine = owncloud_engine(&server, root);
     save_saved(&engine.state_path(), &Saved { server: engine.plan.server.clone(), state, ..Saved::default() }).unwrap();
     engine.cycle(Deletes::Hold);
@@ -1681,11 +1695,14 @@ fn webdav_owncloud_cycle_writes_with_checksums_and_deletes_into_the_servers_tras
     let seen = server.seen();
     let puts: Vec<&Seen> = seen.iter().filter(|r| r.method == "PUT").collect();
     assert_eq!(puts.len(), 2, "{:?}", writes(&server));
-    for r in &puts {
+    for (i, r) in seen.iter().enumerate().filter(|(_, r)| r.method == "PUT") {
         assert!(r.header("if-match").is_some() || r.header("if-none-match") == Some("*"), "an unguarded PUT: {r:?}");
         assert!(r.header("oc-checksum").is_some_and(|c| c.starts_with("SHA1:")), "every PUT carries its checksum: {r:?}");
-        let read_back = seen.iter().filter(|s| s.method == "PROPFIND" && s.path == r.path && s.header("depth") == Some("0")).count();
-        assert_eq!(read_back, 1, "one read-back per write: {:?}", r.path);
+        let next = seen.get(i + 1).unwrap_or_else(|| panic!("nothing after {r:?}"));
+        assert!(
+            next.method == "PROPFIND" && next.path == r.path && next.header("depth") == Some("0"),
+            "every write is read back right after it: {r:?} then {next:?}"
+        );
     }
     assert!(seen.iter().all(|r| r.method != "COPY"), "no client version: {:?}", writes(&server));
     assert!(seen.iter().all(|r| r.method != "MOVE"), "no client trash: {:?}", writes(&server));
@@ -1712,8 +1729,10 @@ fn webdav_owncloud_cycle_writes_with_checksums_and_deletes_into_the_servers_tras
 fn webdav_owncloud_a_write_landing_under_our_tag_becomes_a_conflict_copy() {
     let flags = Flags { owncloud: true, etag_reused_within_second: true, other_writes_after_put: Some(b"theirs".to_vec()), ..Flags::default() };
     let caps = Capabilities { trash: craftcloud_core::storage::Trash::Server, versions: craftcloud_core::storage::Versions::Server, ..two_way() };
-    let scene = |server: &FakeServer, dav: &Arc<std::sync::Mutex<craftcloud_core::storage::probe::fake::FakeDav>>, root: &Path| {
-        let mut state = webdav_scene(server, dav, root);
+    // The state as each driver last listed it: the ETag alone without the profile, the ETag and
+    // the listed SHA1 with it (`WebDav::version_tag`).
+    let scene = |server: &FakeServer, dav: &Arc<std::sync::Mutex<craftcloud_core::storage::probe::fake::FakeDav>>, root: &Path, profile: bool| {
+        let mut state = if profile { owncloud_scene(server, dav, root) } else { webdav_scene(server, dav, root) };
         state.files.remove("Docs/gone.txt");
         std::fs::remove_file(root.join("Docs/new.txt")).unwrap();
         state
@@ -1722,7 +1741,7 @@ fn webdav_owncloud_a_write_landing_under_our_tag_becomes_a_conflict_copy() {
     // Without the check (no profile): "uploaded", and the cloud holds someone else's bytes.
     let (server, dav) = scripted(flags.clone());
     let dir = tempfile::tempdir().unwrap();
-    let state = scene(&server, &dav, dir.path());
+    let state = scene(&server, &dav, dir.path(), false);
     let mut engine = webdav_engine(&server, dir.path(), caps);
     save_saved(&engine.state_path(), &Saved { server: engine.plan.server.clone(), state, ..Saved::default() }).unwrap();
     engine.cycle(Deletes::Hold);
@@ -1734,7 +1753,7 @@ fn webdav_owncloud_a_write_landing_under_our_tag_becomes_a_conflict_copy() {
     // With the ownCloud profile: a conflict copy, both kept.
     let (server, dav) = scripted(flags);
     let dir = tempfile::tempdir().unwrap();
-    let state = scene(&server, &dav, dir.path());
+    let state = scene(&server, &dav, dir.path(), true);
     let mut engine = owncloud_engine(&server, dir.path());
     save_saved(&engine.state_path(), &Saved { server: engine.plan.server.clone(), state, ..Saved::default() }).unwrap();
     engine.cycle(Deletes::Hold);
