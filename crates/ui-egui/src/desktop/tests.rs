@@ -20,6 +20,8 @@ pub(super) struct FakeDesktop {
     prefs: Option<ClientSettings>,
     resolved: Vec<(ConflictCopy, Keep)>,
     login: bool,
+    /// What the desktop said later about a change of start at login (the Flatpak's portal).
+    login_problem: Option<String>,
     synced_now: u32,
     confirmed: u32,
     discarded: u32,
@@ -106,6 +108,9 @@ impl DesktopHost for FakeDesktop {
     fn set_start_at_login(&mut self, on: bool) -> Result<(), String> {
         self.login = on;
         Ok(())
+    }
+    fn start_at_login_problem(&mut self) -> Option<String> {
+        self.login_problem.take()
     }
     fn open_browser(&mut self, url: &str) -> bool {
         self.net.open_url(url);
@@ -610,6 +615,20 @@ fn no_new_version_line_without_a_find() {
     h.get_by_label("SETTINGS").click();
     h.run();
     assert!(h.query_by_label_contains("is out").is_none());
+}
+
+#[test]
+fn settings_tell_when_the_desktop_turned_start_at_login_down_later() {
+    let mut h = with_state(SyncState::UpToDate);
+    h.get_by_label("SETTINGS").click();
+    h.run();
+    h.get_by_label("Start at login: ON").click();
+    h.run();
+    h.state_mut().host.login = false;
+    h.state_mut().host.login_problem = Some("The desktop didn't allow CraftCloud to start at login.".into());
+    h.run();
+    h.get_by_label("The desktop didn't allow CraftCloud to start at login.");
+    assert!(h.state().host.login_problem.is_none(), "told once");
 }
 
 #[test]

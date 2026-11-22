@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Start at login from the Flatpak.** Settings › Start at login now asks the desktop through its Background
+  portal, which may ask you to allow it; GNOME and KDE have that portal. Where the desktop's portal lacks it
+  (Hyprland, Sway), Settings says so: add `flatpak run io.github.jonasbove.craftcloud --hidden` to its startup
+  programs. Turning it on once more after updating is all it needs; the entry earlier versions wrote inside the
+  sandbox, which never started anything, is removed then. Nothing else needs care when updating.
 - **Seven colour themes** besides CraftCloud's own look, which stays the default: Catppuccin, Dracula, Gruvbox,
   Nord, One Dark, Solarized Light and Tokyo Night. Pick one in the desktop client's Settings › Theme, or on the
   web in the account menu (under your name; the browser remembers it). Themes with a light and a dark variant

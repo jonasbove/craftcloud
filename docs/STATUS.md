@@ -35,8 +35,11 @@ What no test reaches, from a coverage run, is in [TESTING.md › Coverage](TESTI
   line writes none of the person's files to a server whose check measured download only (exit code 10), retention
   sweep included; the check itself writes only inside `.craftcloud/probe/` ([WEBDAV-STORAGE.md](WEBDAV-STORAGE.md)
   § 7.5, § 11).
-- **Start at login doesn't work from the Flatpak.** The entry is written inside the sandbox, which the session
-  never reads; use the AppImage, deb, rpm or Arch package for that.
+- **Start at login from the Flatpak goes through the desktop's Background portal, untried on a real desktop.**
+  The client asks `org.freedesktop.portal.Background` (GNOME and KDE have it), which may ask you first; unit tests
+  cover the choice and the answers, and the call was made against a desktop whose portal lacks Background (the
+  message telling you to add `flatpak run io.github.jonasbove.craftcloud --hidden` to its startup programs).
+  Where the portal has no Background (Hyprland, Sway and other window managers' portals), do that by hand.
 - **Desktop builds are unsigned.** macOS asks once (right-click › Open, or remove the quarantine attribute) and
   Windows SmartScreen asks once (More info › Run anyway). Signing is not planned for v1.
 - **macOS deep links don't open the file.** macOS hands a `craftcloud://` link to the app as an Apple Event

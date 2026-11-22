@@ -269,7 +269,7 @@ On Windows, `craftcloud.exe` is the app and `craftcloud.com` is the command line
 | `craftcloud-<ver>-linux-<arch>.deb` | Debian, Ubuntu, Mint, Pop!_OS (`sudo apt install ./craftcloud-….deb`) |
 | `craftcloud-<ver>-linux-<arch>.rpm` | Fedora, openSUSE, RHEL (`sudo dnf install ./craftcloud-….rpm`) |
 | `craftcloud-<ver>-linux-<arch>.pkg.tar.zst` | Arch Linux (`sudo pacman -U craftcloud-….pkg.tar.zst`); AUR recipes are in `packaging/arch/` |
-| `craftcloud-<ver>-linux-<arch>.flatpak` | Flatpak (`flatpak install --user craftcloud-….flatpak`); "Start at login" doesn't work from it yet |
+| `craftcloud-<ver>-linux-<arch>.flatpak` | Flatpak (`flatpak install --user craftcloud-….flatpak`); "Start at login" asks the desktop through its Background portal (GNOME, KDE); a sync folder outside your home folder needs `flatpak override --user --filesystem=<folder> io.github.jonasbove.craftcloud` |
 | `craftcloud-<ver>-linux-<arch>.AppImage` | Any distro: make it executable and run it. The `.zsync` next to it lets AppImage updaters fetch only what changed |
 | `craftcloud-<ver>-linux-<arch>.tar.gz` | The binary, menu entry, icons and `install.sh` |
 
@@ -283,7 +283,8 @@ CraftCloud then shows up in your app launcher. It lives in the tray (StatusNotif
 most desktops show it; on GNOME install the AppIndicator extension (`gnome-shell-extension-appindicator`, or
 "AppIndicator and KStatusNotifierItem Support"), then log out and in. Without a tray (stock GNOME) the window is the
 client: closing it quits, and a start at login opens it. **Settings › Start at login** writes an XDG
-autostart entry, which GNOME, KDE and Xfce run. It tells you about conflicts, a sign-in that ran out and a sync
+autostart entry, which GNOME, KDE and Xfce run (from the Flatpak it asks the desktop to, through its Background
+portal). It tells you about conflicts, a sign-in that ran out and a sync
 that can't go on with a desktop notification; clicking one opens the window. The sign-in goes to the keychain (GNOME
 Keyring, or KDE's wallet with its Secret Service on). Without one, or with a KDE wallet that hasn't been set up
 yet, it is kept in a file only you can read, `~/.config/craftcloud/tokens.json`, and the log says so. How each desktop

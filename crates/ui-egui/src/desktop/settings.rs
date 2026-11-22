@@ -144,6 +144,9 @@ impl<H: DesktopHost> DesktopApp<H> {
     }
 
     fn computer_panel(&mut self, ui: &mut Ui, p: &SyncProgress, picks: &mut Picks) {
+        if let Some(problem) = self.host.start_at_login_problem() {
+            self.error = Some(problem);
+        }
         let login = self.host.starts_at_login();
         let paused = p.state == SyncState::Paused;
         let appearance = self.settings.appearance;
