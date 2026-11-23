@@ -2,7 +2,7 @@
 
 **Stage: early alpha** · version 0.2.0 (share links and version history on the web, the Windows fixes, server hardening)
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-18 · **Change:** minor (version 0.2.0; M9 moves to
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-22 · **Change:** minor (version 0.2.0; the web header's Apps menu for the Craft web apps, for 0.3.0; M9 moves to
 > 0.3.0; M9 pull requests 1 to 6, the sync engine behind a storage trait, sync modes, the check on connect with `craftcloud server check`, the generic WebDAV driver, the client trash's retention, the Nextcloud profile, the trash and version commands and the runtime watch, all behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in); on Linux the tray counts as up only while a tray
 > host is on the bus, so closing the window on stock GNOME quits instead of leaving an invisible client; a start at
 > login stays in the tray on Windows and X11, and opens the window where there is no tray; an offline desktop window waits before asking who is signed in again; the
@@ -37,7 +37,7 @@ backup of anything you sync with it.
 | Craft apps through the sync folder | done (every app) | [CRAFT-INTEGRATION.md § 1](CRAFT-INTEGRATION.md#1-the-sync-folder-works-today-every-app) |
 | `craftcloud://` deep links | done on Linux and Windows; macOS needs an Apple Event handler | [CRAFT-INTEGRATION.md § 2](CRAFT-INTEGRATION.md#2-deep-links-craftcloud) |
 | Integration contract (`craftcloud apps`, `files`, `save`) | done; desktop-only apps (`web = false`, LoveCraft) listed too | [CRAFT-INTEGRATION.md § 3](CRAFT-INTEGRATION.md#3-the-integration-contract-the-craftcloud-command) |
-| Craft web apps in the browser | in part: the `-apps` image serves and gates them; opening a cloud file in one and saving it back is not built | [CRAFT-INTEGRATION.md § 6](CRAFT-INTEGRATION.md#6-the-craft-web-apps-in-the-browser) |
+| Craft web apps in the browser | in part: the `-apps` image serves and gates them, and the web header's Apps menu opens the ones switched on in a new tab (0.3.0); opening a cloud file in one and saving it back is not built | [CRAFT-INTEGRATION.md § 6](CRAFT-INTEGRATION.md#6-the-craft-web-apps-in-the-browser) |
 | "Open from / Save to CraftCloud" in the launcher and the apps | proposal, upstream | [CRAFT-INTEGRATION.md § 4–5](CRAFT-INTEGRATION.md#4-the-artcraft-launcher-proposal-upstream) |
 | Files on demand | design only | [FILES-ON-DEMAND.md](FILES-ON-DEMAND.md) |
 | Releases (published image, desktop release, signing) | desktop packaging done, not yet run in CI: the Craft apps' release file set (AppImage, deb, rpm, Flatpak, Arch, tar.gz; MSI and portable zip; universal DMG) from `release.yml` as a draft release, GPG-signed when a key is set, and only after every Linux package passed its install test (`package-test`); no published image, no code signing | [README](../README.md#downloads) |
@@ -52,7 +52,7 @@ backup of anything you sync with it.
 | M2 Web frontend | Setup, sign-in, device approval, home, the file browser, admin, single sign-on, share links | Done |
 | M3 Command line and integration | `craftcloud <command>` for files, sync, sharing, versions and admin; the contract the Craft apps and the launcher can use | Done; the command line prints in Windows terminals too (tried on Windows 11) |
 | M4 First release | Published images, a tagged desktop release, release notes | Done: 0.1.0 on 2026-11-14, then 0.1.1 and 0.2.0 |
-| M5 Craft web apps in the browser | Open a cloud file in its Craft web app from the web file browser and save it back (`craft-web-host`, the shim for the others) | Serving and gating done; the editor page and the shim not built |
+| M5 Craft web apps in the browser | Open a cloud file in its Craft web app from the web file browser and save it back (`craft-web-host`, the shim for the others) | Serving and gating done; the Apps menu in the web header opens an app in a new tab (0.3.0); the editor page and the shim not built |
 | M6 Files on demand | Placeholders that download when opened (Windows, Linux, macOS) | Design only |
 | M7 Signed desktop builds | Signed and notarized macOS builds, signed Windows builds | Not started; v1 is unsigned |
 | M8 Native NixOS deployment | OxiCloud, Caddy and craftcloud-admin as NixOS services without Docker, with the Craft web apps built by Nix from `apps.toml` | Not started; the NixOS module runs the Docker image today |
@@ -120,6 +120,16 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   the first desktop-only app: `web = false` means no pins and no bridge, `fetch-apps` leaves it out of the `-apps`
   image and `bump-apps` passes it by. LoveCraft uses `files --app prosecraft-rs` and `save` for its Open from
   and Save to CraftCloud.
+- 2026-11-22: Web (M5, for 0.3.0): an **Apps** menu in the web header. When the server has the Craft web apps on
+  and at least one switched on (`/craftcloud/config.json`'s `web_apps` and `enabled_apps`, now read by
+  `core::RuntimeConfig`), a signed-in person gets APPS between FILES and ADMIN (the app-grid glyph alone on a
+  phone); it drops a grid of the apps' icons and names, and a tile opens `/apps/<id>/` in a new tab. With the
+  apps off or none on, the header is unchanged. Saving the web apps in setup or Admin › Server reloads the config,
+  so the menu follows without a page reload. Keyboard: the focus goes to the first tile, the arrows, Home and End
+  move, Enter opens, Esc closes and returns the focus to APPS; APPS reports its expanded state and the tiles are
+  links. Design frames `v2-web-apps-menu` (and `-light`, `-phone`, `design/tools/v2_apps.py`); tests of the
+  visibility rule and the keyboard paths in `crates/ui-egui/src/web/apps_menu/tests.rs`, and the web shots
+  `apps-closed`, `apps-menu`, `apps-off`.
 - 2026-11-18: Sync (M9, pull request 6 of [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14): Nextcloud. A profile hook
   on the generic driver (`storage::profile::ServerProfile`: the server's version string, the probe's known-server
   checks of steps 16 and 17, "verify writes by checksum", the server's own trash, versions and quota endpoint) and

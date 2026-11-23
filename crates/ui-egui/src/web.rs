@@ -19,6 +19,7 @@ use crate::theme::Tokens;
 use crate::widgets::{error_line, logo, muted};
 
 mod admin;
+mod apps_menu;
 mod files;
 mod links;
 mod oidc;
@@ -109,6 +110,8 @@ pub struct WebApp<B: Backend> {
     links: links::Links,
     /// The account menu under the person's name in the header is open.
     account_open: bool,
+    /// The Apps menu (the Craft web apps), from the header's APPS entry.
+    apps_menu: apps_menu::AppsMenu,
 }
 
 /// The web-apps choice being edited (setup step 4, Admin › Server).
@@ -166,6 +169,7 @@ impl<B: Backend> WebApp<B> {
             share,
             links,
             account_open: false,
+            apps_menu: apps_menu::AppsMenu::default(),
         }
     }
 
@@ -215,21 +219,39 @@ impl<B: Backend> WebApp<B> {
                 nav.push((("Admin", matches!(self.page, Page::Admin(_)), true, None), Some(Page::Admin(tab))));
             }
         }
+        // APPS, after Files, when the server hosts Craft web apps and some are switched on.
+        let apps = apps_menu::offered(self.config.as_ref(), signed_in);
+        let apps_entry = (!apps.is_empty()).then(|| {
+            let at = 2.min(nav.len());
+            nav.insert(at, (("Apps", false, true, None), None));
+            at
+        });
         let cells: Vec<(&str, bool, bool, Option<&str>)> = nav.iter().map(|(cell, _)| *cell).collect();
         let info = chrome::HeaderInfo {
             nav: &cells,
             user: if signed_in { user.as_deref() } else { None },
             user_selected: self.account_open || self.page == Page::Links,
+            menu: apps_entry,
+            menu_open: self.apps_menu.open,
         };
         let clicks = chrome::header(ui, header_rect, &info);
+        let apps_clicked = apps_entry.is_some() && clicks.nav == apps_entry;
+        if apps_clicked {
+            self.apps_menu.toggle();
+            self.account_open = false;
+        }
         if clicks.user {
             self.account_open = !self.account_open;
+            self.apps_menu.close();
             if self.account_open {
                 self.links.count_for_menu(&mut self.backend);
             }
         }
         if !signed_in {
             self.account_open = false;
+        }
+        if apps_entry.is_none() {
+            self.apps_menu.close();
         }
         if let Some(page) = clicks.nav.and_then(|i| nav.get_mut(i)).and_then(|(_, page)| page.take()) {
             self.enter(page);
@@ -293,6 +315,12 @@ impl<B: Backend> WebApp<B> {
         {
             self.account_menu_ui(ui, anchor, clicks.user);
         }
+        if self.apps_menu.open
+            && let Some((anchor, trigger)) = clicks.menu
+            && let Some(id) = self.apps_menu.ui(ui, anchor, header_rect.bottom() + 4.0, trigger, &apps, apps_clicked)
+        {
+            self.backend.open_tab(&apps_menu::app_url(&self.server, id));
+        }
         if std::mem::take(&mut self.files.go_to_links) {
             self.enter(Page::Links);
         }
@@ -353,6 +381,12 @@ impl<B: Backend> WebApp<B> {
         } else if outside || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.account_open = false;
         }
+    }
+
+    /// Asks for `/craftcloud/config.json` again (after the web apps were switched on or off).
+    fn reload_config(&mut self) {
+        let req = HttpRequest::new(Method::Get, self.server.join("craftcloud/config.json"));
+        self.net.send(&mut self.backend, Key::Config, req);
     }
 
     fn send(&mut self, key: Key, request: craftcloud_core::http::HttpRequest) {
@@ -417,6 +451,7 @@ impl<B: Backend> WebApp<B> {
             Key::Logout => {
                 self.me = None;
                 self.account_open = false;
+                self.apps_menu.close();
                 self.links = links::Links::new(self.server.clone());
                 self.admin = admin::Admin::default();
                 self.sso = oidc::Sso::default();
@@ -440,7 +475,10 @@ impl<B: Backend> WebApp<B> {
                 }
             },
             Key::SaveSettings => match craftcloud_core::api::expect_ok(&resp) {
-                Ok(()) => self.page = Page::Setup(5),
+                Ok(()) => {
+                    self.page = Page::Setup(5);
+                    self.reload_config();
+                }
                 Err(e) => self.error = Some(e.to_string()),
             },
             Key::Devices => self.devices = Some(auth::parse_devices(&resp).unwrap_or_default()),

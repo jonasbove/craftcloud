@@ -11,6 +11,10 @@ pub struct RuntimeConfig {
     pub web_apps: bool,
     /// The address people use to reach the server.
     pub public_url: String,
+    /// The Craft web apps a person can open in the browser now, in `apps.toml`'s order; empty
+    /// while `web_apps` is off (craftcloud-admin's `public_config`). Absent means none.
+    #[serde(default)]
+    pub enabled_apps: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -41,6 +45,16 @@ mod tests {
         assert_eq!(config.version, "0.1.0-dev");
         assert!(!config.web_apps);
         assert_eq!(config.public_url, "http://localhost:8086");
+        assert!(config.enabled_apps.is_empty(), "a config without enabled_apps means none");
+    }
+
+    #[test]
+    fn reads_the_apps_switched_on() {
+        let json = br#"{"version": "0.3.0", "web_apps": true, "web_apps_bundled": true,
+            "public_url": "https://cloud.example.org", "enabled_apps": ["wordcraft", "gridcraft"]}"#;
+        let config = RuntimeConfig::from_json(json).unwrap();
+        assert!(config.web_apps);
+        assert_eq!(config.enabled_apps, ["wordcraft", "gridcraft"]);
     }
 
     #[test]

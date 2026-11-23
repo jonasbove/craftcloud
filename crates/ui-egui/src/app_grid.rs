@@ -173,14 +173,28 @@ fn app_icon(ui: &Ui, painter: &egui::Painter, rect: Rect, card: &Card<'_>, on: b
             let tint = if on { Color32::WHITE } else { Color32::WHITE.gamma_multiply(OFF_FADE) };
             painter.image(texture.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
         }
-        None => {
-            let fill = if on { card.color } else { grey(card.color).gamma_multiply(OFF_FADE) };
-            painter.rect_filled(rect, radius, fill);
-            let initial: String = card.name.chars().take(1).collect();
-            let g = painter.layout_no_wrap(initial, FontId::new(28.0, crate::theme::display()), Color32::WHITE);
-            painter.galley(rect.center() - g.size() / 2.0, g, Color32::WHITE);
-        }
+        None => lettered(painter, rect, radius, if on { card.color } else { grey(card.color).gamma_multiply(OFF_FADE) }, card.name),
     }
+}
+
+/// An app's icon in colour at any size (the Apps menu's tiles): its built-in image, or a tile in
+/// its colour with its initial. Corners as the 56 px icon's, scaled.
+pub(crate) fn paint_icon(ctx: &egui::Context, painter: &egui::Painter, rect: Rect, id: &str, name: &str, color: Color32) {
+    let radius = egui::CornerRadius::same((12.0 * rect.width() / ICON).round().clamp(0.0, 255.0) as u8);
+    match icon_texture(ctx, id, false) {
+        Some(texture) => {
+            painter.image(texture.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        }
+        None => lettered(painter, rect, radius, color, name),
+    }
+}
+
+/// A tile in `fill` with the name's first letter in white (an app without a built-in icon).
+fn lettered(painter: &egui::Painter, rect: Rect, radius: egui::CornerRadius, fill: Color32, name: &str) {
+    painter.rect_filled(rect, radius, fill);
+    let initial: String = name.chars().take(1).collect();
+    let g = painter.layout_no_wrap(initial, FontId::new(rect.height() / 2.0, crate::theme::display()), Color32::WHITE);
+    painter.galley(rect.center() - g.size() / 2.0, g, Color32::WHITE);
 }
 
 fn grey(c: Color32) -> Color32 {

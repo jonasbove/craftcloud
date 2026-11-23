@@ -20,6 +20,27 @@ fn config() -> Vec<u8> {
     format!(r#"{{"version":"{}","web_apps":false,"public_url":"https://cloud.example.org","enabled_apps":[]}}"#, env!("CARGO_PKG_VERSION"))
         .into_bytes()
 }
+/// config.json with the Craft web apps on and the six of the Admin › Server shot switched on.
+fn config_apps_on() -> Vec<u8> {
+    format!(
+        r#"{{"version":"{}","web_apps":true,"web_apps_bundled":true,"public_url":"https://cloud.example.org","enabled_apps":["wordcraft","gridcraft","deckcraft","pdfcraft","figcraft","photocraft"]}}"#,
+        env!("CARGO_PKG_VERSION")
+    )
+    .into_bytes()
+}
+
+/// Home with the web apps on (`config_apps_on`), the devices answered.
+fn home_apps_on(s: egui::Vec2, t: egui::Theme) -> H {
+    let mut h = visit("/", None, s, t);
+    let b = &mut h.state_mut().backend;
+    b.answer("/api/auth/status", ok(INIT));
+    b.answer("/craftcloud/config.json", ok(&config_apps_on()));
+    b.answer("/api/auth/me", ok(&fixture("me.json")));
+    h.run();
+    soft(&mut h, "/api/auth/device/devices", ok(&fixture("device-devices.json")));
+    h
+}
+
 const ROOT: &str = "root1";
 /// The link to the folder Team (`/s/tokF`).
 const SHARED_FOLDER: &[u8] = br#"{"id":"s1","item_id":"top","item_name":"Team","item_type":"folder","token":"tokF","url":"https://cloud.example.org/s/tokF","has_password":false,"created_at":"2026-11-13T09:00:00Z"}"#;
@@ -513,6 +534,25 @@ fn scenes() -> Vec<Scene> {
             h
         }),
         ("home", |s, t| {
+            let mut h = visit("/", None, s, t);
+            start(&mut h, INIT, true);
+            soft(&mut h, "/api/auth/device/devices", ok(&fixture("device-devices.json")));
+            h
+        }),
+        // The Apps menu (v2-web-apps-menu): APPS with the web apps on, the menu open (the pointer
+        // on WordCraft, as the frame), and the header without APPS when they're off.
+        ("apps-closed", home_apps_on),
+        ("apps-menu", |s, t| {
+            let mut h = home_apps_on(s, t);
+            click(&mut h, "APPS");
+            {
+                use egui_kittest::kittest::Queryable;
+                h.get_by_label("WordCraft").hover();
+            }
+            h.run();
+            h
+        }),
+        ("apps-off", |s, t| {
             let mut h = visit("/", None, s, t);
             start(&mut h, INIT, true);
             soft(&mut h, "/api/auth/device/devices", ok(&fixture("device-devices.json")));
