@@ -407,7 +407,12 @@ fn show_status(ctx: &Ctx, s: &Status) -> Result<()> {
         println!("not synced {n}  (no room in the cloud)");
     }
     for m in &s.waiting_moves {
-        println!("not moved  {} → {}  (the server couldn't yet; asked {} times)", m.from, m.to, m.attempts);
+        let asked = match m.attempts {
+            0 => "waits for another folder move; not asked yet".to_owned(),
+            1 => "the server couldn't yet; asked once".to_owned(),
+            n => format!("the server couldn't yet; asked {n} times"),
+        };
+        println!("not moved  {} → {}  ({asked})", m.from, m.to);
     }
     for n in &s.not_synced {
         println!("{}", not_synced_line(n));

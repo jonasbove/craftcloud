@@ -1476,6 +1476,77 @@ fn webdav_a_folder_move_that_keeps_failing_is_told_three_times_spaced_out_and_ne
     assert_eq!(p.activity.iter().filter(|e| e.path == "Proj3").map(|e| e.kind).collect::<Vec<_>>(), [Error]);
 }
 
+/// A scripted WebDAV server that answers 500 to every `MOVE` while the switch is on.
+fn server_that_cant_move() -> (FakeServer, Dav, Arc<std::sync::atomic::AtomicBool>) {
+    let dav: Dav =
+        Arc::new(std::sync::Mutex::new(craftcloud_core::storage::probe::fake::FakeDav::new("/remote.php/dav/files/john", Flags::default())));
+    let (inner, down) = (Arc::clone(&dav), Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    let is_down = Arc::clone(&down);
+    let server = FakeServer::start_full(move |seen: &Seen| {
+        if seen.method == "MOVE" && is_down.load(Ordering::SeqCst) {
+            return crate::fake_server::Answer::new(500, "locked");
+        }
+        let mut dav = inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let resp = dav.answer(&seen.method, &seen.path, &seen.headers, seen.body.as_bytes());
+        let mut answer = crate::fake_server::Answer::new(resp.status, String::from_utf8_lossy(&resp.body).into_owned());
+        for (name, value) in resp.headers {
+            answer = answer.header(&name, value);
+        }
+        answer
+    });
+    (server, dav, down)
+}
+
+/// The person goes on working in the renamed folder while its move waits: a file edited, one
+/// deleted and one made there. The move stays planned (the folder is no longer "the same files
+/// under a new name", but it is still under its old name in the cloud only and its new name here
+/// only), nothing of it syncs meanwhile, the count goes on, and when the server is well the
+/// folder moves by one `MOVE` and only then do the changes sync, inside it.
+#[test]
+fn webdav_a_folder_changed_here_while_its_move_waits_is_still_moved_as_one() {
+    let (server, dav, down) = server_that_cant_move();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let mut engine = webdav_engine(&server, root, two_way());
+    renamed_folder_scene(&mut engine, &dav);
+    down.store(true, Ordering::SeqCst);
+    engine.cycle(Deletes::Hold);
+
+    let long_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+    for (path, bytes) in [("Proj2/1.txt", "edited while waiting"), ("Proj2/new.txt", "made while waiting")] {
+        let file = write(root, path, bytes);
+        std::fs::File::options().write(true).open(&file).unwrap().set_modified(long_ago).unwrap();
+    }
+    std::fs::remove_file(root.join("Proj2/2.txt")).unwrap();
+    for tries in 2..=3 {
+        engine.cycle(Deletes::Hold);
+        let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        assert_eq!(p.waiting_moves.iter().map(|m| (m.from.as_str(), m.to.as_str(), m.attempts)).collect::<Vec<_>>(), [("Proj", "Proj2", tries)]);
+        let wrote = writes(&server);
+        assert!(wrote.iter().all(|w| w.starts_with("MOVE ") && w.ends_with("/Proj/")), "still only the move: {wrote:?}");
+        let dav = dav.lock().unwrap();
+        assert!(!dav.has("Proj2") && dav.body("Proj/2.txt") == Some(b"abc".as_slice()) && dav.body("Proj/1.txt") == Some(b"abc".as_slice()));
+        assert_eq!(synced_state(root).files.len(), 10);
+    }
+
+    down.store(false, Ordering::SeqCst);
+    time_passes(Duration::from_secs(121));
+    let before = writes(&server).len();
+    engine.cycle(Deletes::Hold);
+    let wrote = writes(&server)[before..].to_vec();
+    assert!(wrote[0].starts_with("MOVE ") && wrote[0].ends_with("/Proj/"), "the folder first, as one: {wrote:?}");
+    assert_eq!(wrote.iter().filter(|w| w.starts_with("MOVE ") && w.ends_with("/john/Proj/")).count(), 1, "{wrote:?}");
+    assert_eq!(wrote.iter().filter(|w| w.starts_with("PUT ")).count(), 2, "only the edited and the new file go up: {wrote:?}");
+    let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    assert!(p.waiting_moves.is_empty() && engine.move_tries.is_empty(), "{:?}", p.activity);
+    let dav = dav.lock().unwrap();
+    assert!(!dav.has("Proj"), "{:?}", dav.folders());
+    assert_eq!(dav.body("Proj2/1.txt"), Some(b"edited while waiting".as_slice()), "{:?}", p.activity);
+    assert_eq!(dav.body("Proj2/new.txt"), Some(b"made while waiting".as_slice()));
+    assert!(!dav.has("Proj2/2.txt"), "the delete made while waiting went through after the move");
+    assert_eq!(dav.body("Proj2/Sub/b.txt"), Some(b"abc".as_slice()));
+}
+
 /// What the activity list says about `path`, oldest first.
 fn activity_of(engine: &Engine<WebDav>, path: &str) -> Vec<String> {
     let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner);

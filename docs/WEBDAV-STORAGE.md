@@ -747,6 +747,9 @@ moves are moves" on every kind of server, CraftCloud's own included:
   line, and the desktop client's window, tray icon and a notification say that a folder move is waiting; after the
   fifth a last warning line and a last notification; nothing more is said after that, and the tries go on. A move
   that is done, refused for what it is, or no longer planned (the person renamed the folder back) clears its count.
+  While it waits it stays planned whatever is changed in the folder here (a file edited, deleted or made in it):
+  those changes sync after the move. The count is kept in memory only: a client that is started again counts from
+  one (and says it again from the third try), which is intended.
 - **Uploads and the trash were already so:** a 5xx to a `PUT` is an error tried again next pass (only 400, 403,
   414, 415 and 422 wait until the file changes; 507 waits for room), and a trash that fails leaves the state as it
   was. Nextcloud 31 answers 500 to a `PUT` into a folder made a moment before ("part file: No such file or

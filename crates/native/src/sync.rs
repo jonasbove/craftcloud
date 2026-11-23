@@ -789,13 +789,44 @@ impl<S: RemoteStorage> Engine<S> {
         // watch has tripped, two-way is off for the rest of the run).
         let mode = self.effective_mode();
         let mut waiting = Vec::new();
-        for m in reconcile::restrict_folder_moves(reconcile::folder_moves(state, local, remote), mode) {
+        let mut moves = reconcile::restrict_folder_moves(reconcile::folder_moves(state, local, remote), mode);
+        // A move that waits stays planned while the folder is still under its old name in the
+        // cloud only and under its new name here only, whatever was changed in it here since
+        // (`folder_moves` would no longer pair them once a file in it is edited or deleted, and
+        // the folder would be rebuilt file by file after all). What changed in it syncs after
+        // the move, by the usual rules. It comes before anything newly paired, and nothing
+        // inside it is paired on its own (a subfolder of it that still matches would otherwise
+        // be moved alone, into a new folder made for it).
+        if mode == Mode::TwoWay {
+            let kept: Vec<reconcile::FolderMove> = self
+                .move_tries
+                .keys()
+                .filter(|(from, to)| {
+                    state.folders.contains(from)
+                        && remote.folders.contains(from)
+                        && !local.folders.contains(from)
+                        && local.folders.contains(to)
+                        && !remote.folders.contains(to)
+                })
+                .map(|(from, to)| reconcile::FolderMove { from: from.clone(), to: to.clone(), side: reconcile::Side::Local })
+                .collect();
+            // A subfolder remembered beside the folder it is in goes along with that folder.
+            let kept: Vec<reconcile::FolderMove> =
+                kept.iter().filter(|m| !kept.iter().any(|k| k.from != m.from && within(&k.from, &m.from))).cloned().collect();
+            moves.retain(|m| !kept.iter().any(|k| within(&k.from, &m.from) || within(&k.to, &m.to)));
+            moves.splice(0..0, kept);
+        }
+        for m in moves {
             if self.no_folder_move.contains(&(m.from.clone(), m.to.clone())) {
                 continue;
             }
             // Nothing moves from, into or around a place that can't be read.
             let touches = |place: &str| unreadable.iter().any(|u| within(&u.path, place) || within(place, &u.path));
             if touches(&m.from) || touches(&m.to) {
+                // One that waits already goes on waiting (a file being saved in it just now).
+                if self.move_tries.contains_key(&(m.from.clone(), m.to.clone())) {
+                    waiting.push((m.from.clone(), m.to.clone()));
+                }
                 continue;
             }
             // Nor around a folder whose move waits: a move into its new name would make that
@@ -805,6 +836,8 @@ impl<S: RemoteStorage> Engine<S> {
                 waiting.iter().any(|(from, to): &(String, String)| [from.as_str(), to.as_str()].iter().any(|w| within(w, place) || within(place, w)))
             };
             if overlaps(&m.from) || overlaps(&m.to) {
+                // Remembered like one that was asked, so it stays planned whatever changes in it.
+                self.move_tries.entry((m.from.clone(), m.to.clone())).or_insert((0, None));
                 waiting.push((m.from.clone(), m.to.clone()));
                 continue;
             }
