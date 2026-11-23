@@ -94,7 +94,7 @@ default app; `.md` and `.txt` are WordCraft's).
 ```
 
 `--app` everywhere below takes an `id` from this list, in any case. A desktop app without a web build yet
-(`web = false` in `apps.toml`: ProseCraft-rs, id `prosecraft-rs`, which opens `.prosecraft` backups) is listed and
+(`web = false` in `apps.toml`: LoveCraft, id `prosecraft-rs`, which opens `.prosecraft` backups) is listed and
 taken by `--app` like the others; only the `-apps` image leaves it out.
 
 ### 3.2 "In CraftCloud": `craftcloud files --app <id> --json`

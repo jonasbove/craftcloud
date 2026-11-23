@@ -133,7 +133,7 @@ fixups = [{ copy = "a", to = "b" }]
     #[test]
     fn a_desktop_app_has_no_pins_and_a_web_build_has_all_of_them() {
         let desktop =
-            "[apps.prosecraft-rs]\nname = \"ProseCraft-rs\"\nrepo = \"o/p\"\nweb = false\nopens = [\"prosecraft\"]\ndefault = [\"prosecraft\"]\n";
+            "[apps.prosecraft-rs]\nname = \"LoveCraft\"\nrepo = \"o/p\"\nweb = false\nopens = [\"prosecraft\"]\ndefault = [\"prosecraft\"]\n";
         let apps = parse(desktop).unwrap();
         assert!(!apps[0].1.web && apps[0].1.version.is_empty() && apps[0].1.bridge.is_empty());
         let err = parse(&format!("{desktop}bridge = \"native\"\n")).unwrap_err();

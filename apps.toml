@@ -218,11 +218,11 @@ opens   = ["mcraft", "sbs"]
 default = ["mcraft", "sbs"]
 
 [apps.prosecraft-rs]
-name    = "ProseCraft-rs"
+name    = "LoveCraft"
 tagline = "Novel writing: outline, write, storyboard and publish"
 color   = "#4b171e"                # the oxblood of its icon
 ink     = ["#e08a96", "#4b171e"]   # text colour on dark / light
-repo    = "jonasbove/ProseCraft-rs"
+repo    = "jonasbove/LoveCraft"
 web     = false                    # desktop only until its releases carry a web build
 opens   = ["prosecraft"]
 default = ["prosecraft"]
