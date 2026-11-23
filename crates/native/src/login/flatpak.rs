@@ -52,7 +52,28 @@ struct State {
     problem: Option<String>,
 }
 
-static STATE: Mutex<State> = Mutex::new(State { pending: None, requests: 0, problem: None });
+impl State {
+    const NEW: Self = Self { pending: None, requests: 0, problem: None };
+
+    /// A request for `on` goes out; its number.
+    fn ask(&mut self, on: bool) -> u64 {
+        self.requests += 1;
+        self.pending = Some((self.requests, on));
+        self.problem = None;
+        self.requests
+    }
+
+    /// Request `number` finished. Only the newest request decides what is shown: an older one
+    /// finishing late changes nothing.
+    fn finished(&mut self, number: u64, result: Result<(), String>) {
+        if self.pending.is_some_and(|(n, _)| n == number) {
+            self.pending = None;
+            self.problem = result.err();
+        }
+    }
+}
+
+static STATE: Mutex<State> = Mutex::new(State::NEW);
 
 fn state() -> std::sync::MutexGuard<'static, State> {
     STATE.lock().unwrap_or_else(PoisonError::into_inner)
@@ -75,27 +96,16 @@ pub(super) fn set_enabled(on: bool) -> Result<(), String> {
             }
         }
     }
-    let number = {
-        let mut s = state();
-        s.requests += 1;
-        s.pending = Some((s.requests, on));
-        s.problem = None;
-        s.requests
-    };
+    let number = state().ask(on);
     let spawned = std::thread::Builder::new().name("craftcloud-background-portal".into()).spawn(move || {
         let result = portal::request(on, commandline());
         if let Err(e) = &result {
             log::warn!("start at login: {e}");
         }
-        let mut s = state();
-        // A newer request decides what is shown.
-        if s.pending.is_some_and(|(n, _)| n == number) {
-            s.pending = None;
-            s.problem = result.err();
-        }
+        state().finished(number, result);
     });
     if let Err(e) = spawned {
-        state().pending = None;
+        state().finished(number, Ok(()));
         return Err(format!("couldn't ask the desktop: {e}"));
     }
     Ok(())
@@ -180,9 +190,11 @@ mod portal {
         let handle: OwnedObjectPath = reply.body().deserialize().map_err(|e| call_failed(&e.to_string()))?;
 
         // Waited for on a thread of its own, so a desktop that never answers can't keep this one.
+        // That thread ends with the answer, or when the connection is closed below or fails.
         let (tx, rx) = std::sync::mpsc::channel();
         let spawned = std::thread::Builder::new().name("craftcloud-background-answer".into()).spawn(move || {
-            for message in answers.flatten() {
+            for message in answers {
+                let Ok(message) = message else { return };
                 if message.header().path().is_some_and(|p| p.as_str() == handle.as_str()) {
                     let _ = tx.send(message.body().deserialize::<(u32, HashMap<String, OwnedValue>)>().map_err(|e| e.to_string()));
                     return;
@@ -190,7 +202,12 @@ mod portal {
             }
         });
         spawned.map_err(|e| format!("Couldn't wait for the desktop's answer: {e}"))?;
-        match rx.recv_timeout(ANSWER) {
+        let answer = rx.recv_timeout(ANSWER);
+        // Closing the connection ends the answer thread's wait too, so nothing is left behind.
+        if let Err(e) = conn.close() {
+            log::debug!("closing the portal connection: {e}");
+        }
+        match answer {
             Ok(Ok((response, results))) => outcome(on, response, results.get("autostart").and_then(|v| bool::try_from(&**v).ok())),
             Ok(Err(e)) => Err(format!("The desktop's answer didn't make sense: {e}")),
             Err(_) => Err("The desktop didn't answer about start at login.".to_owned()),
@@ -203,7 +220,7 @@ mod tests {
     use std::ffi::OsString;
     use std::path::PathBuf;
 
-    use super::{call_failed, commandline, detect, host_entry_dir, outcome};
+    use super::{State, call_failed, commandline, detect, host_entry_dir, outcome};
 
     #[test]
     fn the_sandbox_is_found_by_its_info_file_or_app_id() {
@@ -249,5 +266,41 @@ mod tests {
         let e = call_failed("org.freedesktop.DBus.Error.UnknownMethod: No such interface “org.freedesktop.portal.Background”");
         assert!(e.contains("flatpak run io.github.jonasbove.craftcloud --hidden"), "{e}");
         assert!(call_failed("timed out").contains("timed out"));
+    }
+
+    #[test]
+    fn the_newest_request_decides_what_is_shown() {
+        let mut s = State::NEW;
+        // On, then quickly off again: the switch shows off while both are out.
+        let on = s.ask(true);
+        let off = s.ask(false);
+        assert_eq!(s.pending, Some((off, false)));
+        // The first answer coming in late (refused, say) changes nothing.
+        s.finished(on, Err("turned down".into()));
+        assert_eq!(s.pending, Some((off, false)));
+        assert_eq!(s.problem, None);
+        // The newest one's answer is what counts.
+        s.finished(off, Err("no portal".into()));
+        assert_eq!(s.pending, None);
+        assert_eq!(s.problem.as_deref(), Some("no portal"));
+        // A new request clears the last problem.
+        s.ask(true);
+        assert_eq!(s.problem, None);
+    }
+
+    /// Asks the session's real portal to turn start at login *off*, so it changes nothing that
+    /// isn't already off. Run it by hand on a desktop:
+    /// `cargo test -p craftcloud-native --lib real_portal -- --ignored --nocapture`.
+    /// Outside a Flatpak the portal may refuse the request (no app id); what this checks is that
+    /// the call, the signal match and the wait come back with an answer or a message, never hang.
+    #[test]
+    #[ignore = "needs a desktop session bus"]
+    fn the_real_portal_answers_or_says_why_not() {
+        let result = super::portal::request(false, commandline());
+        eprintln!("portal answered: {result:?}");
+        if let Err(e) = result {
+            assert!(!e.is_empty());
+            assert!(!e.contains("didn't answer"), "the portal never answered: {e}");
+        }
     }
 }
