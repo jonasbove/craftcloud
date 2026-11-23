@@ -6,6 +6,10 @@
 #
 # web       false for a desktop app with no web build yet: it is listed by `craftcloud apps` and taken by
 #           `--app`, and has no version, asset, sha256 or bridge (nothing is fetched for it)
+# release_name
+#           the name the app's releases give their web build, `<release_name>-web-<version>.zip`, when it
+#           isn't the id (the id is stored, so it stays when an app is renamed); `bump-apps` looks for it
+#           and `asset` must match it
 # bridge    how CraftCloud gets files in and out (docs/ARCHITECTURE.md, "Apps in the browser"):
 #             native      craft-web-host (?host=parent, <app>:open / <app>:save)
 #             lightcraft  LightCraft's own bridge (import and export only)
@@ -223,6 +227,11 @@ tagline = "Novel writing: outline, write, storyboard and publish"
 color   = "#4b171e"                # the oxblood of its icon
 ink     = ["#e08a96", "#4b171e"]   # text colour on dark / light
 repo    = "jonasbove/LoveCraft"
-web     = false                    # desktop only until its releases carry a web build
+web     = true                     # a web build since 0.2.0 (native bridge, craft-web-host)
+release_name = "lovecraft"         # its web build is lovecraft-web-<version>.zip; the id keeps its former name
+version = "0.2.0"
+asset   = "lovecraft-web-0.2.0.zip"
+sha256  = "ea6f299c58e6872530fa13eb300eb5160f415543cc26cf1405d3bac79b689883"
+bridge  = "native"
 opens   = ["prosecraft"]
 default = ["prosecraft"]

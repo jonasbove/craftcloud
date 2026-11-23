@@ -4,9 +4,12 @@
 
 - **LoveCraft is a Craft app here.** `craftcloud apps` lists it, and `--app prosecraft-rs` (`files`, `ls`,
   `recent`, `search`, `starred`, `save`) keeps its `.prosecraft` backups; a `.prosecraft` file saved without `--to`
-  goes to `LoveCraft/`. It is a desktop app for now: `apps.toml` marks it `web = false`, so it has no pins and
-  the `-apps` image doesn't fetch it, and `cargo xtask bump-apps` passes it by. A web build follows once its
-  releases carry one.
+  goes to `LoveCraft/`. The `-apps` image serves its web build (0.2.0, with the `craft-web-host` bridge) at
+  `/apps/prosecraft-rs/`, switched on and off like the others.
+- **An app's web build may carry another name than its id.** `release_name` in `apps.toml` names the release
+  file, `<release_name>-web-<version>.zip` (LoveCraft's is `lovecraft-web-…`, its id `prosecraft-rs`);
+  `cargo xtask bump-apps` looks for it and the manifest check refuses an `asset` that doesn't match it. Without
+  it the id is used, as before.
 - **Nextcloud, experimental and off.** With `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, `craftcloud login cloud.example.org
   --kind nextcloud` signs in to a Nextcloud through the browser the way its own clients do (an app password is made
   for this computer; your account password never reaches CraftCloud; `--user NAME` takes an app password you made

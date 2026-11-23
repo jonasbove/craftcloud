@@ -53,8 +53,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         }
         let body = request.call().map_err(|e| format!("{url}: {e}"))?.into_body().read_to_string().map_err(|e| format!("{url}: {e}"))?;
         let releases: Value = serde_json::from_str(&body).map_err(|e| format!("{url}: {e}"))?;
-        let Some((version, asset, sha, tag)) = latest_web_asset(&releases, app)? else {
-            println!("{app:<14} no web asset in recent releases, kept {}", spec.version);
+        let Some((version, asset, sha, tag)) = latest_web_asset(&releases, app, &spec.release_name)? else {
+            println!("{app:<14} no {}-web-<x.y.z>.zip in recent releases, kept {}", spec.release_name, spec.version);
             continue;
         };
         if (&version, &asset, &sha) == (&spec.version, &spec.asset, &spec.sha256) {
@@ -73,10 +73,11 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// The first `<app>-web-<x.y.z>.zip` in a GitHub release list (newest first), skipping drafts and
-/// pre-releases. An asset without a sha256 digest is an error, not something to skip.
-fn latest_web_asset(releases: &Value, app: &str) -> Result<Option<Found>, String> {
-    let prefix = format!("{app}-web-");
+/// The first `<release_name>-web-<x.y.z>.zip` in a GitHub release list (newest first), skipping
+/// drafts and pre-releases. An asset without a sha256 digest is an error, not something to skip.
+/// `app` (the id) is only for messages.
+fn latest_web_asset(releases: &Value, app: &str, release_name: &str) -> Result<Option<Found>, String> {
+    let prefix = format!("{release_name}-web-");
     let releases = releases.as_array().ok_or("the GitHub API answered with something other than a release list")?;
     for rel in releases {
         if rel["draft"].as_bool() == Some(true) || rel["prerelease"].as_bool() == Some(true) {
@@ -164,10 +165,31 @@ mod tests {
                 { "name": "wordcraft-web-0.19.0.zip", "digest": format!("sha256:{sha}") },
             ] },
         ]);
-        let found = latest_web_asset(&releases, "wordcraft").unwrap().unwrap();
+        let found = latest_web_asset(&releases, "wordcraft", "wordcraft").unwrap().unwrap();
         assert_eq!(found, ("0.19.0".into(), "wordcraft-web-0.19.0.zip".into(), sha, "v0.19.0".into()));
-        assert_eq!(latest_web_asset(&releases, "gridcraft").unwrap(), None);
+        assert_eq!(latest_web_asset(&releases, "gridcraft", "gridcraft").unwrap(), None);
         let no_digest = serde_json::json!([{ "tag_name": "v1.0.0", "assets": [{ "name": "wordcraft-web-1.0.0.zip" }] }]);
-        assert!(latest_web_asset(&no_digest, "wordcraft").is_err());
+        assert!(latest_web_asset(&no_digest, "wordcraft", "wordcraft").is_err());
+    }
+
+    #[test]
+    fn latest_web_asset_looks_for_the_release_name_not_the_id() {
+        let sha = "b".repeat(64);
+        // LoveCraft's 0.2.0, as GitHub lists it: the web build is named for the app, not for its id.
+        let releases = serde_json::json!([
+            { "tag_name": "v0.2.0", "assets": [
+                { "name": "lovecraft-0.2.0-linux-x86_64.AppImage", "digest": format!("sha256:{}", "c".repeat(64)) },
+                { "name": "lovecraft-web-0.2.0.zip.asc", "digest": format!("sha256:{}", "d".repeat(64)) },
+                { "name": "lovecraft-web-0.2.0.zip", "digest": format!("sha256:{sha}") },
+            ] },
+            { "tag_name": "v0.1.2", "assets": [{ "name": "lovecraft-0.1.2-linux-x86_64.AppImage", "digest": "sha256:bad" }] },
+        ]);
+        let found = latest_web_asset(&releases, "prosecraft-rs", "lovecraft").unwrap().unwrap();
+        assert_eq!(found, ("0.2.0".into(), "lovecraft-web-0.2.0.zip".into(), sha, "v0.2.0".into()));
+        // By the id alone (the default) nothing is found.
+        assert_eq!(latest_web_asset(&releases, "prosecraft-rs", "prosecraft-rs").unwrap(), None);
+        // A missing digest names the id.
+        let no_digest = serde_json::json!([{ "tag_name": "v0.2.0", "assets": [{ "name": "lovecraft-web-0.2.0.zip" }] }]);
+        assert!(latest_web_asset(&no_digest, "prosecraft-rs", "lovecraft").unwrap_err().starts_with("prosecraft-rs: "));
     }
 }

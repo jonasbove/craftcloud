@@ -265,7 +265,7 @@ mod tests {
         assert_eq!(for_name("notes.MD").map(|a| a.id), Some("wordcraft"));
         assert_eq!(for_name("todo.txt").map(|a| a.id), Some("wordcraft"));
         assert_eq!(for_name("photo.JPG").map(|a| a.name), Some("PhotoCraft"));
-        assert_eq!(for_name("The Glass Orchard.ProseCraft").map(|a| a.id), Some("prosecraft-rs"), "a desktop app (web = false) opens its files too");
+        assert_eq!(for_name("The Glass Orchard.ProseCraft").map(|a| a.id), Some("prosecraft-rs"), "an id that kept the app's former name");
         assert_eq!(app("ProseCraft-RS").map(|a| a.name), Some("LoveCraft"));
         assert_eq!(for_name("archive.zip"), None);
         assert_eq!(for_name(".bashrc"), None);
