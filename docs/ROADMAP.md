@@ -36,7 +36,7 @@ backup of anything you sync with it.
 | Command line | done; on Windows through `craftcloud.com` (untried on Windows); `server check` says what the server guarantees the sync; behind `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, `login --kind webdav|nextcloud` and the file and sync commands on any other WebDAV server or a Nextcloud (its own trash and versions) | [CLI.md](CLI.md) |
 | Craft apps through the sync folder | done (every app) | [CRAFT-INTEGRATION.md § 1](CRAFT-INTEGRATION.md#1-the-sync-folder-works-today-every-app) |
 | `craftcloud://` deep links | done on Linux and Windows; macOS needs an Apple Event handler | [CRAFT-INTEGRATION.md § 2](CRAFT-INTEGRATION.md#2-deep-links-craftcloud) |
-| Integration contract (`craftcloud apps`, `files`, `save`) | done | [CRAFT-INTEGRATION.md § 3](CRAFT-INTEGRATION.md#3-the-integration-contract-the-craftcloud-command) |
+| Integration contract (`craftcloud apps`, `files`, `save`) | done; desktop-only apps (`web = false`, ProseCraft-rs) listed too | [CRAFT-INTEGRATION.md § 3](CRAFT-INTEGRATION.md#3-the-integration-contract-the-craftcloud-command) |
 | Craft web apps in the browser | in part: the `-apps` image serves and gates them; opening a cloud file in one and saving it back is not built | [CRAFT-INTEGRATION.md § 6](CRAFT-INTEGRATION.md#6-the-craft-web-apps-in-the-browser) |
 | "Open from / Save to CraftCloud" in the launcher and the apps | proposal, upstream | [CRAFT-INTEGRATION.md § 4–5](CRAFT-INTEGRATION.md#4-the-artcraft-launcher-proposal-upstream) |
 | Files on demand | design only | [FILES-ON-DEMAND.md](FILES-ON-DEMAND.md) |
@@ -116,6 +116,10 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-23: Craft apps: ProseCraft-rs (`prosecraft-rs`, `.prosecraft`) in `apps.toml` and the built-in catalog, as
+  the first desktop-only app: `web = false` means no pins and no bridge, `fetch-apps` leaves it out of the `-apps`
+  image and `bump-apps` passes it by. ProseCraft-rs uses `files --app prosecraft-rs` and `save` for its Open from
+  and Save to CraftCloud.
 - 2026-11-18: Sync (M9, pull request 6 of [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14): Nextcloud. A profile hook
   on the generic driver (`storage::profile::ServerProfile`: the server's version string, the probe's known-server
   checks of steps 16 and 17, "verify writes by checksum", the server's own trash, versions and quota endpoint) and
