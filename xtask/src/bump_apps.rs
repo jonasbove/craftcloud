@@ -42,6 +42,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         if !only.is_empty() && !only.contains(app) {
             continue;
         }
+        if !spec.web {
+            println!("{app:<14} desktop only (web = false), nothing to pin");
+            continue;
+        }
         let url = format!("https://api.github.com/repos/{}/releases?per_page=10", spec.repo);
         let mut request = agent.get(&url).header("Accept", "application/vnd.github+json").header("User-Agent", "craftcloud-bump-apps");
         if let Some(token) = &token {

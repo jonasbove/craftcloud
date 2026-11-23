@@ -4,6 +4,8 @@
 # The Dockerfile (`cargo xtask fetch-apps`) downloads https://github.com/<repo>/releases/download/v<version>/<asset>, checks sha256,
 # and unpacks it to /srv/craftcloud/apps/<id>/.
 #
+# web       false for a desktop app with no web build yet: it is listed by `craftcloud apps` and taken by
+#           `--app`, and has no version, asset, sha256 or bridge (nothing is fetched for it)
 # bridge    how CraftCloud gets files in and out (docs/ARCHITECTURE.md, "Apps in the browser"):
 #             native      craft-web-host (?host=parent, <app>:open / <app>:save)
 #             lightcraft  LightCraft's own bridge (import and export only)
@@ -214,3 +216,13 @@ sha256  = "73b8c319881fd7218737d30b5eeb033801a17427bcf3d31920da32a1fbb1ffec"
 bridge  = "shim"
 opens   = ["mcraft", "sbs"]
 default = ["mcraft", "sbs"]
+
+[apps.prosecraft-rs]
+name    = "LoveCraft"
+tagline = "Novel writing: outline, write, storyboard and publish"
+color   = "#4b171e"                # the oxblood of its icon
+ink     = ["#e08a96", "#4b171e"]   # text colour on dark / light
+repo    = "jonasbove/LoveCraft"
+web     = false                    # desktop only until its releases carry a web build
+opens   = ["prosecraft"]
+default = ["prosecraft"]

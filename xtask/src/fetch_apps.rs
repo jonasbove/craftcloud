@@ -66,8 +66,11 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     fs::create_dir_all(&cache).map_err(|e| format!("{}: {e}", cache.display()))?;
     fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
 
-    let index: Vec<(&str, &AppSpec)> =
-        apps.iter().filter(|(id, _)| only.as_ref().is_none_or(|only| only.contains(id))).map(|(id, spec)| (id.as_str(), spec)).collect();
+    let index: Vec<(&str, &AppSpec)> = apps
+        .iter()
+        .filter(|(id, spec)| spec.web && only.as_ref().is_none_or(|only| only.contains(id)))
+        .map(|(id, spec)| (id.as_str(), spec))
+        .collect();
     // One large wasm file dominates each app, so the apps run side by side (`jobs` at a time) and
     // the threads left over share an app's files.
     let app_jobs = jobs.min(index.len()).max(1);
@@ -552,6 +555,7 @@ mod tests {
             color: "#3f5fe0".into(),
             ink: vec!["#8ea2ff".into(), "#2a44b8".into()],
             repo: "storytold/wordcraft".into(),
+            web: true,
             version: "0.18.1".into(),
             asset: "wordcraft-web-0.18.1.zip".into(),
             sha256: "0".repeat(64),
