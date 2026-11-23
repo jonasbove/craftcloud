@@ -13,9 +13,17 @@ pub struct AppSpec {
     #[serde(default)]
     pub ink: Vec<String>,
     pub repo: String,
+    /// Whether the app has a web build in the `-apps` image (the default). `web = false`: a
+    /// desktop app CraftCloud lists for `--app` and `apps`, with no pins and no bridge.
+    #[serde(default = "yes")]
+    pub web: bool,
+    #[serde(default)]
     pub version: String,
+    #[serde(default)]
     pub asset: String,
+    #[serde(default)]
     pub sha256: String,
+    #[serde(default)]
     pub bridge: String,
     #[serde(default)]
     pub query: String,
@@ -35,7 +43,13 @@ pub struct Fixup {
     pub to: String,
 }
 
+const fn yes() -> bool {
+    true
+}
+
 /// The apps in `apps.toml`, in file order. An id becomes a folder name, so it must be plain.
+/// A web build has all of its pins and a bridge; a desktop app (`web = false`) has none of them,
+/// so it can't be half pinned and fetched by mistake.
 pub fn parse(text: &str) -> Result<Vec<(String, AppSpec)>, String> {
     let doc: toml::Table = toml::from_str(text).map_err(|e| format!("apps.toml: {e}"))?;
     let apps = doc.get("apps").and_then(toml::Value::as_table).ok_or("apps.toml: no [apps] table")?;
@@ -45,8 +59,16 @@ pub fn parse(text: &str) -> Result<Vec<(String, AppSpec)>, String> {
             return Err(format!("apps.toml: app id {id:?} must be lower-case letters, digits, - and _"));
         }
         let spec: AppSpec = value.clone().try_into().map_err(|e| format!("apps.toml [apps.{id}]: {e}"))?;
-        if !is_sha256_hex(&spec.sha256) {
-            return Err(format!("apps.toml [apps.{id}]: sha256 must be 64 lower-case hex digits"));
+        let pins = [("version", &spec.version), ("asset", &spec.asset), ("bridge", &spec.bridge)];
+        if spec.web {
+            if let Some((key, _)) = pins.iter().find(|(_, v)| v.is_empty()) {
+                return Err(format!("apps.toml [apps.{id}]: a web build needs {key}"));
+            }
+            if !is_sha256_hex(&spec.sha256) {
+                return Err(format!("apps.toml [apps.{id}]: sha256 must be 64 lower-case hex digits"));
+            }
+        } else if let Some((key, _)) = pins.iter().chain(&[("sha256", &spec.sha256)]).find(|(_, v)| !v.is_empty()) {
+            return Err(format!("apps.toml [apps.{id}]: {key} is for web builds; this app has web = false"));
         }
         out.push((id.clone(), spec));
     }
@@ -106,6 +128,20 @@ fixups = [{ copy = "a", to = "b" }]
         assert!(parse(&base("fixups = [{ move = \"a\", to = \"b\" }]", "a")).is_err());
         assert!(parse(&base("", "\"../a\"")).is_err());
         assert!(parse(&base("", "A")).is_err());
+    }
+
+    #[test]
+    fn a_desktop_app_has_no_pins_and_a_web_build_has_all_of_them() {
+        let desktop =
+            "[apps.prosecraft-rs]\nname = \"ProseCraft-rs\"\nrepo = \"o/p\"\nweb = false\nopens = [\"prosecraft\"]\ndefault = [\"prosecraft\"]\n";
+        let apps = parse(desktop).unwrap();
+        assert!(!apps[0].1.web && apps[0].1.version.is_empty() && apps[0].1.bridge.is_empty());
+        let err = parse(&format!("{desktop}bridge = \"native\"\n")).unwrap_err();
+        assert!(err.contains("bridge is for web builds"), "{err}");
+        let err = parse(&format!("{desktop}sha256 = \"{}\"\n", "0".repeat(64))).unwrap_err();
+        assert!(err.contains("sha256 is for web builds"), "{err}");
+        let err = parse(&desktop.replace("web = false\n", "")).unwrap_err();
+        assert!(err.contains("a web build needs version"), "{err}");
     }
 
     /// The real manifest parses, so a typo in it fails the gate, not the image build.

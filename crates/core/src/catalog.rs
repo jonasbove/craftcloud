@@ -167,6 +167,15 @@ pub const APPS: &[CraftApp] = &[
         opens: &["mcraft", "sbs"],
         default: &["mcraft", "sbs"],
     },
+    CraftApp {
+        id: "prosecraft-rs",
+        name: "ProseCraft-rs",
+        color: "#4b171e",
+        ink: ["#e08a96", "#4b171e"],
+        experimental: false,
+        opens: &["prosecraft"],
+        default: &["prosecraft"],
+    },
 ];
 
 /// The lower-case extension of a file name or path (`"Q3 report.DOCX"` → `"docx"`), if any.
@@ -256,6 +265,8 @@ mod tests {
         assert_eq!(for_name("notes.MD").map(|a| a.id), Some("wordcraft"));
         assert_eq!(for_name("todo.txt").map(|a| a.id), Some("wordcraft"));
         assert_eq!(for_name("photo.JPG").map(|a| a.name), Some("PhotoCraft"));
+        assert_eq!(for_name("The Glass Orchard.ProseCraft").map(|a| a.id), Some("prosecraft-rs"), "a desktop app (web = false) opens its files too");
+        assert_eq!(app("ProseCraft-RS").map(|a| a.name), Some("ProseCraft-rs"));
         assert_eq!(for_name("archive.zip"), None);
         assert_eq!(for_name(".bashrc"), None);
         assert_eq!(extension("Makefile"), None);

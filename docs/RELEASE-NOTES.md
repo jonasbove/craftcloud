@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **ProseCraft-rs is a Craft app here.** `craftcloud apps` lists it, and `--app prosecraft-rs` (`files`, `ls`,
+  `recent`, `search`, `starred`, `save`) keeps its `.prosecraft` backups; a `.prosecraft` file saved without `--to`
+  goes to `ProseCraft-rs/`. It is a desktop app for now: `apps.toml` marks it `web = false`, so it has no pins and
+  the `-apps` image doesn't fetch it, and `cargo xtask bump-apps` passes it by. A web build follows once its
+  releases carry one.
 - **Nextcloud, experimental and off.** With `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, `craftcloud login cloud.example.org
   --kind nextcloud` signs in to a Nextcloud through the browser the way its own clients do (an app password is made
   for this computer; your account password never reaches CraftCloud; `--user NAME` takes an app password you made
