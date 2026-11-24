@@ -425,10 +425,13 @@ moves the pins to each app's latest release).
 | **SoundCraft** | Recording, editing and mixing audio | `.scraft`, `.scraftz`, `.wav`, `.flac` … | 0.20.1 | [Code](https://github.com/storytold/soundcraft) |
 | **TextureCraft** | 3D texture painting | `.tcraft`, `.glb`, `.gltf`, `.fbx` … | 0.6.1 | [Code](https://github.com/storytold/texturecraft) |
 | **MaterialCraft** | Procedural material design | `.mcraft`, `.sbs` | 0.4.1 | [Code](https://github.com/storytold/materialcraft) |
+| **LoveCraft** | Novel writing: outline, write, storyboard and publish | `.prosecraft` | 0.2.0 | [Code](https://github.com/jonasbove/LoveCraft) |
 
 `.md` and `.txt` open in WordCraft. In the browser, VectorCraft, EffectCraft, PhotoCraft, DesignCraft, SoundCraft,
 TextureCraft and MaterialCraft will go through CraftCloud's shim and are marked experimental
 ([docs/CRAFT-INTEGRATION.md](docs/CRAFT-INTEGRATION.md)).
+LoveCraft is not an ArtCraft app but is built the same way, with the same bridge; its id is `prosecraft-rs`,
+from its former name.
 
 ## License and credits
 

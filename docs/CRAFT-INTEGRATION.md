@@ -93,9 +93,10 @@ default app; `.md` and `.txt` are WordCraft's).
  {"id": "gridcraft", "name": "GridCraft", "experimental": false, "opens": ["xlsx", "…"], "default": ["xlsx", "…"]}]
 ```
 
-`--app` everywhere below takes an `id` from this list, in any case. A desktop app without a web build yet
-(`web = false` in `apps.toml`: LoveCraft, id `prosecraft-rs`, which opens `.prosecraft` backups) is listed and
-taken by `--app` like the others; only the `-apps` image leaves it out.
+`--app` everywhere below takes an `id` from this list, in any case. A desktop app without a web build
+(`web = false` in `apps.toml`; none today) is listed and taken by `--app` like the others; only the `-apps` image
+leaves it out. An id is stored, so it stays when an app is renamed: LoveCraft is `prosecraft-rs`, and opens
+`.prosecraft` backups.
 
 ### 3.2 "In CraftCloud": `craftcloud files --app <id> --json`
 
@@ -220,6 +221,6 @@ browser opens a file in its app through `craft-web-host`, the apps' host protoco
    it opened. A `412` means the file changed meanwhile: the save becomes a conflict copy next to it.
 4. `dirty` drives the "unsaved changes" warning; `failed` shows the app's error.
 
-Apps with the bridge built in (WordCraft, GridCraft, DeckCraft, PdfCraft, FigCraft, CADCraft, FilmCraft) need nothing
+Apps with the bridge built in (WordCraft, GridCraft, DeckCraft, PdfCraft, FigCraft, CADCraft, FilmCraft, LoveCraft) need nothing
 more. For the others the image injects a shim that speaks the same protocol on the app's behalf (marked experimental);
 `apps.toml` records which app uses which.

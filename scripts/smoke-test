@@ -124,7 +124,7 @@ if [ "$WEB_APPS" = off ]; then
     check "web apps not served" expect "$(status "$BASE/apps/wordcraft/index.html")" 404
 else
     check "config says web apps on" expect "$web_apps_json" true
-    check "apps manifest lists 15 apps" sh -c "curl -fsS '$BASE/craftcloud/apps.json' | grep -c '\"entry\"' | grep -qx 15"
+    check "apps manifest lists 16 apps" sh -c "curl -fsS '$BASE/craftcloud/apps.json' | grep -c '\"entry\"' | grep -qx 16"
     for app in $(curl -fsS "$BASE/craftcloud/apps.json" | sed -n 's/.*"id": "\([a-z0-9-]*\)".*/\1/p'); do
         check "$app index.html 200" expect "$(status "$BASE/apps/$app/index.html")" 200
     done

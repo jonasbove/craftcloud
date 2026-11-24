@@ -23,6 +23,10 @@ pub struct AppSpec {
     pub asset: String,
     #[serde(default)]
     pub sha256: String,
+    /// The name the app's releases give their web build, `<release_name>-web-<x.y.z>.zip`, when it
+    /// differs from the id (which is stored, so it can't follow a rename). Empty: the id.
+    #[serde(default)]
+    pub release_name: String,
     #[serde(default)]
     pub bridge: String,
     #[serde(default)]
@@ -50,15 +54,22 @@ const fn yes() -> bool {
 /// The apps in `apps.toml`, in file order. An id becomes a folder name, so it must be plain.
 /// A web build has all of its pins and a bridge; a desktop app (`web = false`) has none of them,
 /// so it can't be half pinned and fetched by mistake.
+/// The web build's asset is `<release name>-web-<version>.zip`, so a pin can't name another app's
+/// build or a version other than its own.
 pub fn parse(text: &str) -> Result<Vec<(String, AppSpec)>, String> {
     let doc: toml::Table = toml::from_str(text).map_err(|e| format!("apps.toml: {e}"))?;
     let apps = doc.get("apps").and_then(toml::Value::as_table).ok_or("apps.toml: no [apps] table")?;
     let mut out = Vec::with_capacity(apps.len());
     for (id, value) in apps {
-        if id.is_empty() || !id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_') {
+        if !is_plain_name(id) {
             return Err(format!("apps.toml: app id {id:?} must be lower-case letters, digits, - and _"));
         }
-        let spec: AppSpec = value.clone().try_into().map_err(|e| format!("apps.toml [apps.{id}]: {e}"))?;
+        let mut spec: AppSpec = value.clone().try_into().map_err(|e| format!("apps.toml [apps.{id}]: {e}"))?;
+        if spec.release_name.is_empty() {
+            spec.release_name.clone_from(id);
+        } else if !is_plain_name(&spec.release_name) {
+            return Err(format!("apps.toml [apps.{id}]: release_name must be lower-case letters, digits, - and _"));
+        }
         let pins = [("version", &spec.version), ("asset", &spec.asset), ("bridge", &spec.bridge)];
         if spec.web {
             if let Some((key, _)) = pins.iter().find(|(_, v)| v.is_empty()) {
@@ -67,12 +78,26 @@ pub fn parse(text: &str) -> Result<Vec<(String, AppSpec)>, String> {
             if !is_sha256_hex(&spec.sha256) {
                 return Err(format!("apps.toml [apps.{id}]: sha256 must be 64 lower-case hex digits"));
             }
+            let expected = web_asset_name(&spec.release_name, &spec.version);
+            if spec.asset != expected {
+                return Err(format!("apps.toml [apps.{id}]: asset must be {expected:?} (`<release_name>-web-<version>.zip`)"));
+            }
         } else if let Some((key, _)) = pins.iter().chain(&[("sha256", &spec.sha256)]).find(|(_, v)| !v.is_empty()) {
             return Err(format!("apps.toml [apps.{id}]: {key} is for web builds; this app has web = false"));
         }
         out.push((id.clone(), spec));
     }
     Ok(out)
+}
+
+/// The file name of a web build in a release: `<release_name>-web-<version>.zip`.
+pub fn web_asset_name(release_name: &str, version: &str) -> String {
+    format!("{release_name}-web-{version}.zip")
+}
+
+/// Lower-case letters, digits, `-` and `_`: safe as a folder name and in a file name.
+fn is_plain_name(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
 }
 
 pub fn is_sha256_hex(s: &str) -> bool {
@@ -120,7 +145,7 @@ fixups = [{ copy = "a", to = "b" }]
     fn refuses_unknown_fixups_and_bad_ids() {
         let base = |extra: &str, id: &str| {
             format!(
-                "[apps.{id}]\nname = \"A\"\nrepo = \"o/a\"\nversion = \"1\"\nasset = \"a.zip\"\nsha256 = \"{}\"\nbridge = \"native\"\nopens = []\ndefault = []\n{extra}",
+                "[apps.{id}]\nname = \"A\"\nrepo = \"o/a\"\nversion = \"1.0.0\"\nasset = \"{id}-web-1.0.0.zip\"\nsha256 = \"{}\"\nbridge = \"native\"\nopens = []\ndefault = []\n{extra}",
                 "0".repeat(64)
             )
         };
@@ -142,6 +167,36 @@ fixups = [{ copy = "a", to = "b" }]
         assert!(err.contains("sha256 is for web builds"), "{err}");
         let err = parse(&desktop.replace("web = false\n", "")).unwrap_err();
         assert!(err.contains("a web build needs version"), "{err}");
+    }
+
+    #[test]
+    fn the_release_name_defaults_to_the_id_and_names_the_asset() {
+        let web = |extra: &str, asset: &str| {
+            format!(
+                "[apps.prosecraft-rs]\nname = \"LoveCraft\"\nrepo = \"o/p\"\n{extra}version = \"0.2.0\"\nasset = \"{asset}\"\nsha256 = \"{}\"\nbridge = \"native\"\nopens = []\ndefault = []\n",
+                "0".repeat(64)
+            )
+        };
+        let apps = parse(&web("", "prosecraft-rs-web-0.2.0.zip")).unwrap();
+        assert_eq!(apps[0].1.release_name, "prosecraft-rs");
+        let apps = parse(&web("release_name = \"lovecraft\"\n", "lovecraft-web-0.2.0.zip")).unwrap();
+        assert_eq!((apps[0].0.as_str(), apps[0].1.release_name.as_str()), ("prosecraft-rs", "lovecraft"));
+        // The asset follows the release name and the version.
+        let err = parse(&web("release_name = \"lovecraft\"\n", "prosecraft-rs-web-0.2.0.zip")).unwrap_err();
+        assert!(err.contains("asset must be \"lovecraft-web-0.2.0.zip\""), "{err}");
+        let err = parse(&web("", "lovecraft-web-0.2.0.zip")).unwrap_err();
+        assert!(err.contains("asset must be \"prosecraft-rs-web-0.2.0.zip\""), "{err}");
+        let err = parse(&web("", "prosecraft-rs-web-0.1.0.zip")).unwrap_err();
+        assert!(err.contains("asset must be"), "{err}");
+        // It ends up in a file name.
+        for bad in ["../x", "Love", "a b", "x/y"] {
+            let err = parse(&web(&format!("release_name = \"{bad}\"\n"), &format!("{bad}-web-0.2.0.zip"))).unwrap_err();
+            assert!(err.contains("release_name must be"), "{bad}: {err}");
+        }
+        // A desktop app may name it ahead of its first web build.
+        let desktop =
+            "[apps.prosecraft-rs]\nname = \"LoveCraft\"\nrepo = \"o/p\"\nweb = false\nrelease_name = \"lovecraft\"\nopens = []\ndefault = []\n";
+        assert_eq!(parse(desktop).unwrap()[0].1.release_name, "lovecraft");
     }
 
     /// The real manifest parses, so a typo in it fails the gate, not the image build.

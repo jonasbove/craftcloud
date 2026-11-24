@@ -559,6 +559,7 @@ mod tests {
             version: "0.18.1".into(),
             asset: "wordcraft-web-0.18.1.zip".into(),
             sha256: "0".repeat(64),
+            release_name: "wordcraft".into(),
             bridge: "native".into(),
             query: String::new(),
             opens: vec!["docx".into(), "md".into()],
