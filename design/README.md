@@ -26,6 +26,7 @@ JSON directly. The PNGs in `exports/` were exported by FigCraft at 1x, with 2x c
 | **v2 · Files** (1440×900, phone 390×844) | `v2-web-files`, `v2-web-files-light`, `v2-web-files-empty`, `v2-web-files-loading`, `v2-web-files-details` (new in 0.2.0), `v2-web-files-menu`, `v2-web-files-selected`, `v2-web-files-drop`, `v2-web-files-upload`, `v2-web-files-upload-taken`, `v2-web-files-new-folder`, `v2-web-files-rename`, `v2-web-files-move`, `v2-web-files-versions` (new in 0.2.0), `v2-web-files-trash`, `v2-web-files-trash-delete`, `v2-web-files-trash-taken`, `v2-web-files-recent`, `v2-web-files-starred`, `v2-web-files-search`, `v2-web-files-phone`, `v2-web-files-phone-light` |
 | **v2 · Sharing** (1440×900; phone 390×844) | **New in 0.2.0:** `v2-web-share-create`, `v2-web-share-create-light`, `v2-web-share-create-date`, `v2-web-share-create-error`, `v2-web-share-created`, `v2-web-share-created-copied`, `v2-web-share-created-light`, `v2-web-share-account-menu`, `v2-web-share-links`, `v2-web-share-links-revoke`, `v2-web-share-links-empty`. **0.1.0:** `v2-web-share-public-file`, `v2-web-share-public-folder`, `v2-web-share-public-subfolder`, `v2-web-share-public-password`, `v2-web-share-public-password-wrong`, `v2-web-share-public-expired`, `v2-web-share-public-gone`, `v2-web-share-public-phone` (built by `tools/v2_sharing.py`) |
 | **v2 · Single sign-on** (1440×900) | `v2-web-admin-sso`, `v2-web-admin-sso-light`, `v2-web-admin-sso-testing`, `v2-web-admin-sso-works`, `v2-web-admin-sso-fails`, `v2-web-admin-sso-fails-light`, `v2-web-admin-sso-guard`, `v2-web-admin-sso-guard-untested`, `v2-web-admin-sso-env`, `v2-web-login-sso`, `v2-web-login-sso-light`, `v2-web-login-sso-only`, `v2-web-login-sso-error`, `v2-web-login-sso-busy`, `v2-web-login-sso-errors` (1568×1168: every sign-in error) |
+| **v2 · Apps** (1440×900; phone 390×844) | **New in 0.3.0:** `v2-web-apps-menu`, `v2-web-apps-menu-light`, `v2-web-apps-menu-phone` (built by `tools/v2_apps.py`) |
 | Archive (pre-v2) | the 41 earlier frames (launcher-era web frontend, the 2026-11-13 scope, the answers round) |
 
 What each screen shows:
@@ -87,6 +88,21 @@ What each screen shows:
     shared folder; DOWNLOAD ALL). Password 480 × 330 ("That password isn't right." in bad). Expired and removed links
     480 × 260. Phone (390 wide): the sheet is the window less 12 px a side, the header keeps the logo and the gear.
     The Type fact names the format ("DOCX document"); 0.1.0 still says "DOCX file".
+- **Apps menu** (`tools/v2_apps.py`, new in 0.3.0; `crates/ui-egui/src/web/apps_menu.rs`): when the server hosts
+  the Craft web apps (`/craftcloud/config.json`: `web_apps` on and `enabled_apps` not empty), a signed-in header
+  gets **APPS** between FILES and ADMIN: the app-grid glyph (nine 2.5 px squares in 14 px), a 6 px gap and the
+  HUD label, padding 0 8; on a phone (under 520 px) the glyph alone in a 24 px square. It is a button, not a page:
+  never inverted, sunken with ink_strong while hovered or open. With the apps off, or none switched on, the header
+  is as before.
+  - A click drops the menu 4 px under the header, its left edge on the APPS cell (kept 8 px inside the window):
+    bg, 1 px line_strong, the dialog shadow, 400 wide (the window less 16 on a phone). Head 40 (padding 0 14, a
+    hairline under it): "CRAFT APPS IN THE BROWSER" HUD ink, the count HUD muted at the right. Grid padding 8,
+    four tiles to a row, 96 × 88 (the width shared on a phone): the 40 px app icon 14 from the top, the name Small
+    12 ink 8 under it, centred, one line. Hover and focus: sunken, a 2 px rule along the top in the app's colour,
+    the name ink_strong; focus adds a 2 px accent_ink ring inside. Foot 34 (hairline on top): "Each app opens in a
+    new tab." Small 12 muted and the external-link glyph at the right.
+  - A tile opens `/apps/<id>/` in a new tab and closes the menu. Esc, a click outside or the focus moving out of
+    it closes it; the arrow keys, Home and End move between tiles.
 - **Desktop:**
   - The sign-in screens are sheets over the dimmed window, with the step cells.
   - Activity is the hero (40 px headline, meta line, SYNC NOW / PAUSE / OPEN FOLDER) above the launcher's list frame

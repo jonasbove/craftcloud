@@ -152,6 +152,8 @@ pub enum Icon {
     SignOut,
     Download,
     Cross,
+    /// Nine squares (the Apps menu).
+    Grid,
 }
 
 fn paint_icon(ui: &Ui, icon: Icon, centre: egui::Pos2, color: Color32) {
@@ -223,6 +225,13 @@ fn paint_icon(ui: &Ui, icon: Icon, centre: egui::Pos2, color: Color32) {
         Icon::Cross => {
             p.line_segment([centre + vec2(-4.5, -4.5), centre + vec2(4.5, 4.5)], s);
             p.line_segment([centre + vec2(-4.5, 4.5), centre + vec2(4.5, -4.5)], s);
+        }
+        Icon::Grid => {
+            for dy in [-4.25, 0.0, 4.25] {
+                for dx in [-4.25, 0.0, 4.25] {
+                    p.rect_filled(Rect::from_center_size(centre + vec2(dx, dy), vec2(2.5, 2.5)), 0.0, color);
+                }
+            }
         }
     }
 }
@@ -383,6 +392,11 @@ pub struct HeaderInfo<'a> {
     pub user: Option<&'a str>,
     /// The person's cell is drawn sunken (their account menu is open, or one of its pages).
     pub user_selected: bool,
+    /// The nav entry that opens a menu rather than a page (APPS): drawn with the app-grid glyph,
+    /// as a button that says whether its menu is open.
+    pub menu: Option<usize>,
+    /// That menu is open (the entry is drawn sunken).
+    pub menu_open: bool,
 }
 
 /// What was clicked in the header.
@@ -394,6 +408,8 @@ pub struct HeaderClicks {
     pub user: bool,
     /// Where the person's cell is, for the menu to hang under.
     pub user_rect: Option<Rect>,
+    /// Where the menu entry ([`HeaderInfo::menu`]) is, and its id (focus goes back to it).
+    pub menu: Option<(Rect, egui::Id)>,
 }
 
 /// The 48 px header: brand cell, "CRAFT APP SUITE", nav, and the person and SIGN OUT at the right.
@@ -431,7 +447,14 @@ pub fn header(ui: &mut Ui, rect: Rect, info: &HeaderInfo<'_>) -> HeaderClicks {
                 if compact && !*enabled {
                     continue;
                 }
-                if nav_item(ui, label, *selected, *enabled).clicked() {
+                let resp = if info.menu == Some(i) {
+                    let resp = menu_item(ui, label, info.menu_open, compact);
+                    clicks.menu = Some((resp.rect, resp.id));
+                    resp
+                } else {
+                    nav_item(ui, label, *selected, *enabled)
+                };
+                if resp.clicked() {
                     clicks.nav = Some(i);
                 }
                 if let Some(tag) = tag {
@@ -525,6 +548,32 @@ fn nav_item(ui: &mut Ui, label: &str, selected: bool, enabled: bool) -> Response
     ui.painter().galley_with_override_text_color(rect.center() - g.size() / 2.0, g, color);
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, enabled, selected, label.to_uppercase()));
     if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
+}
+
+/// The nav entry that opens a menu (APPS): the app-grid glyph and the label, or the glyph alone on
+/// a phone. Sunken while its menu is open. A button that says whether the menu is expanded.
+fn menu_item(ui: &mut Ui, label: &str, open: bool, compact: bool) -> Response {
+    let t = Tokens::get(ui.ctx());
+    let g = hud_galley(ui, label, t.muted);
+    let width = if compact { 24.0 } else { 8.0 + 14.0 + 6.0 + g.size().x + 8.0 };
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 24.0), Sense::click());
+    let lit = open || resp.hovered();
+    if lit {
+        ui.painter().rect_filled(rect, 0.0, t.sunken);
+    }
+    let color = if lit { t.ink_strong } else { t.muted };
+    let glyph_x = if compact { rect.center().x } else { rect.left() + 8.0 + 7.0 };
+    paint_icon(ui, Icon::Grid, pos2(glyph_x, rect.center().y), color);
+    if !compact {
+        ui.painter().galley_with_override_text_color(pos2(rect.left() + 8.0 + 14.0 + 6.0, rect.center().y - g.size().y / 2.0), g, color);
+    }
+    if resp.has_focus() {
+        ui.painter().rect_stroke(rect.expand(2.0), 0.0, Stroke::new(2.0, t.accent_ink), egui::StrokeKind::Outside);
+    }
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label.to_uppercase()));
+    ui.ctx().accesskit_node_builder(resp.id, |node| node.set_expanded(open));
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if compact { resp.on_hover_text(label) } else { resp }
 }
 
 /// A header icon cell's content: a 14 px icon in a 24×24 target, muted, strong on hover.

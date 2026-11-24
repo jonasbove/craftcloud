@@ -308,6 +308,8 @@ impl<B: Backend> WebApp<B> {
                 Ok(()) => {
                     a.saved_choice = Some((self.web_apps.on, self.web_apps.disabled.clone()));
                     a.toast = Some(("Web apps saved".into(), "The change applies to the next page that opens an app.".into(), 0.0));
+                    // The header's Apps menu follows the new choice.
+                    self.reload_config();
                 }
                 Err(e) => a.server_error = Some(e.to_string()),
             },
