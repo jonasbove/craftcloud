@@ -234,6 +234,23 @@ fn server_web_apps_save_without_leaving_admin() {
 }
 
 #[test]
+fn switching_web_apps_on_brings_the_apps_menu_without_a_reload() {
+    let mut h = server_page(ok(CATALOG.as_bytes()));
+    assert!(h.query_by_label("APPS").is_none(), "web apps off: no Apps menu");
+    h.get_all_by_label("ON").next().unwrap().click();
+    h.run();
+    h.get_by_label("SAVE").click();
+    h.run();
+    h.state_mut().backend.answer("/craftcloud/api/settings", ok(br#"{"web_apps":true,"disabled_apps":[],"bundled_apps":[]}"#));
+    h.run();
+    assert!(h.state().backend.waiting("/craftcloud/config.json"), "saving asks for config.json again");
+    let config = br#"{"version": "0.3.0", "web_apps": true, "public_url": "http://127.0.0.1:8093", "enabled_apps": ["wordcraft", "effectcraft"]}"#;
+    h.state_mut().backend.answer("/craftcloud/config.json", ok(config));
+    h.run();
+    h.get_by_label("APPS");
+}
+
+#[test]
 fn the_slim_image_shows_the_badge_and_cannot_switch_on() {
     let h = server_page(Ok(HttpResponse::new(404, Vec::new())));
     h.get_by_label("NEEDS THE -APPS IMAGE");
