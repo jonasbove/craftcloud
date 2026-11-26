@@ -433,7 +433,7 @@ moves the pins to each app's latest release).
 TextureCraft and MaterialCraft will go through CraftCloud's shim and are marked experimental
 ([docs/CRAFT-INTEGRATION.md](docs/CRAFT-INTEGRATION.md)).
 LoveCraft is not an ArtCraft app but is built the same way, with the same bridge; its id is `prosecraft-rs`,
-from its former name.
+from its former name, so its web build is served at `/apps/prosecraft-rs/`.
 
 ## License and credits
 

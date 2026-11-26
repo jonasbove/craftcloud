@@ -56,8 +56,15 @@ like any other: by a maintainer's explicit confirmation.
    `git tag -a v<version> -m "CraftCloud <version>"` on the merge commit and `git push origin v<version>`. Tags
    can't be moved or deleted afterwards, so check the commit first.
 7. **Watch** the Release and Server image runs. A failed package test means no draft: its log shows the distro,
-   the step and, for a sync failure, the server's log; fix it and tag a new version. When the draft has every file
-   (and FreeBSD/riscv64, or their jobs have given up), read it over and **publish** it. Published releases are immutable: their files can't be
+   the step and, for a sync failure, the server's log; fix it and tag a new version.
+
+   A failed `windows-test` (Windows tests) holds the draft back too. When its log shows a one-off failure (a
+   timeout, a runner fault) rather than a bug, re-run only that job: the run's page › the job › Re-run this job, or
+   `gh run rerun <run-id> --job <id>` with the `databaseId` from `gh run view <run-id> --json jobs`. GitHub re-runs
+   the jobs that wait on it with it, so the draft follows when it passes. A real Windows failure needs a fix and a
+   new tag.
+
+   When the draft has every file (and FreeBSD/riscv64, or their jobs have given up), read it over and **publish** it. Published releases are immutable: their files can't be
    changed afterwards.
 8. **After publishing:**
    - Update the AUR recipes in `packaging/arch/` (`pkgver`, `updpkgsums`, `makepkg --printsrcinfo > .SRCINFO`) and
