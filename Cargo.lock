@@ -1187,6 +1187,7 @@ dependencies = [
 name = "craftcloud-native"
 version = "0.2.0"
 dependencies = [
+ "craft-atomic",
  "craft-settings",
  "craftcloud-core",
  "gethostname",

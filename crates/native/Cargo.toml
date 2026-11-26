@@ -14,6 +14,8 @@ workspace = true
 [dependencies]
 craftcloud-core = { workspace = true }
 craft-settings = { workspace = true }
+# Crash-safe writes of the client's own files, and renames that wait out a brief lock (Windows).
+craft-atomic = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }

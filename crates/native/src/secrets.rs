@@ -163,22 +163,16 @@ impl TokenStore {
     }
 }
 
-/// Writes a file only the user can read (0600 on Unix), atomically.
+/// Writes a file only the user can read (0600 on Unix), atomically: flushed to disk before it
+/// replaces the old one, so a crash leaves the old file or the new one, never a torn one.
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let tmp = path.with_extension("json.tmp");
-    {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let mut file = options.open(&tmp).map_err(|e| e.to_string())?;
-        std::io::Write::write_all(&mut file, bytes).map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-    }
-    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    craft_atomic::WriteOptions::default()
+        .with_new_file_permissions(craft_atomic::NewFilePermissions::Private)
+        .atomic_write(path, bytes)
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

@@ -1500,6 +1500,7 @@ impl<S: RemoteStorage> Engine<S> {
         let copy_local = local_relative(&copy).map(|rel| root.join(rel)).ok_or("name not allowed")?;
         std::fs::rename(&local, &copy_local).map_err(|e| e.to_string())?;
         std::fs::rename(&part.0, &local).map_err(|e| e.to_string())?;
+        flush_folder_of(&local);
         let meta = local_meta(&local).ok_or("the file disappeared")?;
         state.files.insert(path.to_owned(), Known { etag, size: meta.size, mtime: meta.mtime, hash: None });
         let name = copy.rsplit('/').next().unwrap_or(&copy).to_owned();
@@ -1527,11 +1528,45 @@ impl Drop for PartFile {
 /// it must still be what was last synced (`known`), or not be there. A change made here meanwhile
 /// is never overwritten; the next pass sees both (#36). On any failure the part file goes.
 fn put_in_place(part: PartFile, dest: &Path, known: Option<&Known>) -> Result<LocalFile, String> {
-    if !replaceable(dest, known) {
-        return Err("changed here while it was downloading; it syncs in the next pass".into());
+    put_in_place_with(part, dest, known, craft_atomic::RenameRetry::platform(), |from, to| std::fs::rename(from, to))
+}
+
+/// [`put_in_place`] with the rename and its retries given. A rename refused because another
+/// program holds the file for a moment (on Windows, a virus scanner reading the new part file) is
+/// tried again a few times, and the last look comes again before every try: a file changed here
+/// while the rename waited is never overwritten. Then the folder is flushed, so the file is there
+/// after a crash once `state.json` says it was synced (else it would read as deleted here).
+fn put_in_place_with(
+    part: PartFile,
+    dest: &Path,
+    known: Option<&Known>,
+    retry: craft_atomic::RenameRetry,
+    mut rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> Result<LocalFile, String> {
+    let mut changed = false;
+    let placed = craft_atomic::retry_rename(retry, || {
+        if !replaceable(dest, known) {
+            changed = true;
+            return Err(std::io::Error::other("changed here"));
+        }
+        rename(&part.0, dest)
+    });
+    match placed {
+        Err(_) if changed => return Err("changed here while it was downloading; it syncs in the next pass".into()),
+        Err(e) => return Err(e.to_string()),
+        Ok(()) => {}
     }
-    std::fs::rename(&part.0, dest).map_err(|e| e.to_string())?;
+    flush_folder_of(dest);
     local_meta(dest).ok_or_else(|| "the file disappeared".into())
+}
+
+/// Flushes the folder `path` is in, so a rename into it survives a crash (Unix; nothing elsewhere).
+/// Best effort: the rename itself already happened.
+fn flush_folder_of(path: &Path) {
+    use craft_atomic::AtomicFs;
+    if let Some(dir) = path.parent() {
+        let _ = craft_atomic::RealFs.sync_dir(dir);
+    }
 }
 
 /// Part files left this long are left over (a crash, a file gone from the cloud before its
@@ -2303,9 +2338,9 @@ fn save_saved(path: &Path, saved: &Saved) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let json = serde_json::to_vec_pretty(saved).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    // Flushed before it replaces the old state: a crash never leaves a torn state.json, which
+    // would read as "nothing synced yet".
+    craft_atomic::atomic_write(path, &json).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -2982,6 +3017,48 @@ mod tests {
         assert!(super::put_in_place(super::PartFile(part.clone()), &dest, None).is_ok());
         assert_eq!(std::fs::read_to_string(&dest).unwrap(), "cloud bytes");
         assert!(!part.exists());
+    }
+
+    /// A part file another program holds for a moment (on Windows, a virus scanner reading it) is
+    /// put in place once it lets go, instead of being thrown away and downloaded again.
+    #[test]
+    fn a_part_file_held_for_a_moment_is_put_in_place_when_let_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let (part, dest) = (dir.path().join(".f.txt.e-1.craftcloud-part"), dir.path().join("f.txt"));
+        std::fs::write(&part, "cloud bytes").unwrap();
+        let mut tries = 0;
+        let retry = craft_atomic::RenameRetry { attempts: 3, first_delay_ms: 0 };
+        let placed = super::put_in_place_with(super::PartFile(part.clone()), &dest, None, retry, |from, to| {
+            tries += 1;
+            if tries == 1 { Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)) } else { std::fs::rename(from, to) }
+        });
+        assert!(placed.is_ok(), "{placed:?}");
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "cloud bytes");
+        assert!(!part.exists());
+    }
+
+    /// While the rename waits, the file here is changed: the retry looks again first and never
+    /// overwrites it.
+    #[test]
+    fn a_file_changed_here_while_the_rename_waits_is_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let (part, dest) = (dir.path().join(".f.txt.e-1.craftcloud-part"), dir.path().join("f.txt"));
+        std::fs::write(&part, "cloud bytes").unwrap();
+        std::fs::write(&dest, "synced").unwrap();
+        let meta = super::local_meta(&dest).unwrap();
+        let known = Known { etag: "\"e\"".into(), size: meta.size, mtime: meta.mtime, hash: None };
+        let retry = craft_atomic::RenameRetry { attempts: 3, first_delay_ms: 0 };
+        let placed = super::put_in_place_with(super::PartFile(part.clone()), &dest, Some(&known), retry, |from, to| {
+            if std::fs::read_to_string(to).is_ok_and(|s| s == "synced") {
+                // Someone saves here while the rename is held up.
+                std::fs::write(to, "saved here meanwhile").unwrap();
+                return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+            }
+            std::fs::rename(from, to)
+        });
+        assert!(placed.is_err());
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "saved here meanwhile", "never overwritten");
+        assert!(!part.exists(), "the part file is gone");
     }
 
     /// Leftover part files are cleaned up: only this client's own, only old ones, never inside
