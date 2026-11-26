@@ -327,7 +327,9 @@ pub fn logout(ctx: &mut Ctx) -> Result<()> {
     store.delete();
     let mut settings = ctx.settings();
     if settings.server == server.to_string() {
-        settings = craftcloud_core::sync::ClientSettings { server: settings.server, ..Default::default() };
+        // An update check switched off stays off (the desktop client's choice, not the sign-in's).
+        settings =
+            craftcloud_core::sync::ClientSettings { server: settings.server, check_for_updates: settings.check_for_updates, ..Default::default() };
         ctx.store.set(Prefs(settings));
         ctx.store.flush().map_err(|e| CliError::error(format!("couldn't save the settings: {e}")))?;
     }

@@ -14,6 +14,7 @@ pub mod session;
 pub mod settings;
 pub mod storage;
 pub mod sync;
+pub mod update_check;
 pub mod url_scheme;
 
 use std::path::PathBuf;

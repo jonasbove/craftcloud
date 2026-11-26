@@ -222,7 +222,7 @@ where each part stands, the milestones and what's next; [docs/STATUS.md](docs/ST
 checked, and the known limits.
 
 **What works:** the server image and its first-run setup, the desktop client's two-way sync folder (versions,
-conflict copies, sign-in through the browser), the web file browser, admin pages for users and server settings,
+conflict copies, sign-in through the browser, a note when a new version is out), the web file browser, admin pages for users and server settings,
 single sign-on, the command line, and the `craftcloud` contract the Craft apps and the launcher can use.
 
 **What's missing:**

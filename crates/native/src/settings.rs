@@ -68,4 +68,24 @@ mod tests {
         let file = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
         assert!(file.contains("folders = []"), "{file}");
     }
+
+    /// Checking for updates is on unless switched off: a config.toml from before the setting
+    /// reads as on, and "off" survives a save and a fresh start.
+    #[test]
+    fn checking_for_updates_is_on_unless_switched_off() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "schema_version = 1\nserver = \"https://cloud.example.org\"\n").unwrap();
+        let mut store = open_at(Location::Dir(dir.path().to_path_buf()));
+        assert!(store.get().0.check_for_updates, "an older file reads as on");
+        assert!(ClientSettings::default().check_for_updates);
+        store.set(Prefs(ClientSettings { check_for_updates: false, ..store.get().0.clone() }));
+        store.flush().unwrap();
+        drop(store);
+
+        let store = open_at(Location::Dir(dir.path().to_path_buf()));
+        assert!(!store.get().0.check_for_updates, "off stays off");
+        assert_eq!(store.get().0.server, "https://cloud.example.org");
+        let file = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(file.contains("check_for_updates = false"), "{file}");
+    }
 }

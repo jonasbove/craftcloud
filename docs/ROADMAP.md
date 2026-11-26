@@ -2,7 +2,7 @@
 
 **Stage: early alpha** · version 0.2.0 (share links and version history on the web, the Windows fixes, server hardening)
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-22 · **Change:** minor (version 0.2.0; the web header's Apps menu for the Craft web apps, for 0.3.0; M9 moves to
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-26 · **Change:** minor (the desktop client says when a new version is out; version 0.2.0; the web header's Apps menu for the Craft web apps, for 0.3.0; M9 moves to
 > 0.3.0; M9 pull requests 1 to 6, the sync engine behind a storage trait, sync modes, the check on connect with `craftcloud server check`, the generic WebDAV driver, the client trash's retention, the Nextcloud profile, the trash and version commands and the runtime watch, all behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in); on Linux the tray counts as up only while a tray
 > host is on the bus, so closing the window on stock GNOME quits instead of leaving an invisible client; a start at
 > login stays in the tray on Windows and X11, and opens the window where there is no tray; an offline desktop window waits before asking who is signed in again; the
@@ -29,7 +29,7 @@ backup of anything you sync with it.
 | Desktop sign-in (device flow, keychain) | done | [ARCHITECTURE.md › Sync](ARCHITECTURE.md#sync) |
 | Single sign-on (OpenID Connect) | done; tested end to end with Keycloak | [OIDC.md](OIDC.md) |
 | Two-way sync folder, versions, conflict copies | done; hardening from testers' reports | [ARCHITECTURE.md › Sync](ARCHITECTURE.md#sync) |
-| Desktop client (tray, Activity, Folders, Settings, start at login) | done | [README](../README.md#downloads) |
+| Desktop client (tray, Activity, Folders, Settings, start at login, says when a new version is out) | done | [README](../README.md#downloads) |
 | Web file browser (upload, download, rename, move, delete, trash, versions, details, recent, starred, search) | done | [design-notes/pass-2.md](design-notes/pass-2.md) |
 | Share links | done: public share page, CLI, the web's "Share link" sheet and "Your share links" page | [CLI.md › Share links](CLI.md#share-links) |
 | Admin (users, server settings, Craft web apps on or off) | done, on the web and in the CLI | [CLI.md](CLI.md#server-administration-owners-and-admins) |
@@ -116,6 +116,15 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: Desktop: the client says when a new version is out. Once a day (from the first frame the window
+  draws, never for a command, and not while it waits hidden in the tray) it reads the project's GitHub release
+  list through craft-libs' `craft-update` (default features: check only, nothing downloaded or installed) and
+  Settings › About says "CraftCloud <version> is out." with a link to the release page, or, for a deb, rpm, Arch,
+  Flatpak, Homebrew or Nix copy, to update it with the package manager. Settings › On this computer has
+  "Check for updates" (on unless switched off; older settings files read as on); the last look and its find
+  are kept in `update-check.json` beside the settings. Failures and GitHub's request limit are only logged.
+  Tested against recorded release lists (newer, same, older, a pre-release, a draft, the request limit) with no
+  network. craft-update's gaps are drafted in [UPSTREAM.md](UPSTREAM.md) (F3).
 - 2026-11-26: Build: `cargo xtask ci` runs its steps on craft-libs' `craft-xtask` runner, the Craft apps' gate
   runner, instead of its own loop. The steps, their commands and the summary are as before; a passing summary
   still names the tree it checked (`… in <path>`), which CraftCloud adds to craft-xtask's line.

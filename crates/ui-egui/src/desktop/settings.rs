@@ -2,6 +2,7 @@
 //! computer, About.
 
 use craftcloud_core::sync::{Appearance, SyncProgress, SyncState};
+use craftcloud_core::update::NewVersion;
 use egui::{Rect, Ui, vec2};
 
 use super::{DesktopApp, DesktopHost, host_of};
@@ -21,8 +22,10 @@ struct Picks {
     login: Option<bool>,
     pause: Option<bool>,
     appearance: Option<Appearance>,
+    /// "Check for updates" switched.
+    updates: Option<bool>,
     device_done: bool,
-    open: Option<&'static str>,
+    open: Option<String>,
 }
 
 impl<H: DesktopHost> DesktopApp<H> {
@@ -30,6 +33,8 @@ impl<H: DesktopHost> DesktopApp<H> {
         let version = env!("CARGO_PKG_VERSION");
         let caption = format!("CraftCloud {version} · {}", self.device);
         let mut picks = Picks::default();
+        // Only while the check is on: switched off, an earlier find isn't shown either.
+        let new_version = self.settings.check_for_updates.then(|| self.host.new_version()).flatten();
         let wide = area.width() >= 760.0;
         chrome::sheet(
             ui,
@@ -44,14 +49,14 @@ impl<H: DesktopHost> DesktopApp<H> {
                             self.account_panel(&mut cols[0], &mut picks);
                             self.computer_panel(&mut cols[1], p, &mut picks);
                             cols[1].add_space(14.0);
-                            about_panel(&mut cols[1], &mut picks);
+                            about_panel(&mut cols[1], new_version.as_ref(), &mut picks);
                         });
                     } else {
                         self.account_panel(ui, &mut picks);
                         ui.add_space(14.0);
                         self.computer_panel(ui, p, &mut picks);
                         ui.add_space(14.0);
-                        about_panel(ui, &mut picks);
+                        about_panel(ui, new_version.as_ref(), &mut picks);
                     }
                     if let Some(e) = &self.error {
                         let t = Look::get(ui.ctx());
@@ -78,12 +83,16 @@ impl<H: DesktopHost> DesktopApp<H> {
             self.settings.appearance = a;
             self.save_prefs();
         }
+        if let Some(on) = picks.updates {
+            self.settings.check_for_updates = on;
+            self.save_prefs();
+        }
         if picks.device_done || (picks.close && self.device_changed()) {
             self.settings.device_name = self.device.trim().to_owned();
             self.save_prefs();
         }
         if let Some(url) = picks.open {
-            self.host.open_url(url);
+            self.host.open_url(&url);
         }
         if picks.close {
             self.overlay = None;
@@ -132,6 +141,7 @@ impl<H: DesktopHost> DesktopApp<H> {
         let login = self.host.starts_at_login();
         let paused = p.state == SyncState::Paused;
         let appearance = self.settings.appearance;
+        let updates = self.settings.check_for_updates;
         chrome::panel(ui, "On this computer", |ui| {
             desk::setting_row(ui, "Start at login", |ui| picks.login = desk::off_on(ui, "Start at login", login, true));
             // Named for the state it is in, not as an on/off "Pause syncing" (whose "Off" read as a double negative).
@@ -143,15 +153,30 @@ impl<H: DesktopHost> DesktopApp<H> {
                 let current = all.iter().position(|a| *a == appearance).unwrap_or(0);
                 picks.appearance = desk::cells(ui, "Appearance", &["System", "Dark", "Light"], current, true, None).map(|i| all[i]);
             });
+            desk::setting_row(ui, "Check for updates", |ui| picks.updates = desk::off_on(ui, "Check for updates", updates, true));
         });
     }
 }
 
-fn about_panel(ui: &mut Ui, picks: &mut Picks) {
+/// The About panel; `new_version` is a newer release the update check found.
+fn about_panel(ui: &mut Ui, new_version: Option<&NewVersion>, picks: &mut Picks) {
     let t = Look::get(ui.ctx());
     chrome::panel(ui, "About", |ui| {
         let platform = format!("{} {}", std::env::consts::OS, std::env::consts::ARCH);
         chrome::meta(ui, &[&format!("CraftCloud {}", env!("CARGO_PKG_VERSION")), &platform, "MIT or Apache-2.0"]);
+        if let Some(new) = new_version {
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(format!("CraftCloud {} is out.", new.version)).size(14.0).color(t.ink_strong));
+            // A package manager's copy is updated there; replacing it by hand would leave its record stale.
+            let how = if new.package_managed { "Update it with your package manager." } else { "Download it from the release page." };
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                ui.label(egui::RichText::new(how).size(12.0).color(t.muted));
+                if desk::hud_link(ui, "What's new").clicked() {
+                    picks.open = Some(new.url.clone());
+                }
+            });
+        }
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
@@ -162,7 +187,7 @@ fn about_panel(ui: &mut Ui, picks: &mut Picks) {
                     chrome::hud(ui, "·", t.muted);
                 }
                 if desk::hud_link(ui, label).clicked() {
-                    picks.open = Some(url);
+                    picks.open = Some(url.to_owned());
                 }
             }
         });

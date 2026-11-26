@@ -180,6 +180,13 @@ fn scenes() -> Vec<Scene> {
             app.overlay = Some(Overlay::Settings);
             app
         }),
+        ("settings-new-version", || {
+            let mut app = with(SyncState::UpToDate);
+            app.host.new_version =
+                Some(craftcloud_core::update::NewVersion { version: "0.3.0".into(), url: super::tests::RELEASE_PAGE.into(), package_managed: true });
+            app.overlay = Some(Overlay::Settings);
+            app
+        }),
         ("activity-long-error", || {
             let mut app = signed_in();
             let mut p = up_to_date();

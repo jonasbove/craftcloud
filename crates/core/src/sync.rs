@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The client's saved choices (stored with craft-settings; the tokens live in the keychain).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClientSettings {
     /// Server base URL; empty until signed in.
@@ -32,6 +32,27 @@ pub struct ClientSettings {
     /// The WebDAV base for another kind of server (`https://cloud.example.org/remote.php/dav/files/john/`);
     /// empty for OxiCloud, whose base is `<server>/webdav/`.
     pub dav_url: String,
+    /// Look once a day for a newer CraftCloud release and say so in Settings › About (it is
+    /// never downloaded or installed). On unless switched off; a file from before this field
+    /// reads as on.
+    pub check_for_updates: bool,
+}
+
+impl Default for ClientSettings {
+    fn default() -> Self {
+        Self {
+            server: String::new(),
+            local_folder: String::new(),
+            excluded: Vec::new(),
+            folders: Vec::new(),
+            sync_root_files: false,
+            device_name: String::new(),
+            appearance: Appearance::default(),
+            storage: Storage::default(),
+            dav_url: String::new(),
+            check_for_updates: true,
+        }
+    }
 }
 
 /// The kind of server the client syncs with (docs/WEBDAV-STORAGE.md § 7.4). Only `oxicloud` and
@@ -82,6 +103,18 @@ impl Storage {
 }
 
 impl ClientSettings {
+    /// What a sign-out on the desktop keeps: the server (to sign in again), this computer's
+    /// choices (its name, the appearance, checking for updates); the sync's folder and choices go.
+    pub fn after_sign_out(&self) -> Self {
+        Self {
+            server: self.server.clone(),
+            device_name: self.device_name.clone(),
+            appearance: self.appearance,
+            check_for_updates: self.check_for_updates,
+            ..Self::default()
+        }
+    }
+
     /// Whether these are 0.1.0's settings, with a list of included folders.
     pub fn needs_migration(&self) -> bool {
         !self.folders.is_empty()
@@ -480,7 +513,27 @@ pub fn local_relative_on(path: &str, platform: crate::names::Platform) -> Option
 
 #[cfg(test)]
 mod tests {
-    use super::{ClientSettings, SyncPlan, in_plan, local_relative};
+    use super::{Appearance, ClientSettings, SyncPlan, in_plan, local_relative};
+
+    /// Signing out forgets the sync but keeps this computer's choices: an update check switched
+    /// off stays off.
+    #[test]
+    fn a_sign_out_keeps_this_computers_choices() {
+        let before = ClientSettings {
+            server: "https://cloud.example.org".into(),
+            local_folder: "/home/john/CraftCloud".into(),
+            excluded: vec!["Photos".into()],
+            sync_root_files: true,
+            device_name: "Laptop".into(),
+            appearance: Appearance::Dark,
+            check_for_updates: false,
+            ..ClientSettings::default()
+        };
+        let after = before.after_sign_out();
+        assert_eq!(after.server, "https://cloud.example.org");
+        assert_eq!((after.device_name.as_str(), after.appearance, after.check_for_updates), ("Laptop", Appearance::Dark, false));
+        assert!(after.local_folder.is_empty() && after.excluded.is_empty() && !after.sync_root_files);
+    }
     use std::path::PathBuf;
 
     fn plan() -> SyncPlan {
