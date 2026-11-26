@@ -52,3 +52,17 @@ This project includes or adapts work from:
 
 - Inter, Archivo and Geist Mono, SIL Open Font License 1.1; the licences are next to the font files
   in crates/ui-egui/assets/fonts/.
+
+- craft-ui (craft-libs' craft-ui-contract and craft-ui-widgets, https://github.com/storytold/craft-libs at
+  de994d8ddfbd4cb78a1b05d690bd86e41c680ca4), MIT OR Apache-2.0, in the desktop client only (not the web
+  frontend). craft-ui-contract builds in, as its ATTRIBUTION.md and crates/ui-contract/icons/ATTRIBUTION.md
+  record them:
+  - its icon sets: Lucide 1.63.0 (https://lucide.dev), ISC; Phosphor 2.0.8, regular weight
+    (https://phosphoricons.com), MIT, with craft-libs' own drawings in its style, MIT OR Apache-2.0; IBM Carbon
+    11.91.0 (https://carbondesignsystem.com), Apache-2.0; Tabler Icons 3.50.0 (https://tabler.io/icons), MIT.
+    Each set's licence is in that folder (crates/ui-contract/icons/<set>/LICENSE).
+  - Inter (Regular and SemiBold, subset to Latin, Greek and Cyrillic), SIL Open Font License 1.1
+    (crates/ui-contract/fonts/inter/OFL.txt).
+  - egui's default faces, compressed (epaint_default_fonts, (MIT OR Apache-2.0) AND OFL-1.1 AND
+    Ubuntu-font-1.0): Hack (MIT and Bitstream Vera licence), Ubuntu Light (Ubuntu Font Licence 1.0), Noto Emoji
+    (SIL OFL 1.1) and emoji-icon-font (MIT).

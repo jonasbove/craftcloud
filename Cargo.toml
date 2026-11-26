@@ -42,6 +42,13 @@ craft-xtask = { version = "=0.1.0", git = "https://github.com/storytold/craft-li
 craft-update = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "de994d8ddfbd4cb78a1b05d690bd86e41c680ca4" }
 # The colour themes: theme files, token derivation and the built-ins (no egui, no I/O; builds for wasm32).
 craft-theme = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "de994d8ddfbd4cb78a1b05d690bd86e41c680ca4" }
+# craft-ui on the desktop client only (crates/ui-egui/src/framework.rs): its runtime and components, not the
+# `craft-ui` facade (panels, patterns, shell and cloud pages, none of them used), and what the runtime is installed with.
+craft-ui-contract = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "de994d8ddfbd4cb78a1b05d690bd86e41c680ca4" }
+craft-ui-widgets = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "de994d8ddfbd4cb78a1b05d690bd86e41c680ca4" }
+craft-host = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "de994d8ddfbd4cb78a1b05d690bd86e41c680ca4" }
+craft-window = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "de994d8ddfbd4cb78a1b05d690bd86e41c680ca4" }
+craft-behavior = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "de994d8ddfbd4cb78a1b05d690bd86e41c680ca4" }
 
 [profile.dev.package."*"]
 opt-level = 2

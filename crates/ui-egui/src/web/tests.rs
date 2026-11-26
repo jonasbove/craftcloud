@@ -265,3 +265,15 @@ fn too_many_sign_ins_say_how_long_to_wait() {
     h.run();
     h.get_by_label("Too many sign-in attempts. Try again in 60 s.");
 }
+
+/// The web frontend never installs the craft-ui runtime (it is the desktop client's, and the wasm build doesn't link
+/// it): after the frontend's passes, an install on its context still succeeds. Native only: the craft-ui crates it
+/// calls are desktop-target dependencies, so a wasm test runner would not have them.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn the_web_frontend_does_not_install_the_craft_ui_runtime() {
+    let mut h = app("/", None);
+    h.run();
+    let spec = craft_ui_contract::InstallSpec::new(craft_host::target::ShellInfo::default(), std::sync::Arc::new(craft_window::system::NoWindows));
+    assert!(craft_ui_contract::install(&h.ctx, spec).is_ok(), "the web frontend had installed the runtime");
+}

@@ -22,6 +22,17 @@ jiff = { version = "0.2", default-features = false, features = ["std"] }
 # Decoding the logo PNG (as craft-launcher does for its icons) and the server's JPEG/WebP thumbnails.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 
+# craft-ui on the desktop client only, as craft-launcher hosts it (framework.rs): the runtime and its push button on
+# the sign-in sheets. The web frontend links none of it (`cargo tree -p craftcloud-web --target wasm32-unknown-unknown`).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+craft-ui-contract = { workspace = true }
+craft-ui-widgets = { workspace = true }
+craft-host = { workspace = true }
+craft-window = { workspace = true }
+# `IconId`: craft-ui's icons by name.
+craft-behavior = { workspace = true }
+log = { workspace = true }
+
 [features]
 # `cargo test -p craftcloud-ui-egui --features shots -- --ignored shots` renders every desktop
 # screen to PNGs in $CRAFTCLOUD_SHOTS (needs a GPU or a software Vulkan driver).

@@ -254,13 +254,23 @@ fn shots() {
                 egui::Theme::Light => craftcloud_core::sync::Appearance::Light,
             };
             // The window's whole area, as eframe gives it (the harness adds a margin).
-            let mut h = Harness::builder().with_size(size).with_pixels_per_point(1.0).with_theme(theme).build_ui_state(
-                |ui, app: &mut App| {
-                    let full = ui.ctx().content_rect();
-                    ui.scope_builder(egui::UiBuilder::new().max_rect(full), |ui| app.ui(ui));
-                },
-                app,
-            );
+            // The craft-ui runtime as `main` installs it, before the first pass.
+            let mut h = Harness::builder()
+                .with_context_setup(crate::framework::install_headless)
+                .with_size(size)
+                .with_pixels_per_point(1.0)
+                .with_theme(theme)
+                .build_ui_state(
+                    |ui, app: &mut App| {
+                        let full = ui.ctx().content_rect();
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(full), |ui| app.ui(ui));
+                    },
+                    app,
+                );
+            crate::framework::before_input(&h.ctx);
+            // Again once the app has set its appearance and palette, as eframe's `raw_input_hook` does every pass.
+            h.run_steps(1);
+            crate::framework::before_input(&h.ctx);
             h.run_steps(4);
             let image = h.render().unwrap_or_else(|e| panic!("render {name}: {e}"));
             let path = dir.join(format!("{name}{suffix}.png"));

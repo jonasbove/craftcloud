@@ -413,8 +413,8 @@ profile is `crates/native/src/storage/profile/nextcloud.rs`. Nothing below is fi
 
 ## F. craft-libs (github.com/storytold/craft-libs)
 
-The Craft apps' shared libraries. CraftCloud pins some of them (`craft-dav`, `craft-xml`, `craft-settings`) and
-proposes the drafts below; nothing here is filed.
+The Craft apps' shared libraries. CraftCloud pins some of them (`craft-dav`, `craft-xml`, `craft-settings`, and on
+the desktop `craft-ui-contract` and `craft-ui-widgets`) and proposes the drafts below; nothing here is filed.
 
 ### F1. A `CloudBackend` that runs `craftcloud`
 

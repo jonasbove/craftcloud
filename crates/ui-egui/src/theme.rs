@@ -124,6 +124,11 @@ fn install_fonts(ctx: &egui::Context) {
     let mut display_stack = vec!["Archivo".to_owned()];
     display_stack.extend(fallbacks);
     fonts.families.insert(display(), display_stack);
+    // On the desktop the craft-ui runtime keeps its own record of the faces (the line ratio its controls are sized by),
+    // as craft-launcher's `theme::install_fonts` hands them over; the web build has no craft-ui.
+    #[cfg(not(target_arch = "wasm32"))]
+    craft_ui_contract::fonts::load(ctx, fonts);
+    #[cfg(target_arch = "wasm32")]
     ctx.set_fonts(fonts);
 }
 
@@ -147,7 +152,8 @@ pub fn add_fallback_font(ctx: &egui::Context, name: &str, data: egui::FontData) 
 #[derive(Clone, Copy)]
 struct Active(Palette);
 
-fn active(ctx: &egui::Context) -> Palette {
+/// The palette in use: the chosen theme's, or CraftCloud's own.
+pub(crate) fn active(ctx: &egui::Context) -> Palette {
     ctx.data(|d| d.get_temp::<Active>(egui::Id::NULL)).map_or(Palette::CRAFTCLOUD, |a| a.0)
 }
 

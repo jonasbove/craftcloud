@@ -595,6 +595,11 @@ impl eframe::App for Window<'_> {
         }
     }
 
+    /// The craft-ui runtime's root values for the coming pass: the palette in use, the appearance and the zoom.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, _raw_input: &mut egui::RawInput) {
+        craftcloud_ui_egui::framework::before_input(ctx);
+    }
+
     /// eframe has just written the window's place and size: never a minimised or hidden one's.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.geometry.save(storage);
@@ -815,6 +820,8 @@ fn main() -> ExitCode {
                     "CraftCloud",
                     options(!hidden),
                     Box::new(move |cc| {
+                        // The craft-ui runtime, before the window's first pass (it reads nothing slow: no D-Bus).
+                        craftcloud_ui_egui::framework::install(&cc.egui_ctx);
                         wake.set_window(Some(cc.egui_ctx.clone()));
                         if client.tray.is_none() && !TRAY_WITHOUT_WINDOW {
                             let wake = Arc::clone(&wake);
