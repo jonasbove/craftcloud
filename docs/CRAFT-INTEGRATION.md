@@ -194,18 +194,78 @@ This needs a change in the launcher, so it's a proposal to its authors, not some
 
 ## 5. "Open from / Save to CraftCloud" inside the apps (proposal, upstream)
 
-The apps share libraries (`craft-libs`). A small `craft-cloud` crate there could add two menu items to every app,
-built on section 3 alone (it runs `craftcloud` and parses its JSON; no HTTP, no tokens):
+The apps share libraries (`craft-libs`). Their Open, Save and Share pages already exist there, vendor-neutral:
+`craft-cloud` holds the contract (an `Entry`, a `Capability`, a `Permission`) and `craft-cloud-ui` the pages. The
+pages never reach a cloud themselves. They hand a `Job` to a `CloudBackend` (`fn submit(&self, job: Job, post:
+Post)`) and draw the `Event`s it sends back; a failure is a `Fault`, and `Fault::Conflict` is a conditional write
+the server refused. The share dialog has its own `ShareBackend`. `craft-cloud-local` (a folder on disk) is the
+reference backend.
 
-- **Open from CraftCloud…** lists `craftcloud files --app <self> --json` in the app's own dialog (filter by name,
-  sort by `modified`), then opens the chosen `local_path`. Files that aren't here (`local_path` `null`) are shown
-  greyed out.
-- **Save to CraftCloud…** writes the document to a temporary file, runs `craftcloud save <tmp> --to <folder> --wait
-  --json` (the folder picked from the folders in `files`, default the app's own), and shows "Saving to CraftCloud…"
-  until it returns. Exit 5 asks "Replace?" and repeats with `--force`; the app then reopens `local_path`, so later
-  saves go straight into the sync folder.
+No backend for a WebDAV server exists yet: that is step 2 of RFC-0024 in `storytold/craft-contrib`, and craft-libs#2179
+notes it has not started. craft-libs#2452 (Google Drive as a `CloudBackend` of its own) is the precedent for one
+provider's backend. Nine app pull requests ("Open, Save and Share against cloud storage") wait for a backend to
+run against.
 
-Without `craftcloud`, the items are hidden. Until then, section 1 gives the same result with the system dialogs.
+**The proposal: a `CloudBackend` in craft-libs that runs `craftcloud`.** It lives in craft-libs, next to the
+others, and does what section 3 does: it runs the `craftcloud` program with `--json` and reads its answer. It speaks
+no HTTP and holds no token. So the sign-in, the kept versions and the write guards stay in CraftCloud, as section 3
+promises. Without
+`craftcloud` on the computer, the backend reports no account and the pages offer nothing.
+
+| `Job` | `craftcloud` command | Notes |
+|---|---|---|
+| `Account` | `status --json` (and `server info --json`) | Who is signed in and where. Not signed in (exit 3) is `Fault::NotLinked`; the capabilities are conditional writes and links |
+| `SignIn` | `login --no-browser --json` | The client's browser sign-in: the first line's `verification_uri` becomes `Event::Browser`, the second line the account |
+| `LinkStart`, `LinkPoll` | the same sign-in | CraftCloud's storage is the account itself, so there is nothing separate to link: signed in is linked |
+| `List` | `files --json` (`--in FOLDER`) | Each file with the ETag the client last saw, so a later write can be guarded |
+| `Read` | the file's bytes on stdout | `get PATH -` writes a file to stdout today; the backend also needs the ETag of the bytes it read |
+| `Write` | `save --if-match <etag>` | Refused, with a distinct conflict, when the file changed since that ETag: `Fault::Conflict`. The old bytes are kept as a version first, as for every overwrite |
+| `Create` | `save` without `--force` | Never replaces: a name already taken is refused (exit 5), and the page asks for another |
+| `SignOut` | `logout --json` | This signs the whole computer out of CraftCloud, the desktop client too, so the page should say so |
+
+**What CraftCloud adds for this** (the contract, in its own pull request, not shipped yet): an `etag` field in
+`craftcloud files --json`, `craftcloud save --if-match <etag>` that answers a conflict of its own (not exit 5) when
+the ETag is stale, and a read of one file's bytes to stdout with its ETag. Section 3 lists them once they ship.
+
+**Left unsupported:** `Conversation` (CraftCloud has no calls or chat rooms), contacts and sharing with a person
+(OxiCloud's user shares aren't in the CLI), and notifications. The backend reports none of these capabilities, so
+the pages hide them rather than offer something that fails. `SharedWithMe` answers an empty list.
+
+**Gaps:**
+
+- **No rename-stable id.** An `Entry` has a `room` that must survive a rename. WebDAV has no file id (section 3,
+  and the kept versions are keyed by path for the same reason), so the backend can only use the path, and a room
+  splits when the file is renamed or moved. The server listing's `id` (OxiCloud's REST id) is stable, but other
+  servers have none.
+- **Links carry no permission.** The share dialog offers view or edit (`Permission`). A CraftCloud share link
+  (`craftcloud share create`) has an expiry and an optional password but no view or edit setting, so the backend
+  makes links only and doesn't offer the choice.
+
+Until the backend exists, section 1 gives the same result with the system dialogs, and an app can call section 3
+itself, as LoveCraft does.
+
+### 5.1 Suite accounts
+
+craft-libs also has `craft-suite-account`: one account list for the whole suite (`accounts.json` in the suite's
+settings folder, `<config>/artcraft/`), with one token per account in the OS keychain (service
+`ai.storyteller.artcraft.suite-account`). CraftCloud doesn't write its sign-in there for now, and keeps it in its
+own keychain entry. The reasons:
+
+- Nothing reads the store yet. The only consumer in sight is an open craft-launcher pull request (#366), for a
+  CollabCraft session.
+- An account row has no kind or provider field. A reader can't tell a CraftCloud row from another kind of
+  deployment, and would treat it as one.
+- `sign_in` always makes the new account the active one, so storing CraftCloud's sign-in would change which account
+  the other apps use.
+- OxiCloud rotates refresh tokens and ends a sign-in when a spent one is used again. The client refreshes under its
+  own lock file (`crates/native/src/session.rs`). An app refreshing the same token from the suite store would not
+  take that lock, and the two could end each other's sign-in.
+- A device token has the same rights as the account ([STATUS.md](STATUS.md)). Through `craftcloud` an app reaches
+  the account only through the commands above; a token in the suite store would carry all of its rights to every
+  app that reads it.
+
+The asks that would change this are in [UPSTREAM.md § F2](UPSTREAM.md#f2-craft-suite-account-what-a-provider-like-craftcloud-would-need).
+Until then the backend above is the way in, and it needs no token in the apps.
 
 ## 6. The Craft web apps in the browser
 
