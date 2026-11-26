@@ -70,10 +70,11 @@ them, this says why. Nothing here weakens a rule for new work; it says what exis
 
 - **Not a storytold repository.** CraftCloud lives at https://github.com/jonasbove/craftcloud, its only home: the
   code, issues, pull requests, releases and images are all there. It follows the Craft apps' house rules by choice.
-  Its CI does not call `storytold/craft-common-actions` (core rule 11): `.github/workflows/ci.yml` writes the same gate
-  out, because the shared workflow needs a paid StepSecurity subscription in a private repository (see the comment
-  at its top), which this repository was when that was decided; it is public since 2026-11-14. For the same reason
-  there is no `house-rules.yml` workflow yet.
+  Its CI calls `storytold/craft-common-actions` (core rule 11) for the gate (`ci.yml`'s `gate` and `web`, pinned to
+  a commit). `nix.yml` and `packaging-lint.yml` still write the shared checks out: the shared workflows use
+  StepSecurity's actions, which need a paid subscription in a private repository, and this repository was private
+  when that was decided. It is public since 2026-11-14, so they move to the shared workflows, each in a pull request
+  of its own. For the same reason there is no `house-rules.yml` workflow yet.
 - **`main` changes only through a pull request** (core rule 8), enforced by a GitHub ruleset. **Every pull
   request is merged by a maintainer's explicit confirmation; agents open pull requests and ask, they never merge on
   their own.** One topic per pull request, on a branch (`fix/…`, `docs/…`, `feature/…`, `chore/…`), titled with a
@@ -261,11 +262,15 @@ README's Status section in step.
 - Never add, guess or copy anyone's name from git config, commit authors or GitHub profiles.
 
 ## CI workflows
-- `.github/workflows/ci.yml` (**CI**): `test` runs `cargo xtask ci` on Linux and checks that `Cargo.lock` is
-  unchanged; `web` builds the web frontend with Trunk; `live` builds the server image from the tree, starts it with
+- `.github/workflows/ci.yml` (**CI**): `gate` and `web` call craft-common-actions' `gate.yml`, pinned to a commit
+  rather than `@main` (CraftCloud is not a storytold repository, so a breaking change there would come without a pull
+  request here): `gate` runs `cargo xtask ci` on Linux and checks that `Cargo.lock` is unchanged, `web` builds the web
+  frontend with Trunk (`cargo xtask web`), each with a dependency cache of its own. `live` and `deny` are
+  CraftCloud's own: `deny` runs `cargo deny check`; `live` builds the server image from the tree, starts it with
   `scripts/smoke-test` (`KEEP=1`) and runs `apps/craftcloud/tests/cli_live.rs` and `crates/native/tests/live.rs`
-  against it, the server's logs kept as an artifact when they fail. Linux only. macOS and Windows build on `v*` tags
-  and by hand (`release.yml`): a choice made while the repository was private, where their minutes cost 10× and 2×.
+  against it, the server's logs kept as an artifact when they fail. Linux only; macOS and Windows build on `v*` tags
+  and by hand (`release.yml`). That was chosen while the repository was private, where their minutes cost 10× and 2×;
+  in a public repository they cost nothing, and adding them to CI is a maintainer decision.
 - `.github/workflows/release.yml` (**Release**, replaces the old `desktop.yml`): on `v*` tags and by hand, the
   Craft apps' release file set from `packaging/` (Linux AppImage, deb, rpm, tar.gz, Flatpak and Arch packages for
   x86_64 and aarch64; Windows x64 and arm64 MSI and portable zip; a universal macOS DMG; FreeBSD and Linux riscv64

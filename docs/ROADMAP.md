@@ -115,6 +115,12 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: CI: `ci.yml`'s `gate` and `web` jobs call craft-common-actions' shared `gate.yml`, pinned to a
+  commit, instead of writing the gate out: `cargo xtask ci` with the lockfile check, and the Trunk web build with a
+  cache of its own. `live` and `deny` stay CraftCloud's own and unchanged. The reason for writing the gate out
+  (StepSecurity's actions needed a paid plan in a private repository) went when the repository became public. The
+  checks are now named `gate / gate (ubuntu-24.04)` and `web / gate (ubuntu-24.04)`. UPSTREAM.md D1 says which
+  workflows stay CraftCloud's own and why.
 - 2026-11-26: Agents: AGENTS.md's facts: the repository is public (the reasons for its own CI and Linux-only CI
   were set while it was private); the CI `live` job's owner has a random password made for the run; `deny.toml` is
   stricter than the licence allowlist. The password rule names its limit: never the account password on

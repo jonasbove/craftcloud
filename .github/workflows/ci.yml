@@ -1,12 +1,16 @@
 name: CI
 
-# The same gate as craft-launcher's CI (`cargo xtask ci`: fmt, clippy, tests, wasm clippy, plus the
-# Trunk web build), written out here instead of calling storytold/craft-common-actions gate.yml:
-# that workflow uses StepSecurity-maintained actions, which need a paid StepSecurity subscription in
-# private repositories. Upstream actions, pinned by commit.
+# The Craft apps' gate through craft-common-actions' gate.yml, as craft-launcher's CI calls it: `gate` runs
+# `cargo xtask ci` (fmt, clippy, tests, wasm clippy) and checks that Cargo.lock is unchanged; `web` builds the web
+# frontend with Trunk. `live` and `deny` are CraftCloud's own, with upstream actions pinned by commit.
 #
-# Linux only: private-repo minutes cost 2x on Windows and 10x on macOS; release.yml builds those on
-# tags and by hand.
+# The shared workflow is pinned to a craft-common-actions commit (main on 2026-11-26), not @main as the Craft apps
+# call it: CraftCloud is not a storytold repository, so a breaking change there would not come with a pull request
+# here. Move the pin in a CI pull request of its own, after reading the change. (gate.yml pins the actions it
+# uses by commit itself.)
+#
+# Linux only: macOS and Windows build in release.yml, on tags and by hand. That was chosen while the repository was
+# private, where their minutes cost 10x and 2x; adding them here is a maintainer decision.
 
 on:
   push:
@@ -31,53 +35,28 @@ env:
 
 jobs:
   gate:
-    name: gate (ubuntu-24.04)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - name: Linux build packages (egui/winit/wgpu headers, as craft-launcher)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # installs the toolchain named below
-        with:
-          toolchain: 1.100.0  # = rust-toolchain.toml
-          components: clippy, rustfmt
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        with:
-          shared-key: gate
-          save-if: ${{ github.event_name != 'pull_request' }}
-      - name: cargo xtask ci
-        run: cargo xtask ci
-      - name: Lockfile unchanged
-        run: git diff --exit-code Cargo.lock
+    uses: storytold/craft-common-actions/.github/workflows/gate.yml@4ec2a14646b538253fd5ebe109bf463a3d31b061
+    with:
+      # The default command (`cargo xtask ci`), toolchain (rust-toolchain.toml) and target (wasm32).
+      # CraftCloud vendors its fonts (crates/ui-egui/assets/fonts/) and builds nothing from craft-fonts.
+      craft-fonts-ref: ""
+      # `cargo xtask ci` runs cargo test, not nextest.
+      tools: ""
+      # egui/winit/wgpu headers, as craft-launcher.
+      packages: libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
 
+  # The browser build, as `cargo xtask web` makes it. Its own cache: another target and the
+  # wasm-release profile.
   web:
-    name: web (ubuntu-24.04)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # installs the toolchain named below
-        with:
-          toolchain: 1.100.0  # = rust-toolchain.toml
-          targets: wasm32-unknown-unknown
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
-        with:
-          tool: trunk@0.21.14
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        with:
-          shared-key: web
-          save-if: ${{ github.event_name != 'pull_request' }}
-      - name: Build the web frontend
-        run: |
-          cargo xtask web
-          test -f dist/web/index.html
-          ls -la dist/web
+    uses: storytold/craft-common-actions/.github/workflows/gate.yml@4ec2a14646b538253fd5ebe109bf463a3d31b061
+    with:
+      cache-version: v1-web
+      craft-fonts-ref: ""
+      tools: trunk@0.21.14
+      command: |
+        cargo xtask web
+        test -f dist/web/index.html
+        ls -la dist/web
 
   # The live sync tests (crates/native/tests/live.rs, apps/craftcloud/tests/cli_live.rs) against a
   # server image built from this tree in this job, on every pull request and push: the sync engine's

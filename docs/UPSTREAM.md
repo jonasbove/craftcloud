@@ -372,6 +372,14 @@ as the Craft apps' releases. These would let it call the shared workflow instead
 > - per-target switches (`has-flatpak`, `has-windows-arm64`, `has-linux-aarch64`), as `has-arch` already is;
 > - optionally, a `notes-file` input and an attestation step.
 
+**Two workflows stay CraftCloud's own** (checked on 2026-11-26 against craft-common-actions `main`, 4ec2a14):
+
+- `release.yml`: the shared release still runs its `macos` job on `macos-15-xlarge`, a larger runner a personal
+  account's repository can't get, and a stable release runs only from a `release` branch
+  (`refs/heads/release`), while CraftCloud releases from `v*` tags.
+- `image.yml`: it attests its server images (build provenance), and the shared `docker-build.yml` builds with
+  `--provenance=false` and makes no attestation.
+
 ## E. Nextcloud (github.com/nextcloud/server)
 
 CraftCloud syncs with Nextcloud through its WebDAV, trash bin, versions and OCS endpoints, unmodified; the Nextcloud
