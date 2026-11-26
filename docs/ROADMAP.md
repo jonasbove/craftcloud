@@ -208,8 +208,9 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   first 6 runs, one of two two-way tests each time, where the two computers' own cycles met in one folder: an
   upload answered 412 after the other computer's folder move; Nextcloud answered 500 to an upload into a folder
   made that second (twice); and once 500 ("locked") to a folder move, after which the engine built the new folder
-  beside the old one ([WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 13, as built). The job doesn't retry; the suite
-  and the engine need pull requests of their own.
+  beside the old one ([WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 13, as built). The job doesn't retry. The engine
+  side was fixed since (#108: a move the server can't do right now waits and is tried again, never rebuilt), and
+  the Nextcloud entry is allowed to fail (`continue-on-error`), so its result shows without failing the run.
 - 2026-11-19: Sync: a move the server can't do right now is tried again, never rebuilt as a copy. Found by the live
   suite on Nextcloud, which answered 500 ("locked") to the `MOVE` of a renamed folder while another device was
   writing into it; the client then built the folder again beside the old one. `storage::refused_for_good` names
