@@ -1,16 +1,21 @@
-# Quick static checks for the release pipeline (seconds, no Rust build): workflow syntax, the
-# packaging shell scripts, the Claude workflows' checks (.github/scripts/claude-bot-test.sh), the
-# Linux desktop entry and AppStream file, the macOS Info.plist and the
-# MSI sources. The Craft apps' check (craft-common-actions packaging-lint), written out here for the
-# same reason as the gate in ci.yml.
+# Quick static checks for the release pipeline (seconds, no Rust build), through the Craft apps' shared lint
+# (craft-common-actions' packaging-lint.yml): actionlint, shellcheck on packaging/ (with .shellcheckrc), the
+# PowerShell scripts' syntax, the Linux desktop entry and AppStream file, the macOS plists and the MSI sources.
+# CraftCloud's own checks run after it (.github/scripts/packaging-lint-extra.sh): shellcheck on .github/scripts,
+# the label and gitmoji lists and the Claude workflows' checks (.github/scripts/claude-bot-test.sh).
+#
+# Pinned to a craft-common-actions commit (main on 2026-11-26), not @main as the Craft apps call it:
+# CraftCloud is not a storytold repository, so a breaking change there would not come with a pull request
+# here. Move the pin in a CI pull request of its own, after reading the change. The pin covers the workflow
+# only: it runs its lint action from craft-common-actions' main (`actions/packaging-lint@main`).
 name: Packaging lint
 
 on:
   push:
     branches: [main]
-    paths: [".github/workflows/**", ".github/actionlint.yaml", ".github/scripts/**", ".github/*.json", "packaging/**"]
+    paths: [".github/workflows/**", ".github/actionlint.yaml", ".github/scripts/**", ".github/*.json", "packaging/**", ".shellcheckrc"]
   pull_request:
-    paths: [".github/workflows/**", ".github/actionlint.yaml", ".github/scripts/**", ".github/*.json", "packaging/**"]
+    paths: [".github/workflows/**", ".github/actionlint.yaml", ".github/scripts/**", ".github/*.json", "packaging/**", ".shellcheckrc"]
   workflow_dispatch:
 
 permissions:
@@ -20,47 +25,8 @@ concurrency:
   group: packaging-lint-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  ACTIONLINT_VERSION: "1.7.12"
-  ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
-
 jobs:
   lint:
-    name: lint
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - name: Install tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends shellcheck desktop-file-utils libxml2-utils appstream
-          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          curl --proto '=https' -fsSL --retry 3 --connect-timeout 15 --max-time 60 -o "$RUNNER_TEMP/actionlint.tar.gz" \
-            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
-          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum -c -
-          tar -xz -C "$RUNNER_TEMP" -f "$RUNNER_TEMP/actionlint.tar.gz" actionlint
-      - name: actionlint
-        run: |
-          "$RUNNER_TEMP/actionlint" -color
-      # Warnings and errors; style notes (such as `a && b || true` in install.sh) don't fail it.
-      - name: shellcheck
-        run: |
-          find packaging .github/scripts -type f -name '*.sh' -print0 | xargs -0 --no-run-if-empty shellcheck --severity=warning
-          shellcheck --severity=warning packaging/linux/AppRun
-      # What lets Claude's answers through to GitHub (claude-pr.yml, claude-issues.yml), fed hostile input.
-      - name: Claude workflow checks
-        run: |
-          jq -e '(map(.name) | unique | length) == length and all(.[]; (.name | type) == "string" and (.group | IN("type", "platform", "area", "state", "priority")))' .github/labels.json
-          jq -e '.gitmojis | length > 0' .github/gitmojis.json
-          .github/scripts/claude-bot-test.sh
-      - name: Desktop entry, AppStream file, Info.plist and the MSI sources
-        run: |
-          desktop-file-validate packaging/linux/io.github.jonasbove.craftcloud.desktop
-          sed -e 's/@VERSION@/0.0.0/' -e 's/@DATE@/2026-01-01/' packaging/linux/io.github.jonasbove.craftcloud.metainfo.xml.in \
-            > "$RUNNER_TEMP/io.github.jonasbove.craftcloud.metainfo.xml"
-          appstreamcli validate --no-net --explain "$RUNNER_TEMP/io.github.jonasbove.craftcloud.metainfo.xml"
-          xmllint --noout packaging/macos/Info.plist.in packaging/macos/entitlements.plist \
-            packaging/windows/craftcloud.wxs packaging/windows/craftcloud.en-us.wxl
+    uses: storytold/craft-common-actions/.github/workflows/packaging-lint.yml@4ec2a14646b538253fd5ebe109bf463a3d31b061
+    with:
+      extra-checks-script: .github/scripts/packaging-lint-extra.sh

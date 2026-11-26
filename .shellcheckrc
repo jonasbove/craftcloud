@@ -1,0 +1,6 @@
+# Lets shellcheck follow `. "$(dirname …)/../env.sh"` in packaging/ through each script's
+# `# shellcheck source=` line (relative to the script), as `shellcheck -x` would. The shared packaging
+# lint (craft-common-actions) runs shellcheck without -x and at every severity, so without this the
+# sourced file is an info note that fails it.
+external-sources=true
+source-path=SCRIPTDIR

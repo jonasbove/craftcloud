@@ -18,8 +18,12 @@ remove_old() {
 }
 
 refresh() {
-    command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$data/applications" 2>/dev/null || true
-    command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q -t "$data/icons/hicolor" 2>/dev/null || true
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$data/applications" 2>/dev/null || true
+    fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -q -t "$data/icons/hicolor" 2>/dev/null || true
+    fi
 }
 
 if [ "${1:-}" = --remove ]; then
@@ -47,5 +51,7 @@ done
 remove_old
 refresh
 # craftcloud:// links (the entry's MimeType=x-scheme-handler/craftcloud) open with this client.
-command -v xdg-mime >/dev/null 2>&1 && xdg-mime default "$id.desktop" x-scheme-handler/craftcloud 2>/dev/null || true
+if command -v xdg-mime >/dev/null 2>&1; then
+    xdg-mime default "$id.desktop" x-scheme-handler/craftcloud 2>/dev/null || true
+fi
 echo "Installed: CraftCloud is in your app menu (binary: $bin/craftcloud)."

@@ -115,6 +115,12 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: CI: the Packaging lint calls craft-common-actions' shared `packaging-lint.yml`, pinned to a commit,
+  with CraftCloud's own checks after it (`.github/scripts/packaging-lint-extra.sh`: shellcheck and the Claude
+  workflows' tests for `.github/scripts/`, the label and gitmoji lists). The shared lint runs shellcheck at every
+  severity and also checks the PowerShell scripts' syntax: a root `.shellcheckrc` lets shellcheck follow
+  `packaging/env.sh`, and `packaging/linux/install.sh` says its three optional desktop refreshes as `if` blocks
+  (same behaviour). UPSTREAM.md D1 says which workflows stay CraftCloud's own and why.
 - 2026-11-26: Agents: AGENTS.md's facts: the repository is public (the reasons for its own CI and Linux-only CI
   were set while it was private); the CI `live` job's owner has a random password made for the run; `deny.toml` is
   stricter than the licence allowlist. The password rule names its limit: never the account password on
