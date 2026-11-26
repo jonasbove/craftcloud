@@ -311,10 +311,12 @@ headline says "Up to date · N files are still being saved", and neither `state`
 lists folders renamed or moved on this computer whose move in the cloud the server couldn't do yet, as `{"from", "to",
 "attempts"}` (cloud paths; `attempts` is how often the server was asked): the client asks again at the next pass for
 the first three tries, then after 2 minutes, then every 5 minutes for as long as it takes, never copies the folder
-instead, and syncs nothing in it until it is moved (`sync` asks at once). The field is left out when nothing waits; the
-headline says "Up to date · N folder move waits for the server", and neither `state` nor the exit code changes. `syncing` is `false` (and
-`state` `signed_out`) while the client waits for a sign-in. `activity`
-holds the latest 10 events; `kind` is `up`, `down`, `deleted`, `conflict`, `error`, `moved` (renamed or moved, `detail` says from where) `skipped` (left out on purpose, e.g. a folder switched off, or a name the cloud can't take) or `warning` (synced, but e.g. a name a Windows computer can't have).
+instead, and syncs nothing in it until it is moved (`sync` asks at once). `status --json` leaves the field out when
+nothing waits (`sync --once --json` always has it, `[]` then); the headline says "Up to date · N folder move waits for
+the server", and neither `state` nor the exit code changes. `syncing` is `false` (and `state` `signed_out`) while the
+client waits for a sign-in. `activity` holds the latest 10 events; `kind` is `up`, `down`, `deleted`, `conflict`,
+`error`, `moved` (renamed or moved, `detail` says from where) `skipped` (left out on purpose, e.g. a folder switched
+off, or a name the cloud can't take) or `warning` (synced, but e.g. a name a Windows computer can't have).
 
 **`sync --once`**: `{"state", "mode", "error", "pending_deletes", "files_done", "files_total", "conflicts", "not_synced", "waiting", "waiting_moves", "activity"}`,
 with every event of that run. When the first pass held a file being saved, a second pass follows 2.5 seconds later and

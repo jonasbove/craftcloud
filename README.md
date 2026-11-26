@@ -228,9 +228,10 @@ single sign-on, the command line, and the `craftcloud` contract the Craft apps a
 
 **What's missing:**
 - code-signed desktop builds (macOS and Windows ask once before the first start);
-- opening cloud files in the Craft web apps in the browser, and a page listing your share links on the web;
+- opening cloud files in the Craft web apps in the browser;
 - `craftcloud://` links on macOS (they need an Apple Event handler);
-- syncing with a WebDAV server other than OxiCloud, such as Nextcloud or ownCloud (planned, M9 in the roadmap);
+- syncing with a WebDAV server other than OxiCloud, such as Nextcloud or ownCloud (M9 in the roadmap, for 0.3.0;
+  on `main` behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in, not in a release yet);
 - files on demand (a [design](docs/FILES-ON-DEMAND.md) only).
 
 > [!IMPORTANT]
