@@ -116,6 +116,9 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: Build: `cargo xtask ci` runs its steps on craft-libs' `craft-xtask` runner, the Craft apps' gate
+  runner, instead of its own loop. The steps, their commands and the summary are as before; a passing summary
+  still names the tree it checked (`… in <path>`), which CraftCloud adds to craft-xtask's line.
 - 2026-11-26: CLI: what a cloud backend that runs `craftcloud … --json` needs. Files listed from the server (`ls`,
   `files` without a client, `starred`, `recent`, `search`) carry their version tag `etag` in its HTTP form, from the
   listing already made (OxiCloud computes the REST and WebDAV tags with one formula). `save --if-match ETAG` writes
