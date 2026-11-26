@@ -298,6 +298,47 @@ fn the_account_menu_leads_to_the_links() {
     h.get_by_label("NO LONGER THERE 1");
 }
 
+/// The account menu offers CraftCloud's own look and the seven colour themes; a pick is drawn at
+/// once, kept by the browser, and used again on the next visit.
+#[test]
+fn the_account_menu_picks_a_colour_theme_the_browser_keeps() {
+    use crate::theme::Tokens;
+    use crate::themes::Palette;
+    let mut h = signed_in("/");
+    assert_eq!(Tokens::get(&h.ctx), Tokens::DARK);
+    h.get_by_label("Account: john").click();
+    h.run();
+    assert_eq!(h.get_by_label("Theme: CraftCloud").accesskit_node().data().toggled(), Some(egui::accesskit::Toggled::True));
+    for name in ["Catppuccin", "Dracula (dark only)", "Gruvbox", "Nord (dark only)", "One Dark (dark only)", "Tokyo Night"] {
+        h.get_by_label(&format!("Theme: {name}"));
+    }
+    h.get_by_label("Theme: Solarized Light (light only)").click();
+    h.run();
+    assert_eq!(h.state().backend.prefs.get(crate::web::THEME_PREF).map(String::as_str), Some("craft.solarized-light"));
+    let solarized = Palette::for_id("craft.solarized-light");
+    assert_eq!(Tokens::get(&h.ctx), solarized.dark, "light only: shown in a dark browser too");
+    assert!(h.state().account_open, "the menu stays open");
+    assert_eq!(h.get_by_label("Theme: Solarized Light (light only)").accesskit_node().data().toggled(), Some(egui::accesskit::Toggled::True));
+
+    // The next visit starts with it.
+    let server = ServerUrl::parse("https://cloud.example.org").unwrap();
+    let mut backend = FakeBackend::default();
+    backend.prefs = h.state().backend.prefs.clone();
+    let app = WebApp::new(&egui::Context::default(), backend, server, "/", None);
+    let mut again = Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(|ui, app: &mut WebApp<FakeBackend>| app.ui(ui), app);
+    again.run();
+    assert_eq!(Tokens::get(&again.ctx), solarized.dark);
+
+    // An id this build doesn't know shows CraftCloud's own look.
+    let server = ServerUrl::parse("https://cloud.example.org").unwrap();
+    let mut backend = FakeBackend::default();
+    backend.prefs.insert(crate::web::THEME_PREF.into(), "craft.gone".into());
+    let app = WebApp::new(&egui::Context::default(), backend, server, "/", None);
+    let mut gone = Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(|ui, app: &mut WebApp<FakeBackend>| app.ui(ui), app);
+    gone.run();
+    assert_eq!(Tokens::get(&gone.ctx), Tokens::DARK);
+}
+
 #[test]
 fn the_account_menu_closes_on_escape() {
     let mut h = signed_in("/");

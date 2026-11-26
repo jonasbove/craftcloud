@@ -529,6 +529,32 @@ fn settings_switch_start_at_login_pause_and_appearance() {
     assert_eq!(h.state().overlay, None);
 }
 
+/// Settings › Theme lists CraftCloud's own look and the seven colour themes; picking one saves
+/// it, draws with its colours at once, and picking CraftCloud's own look brings that back.
+#[test]
+fn settings_pick_a_colour_theme() {
+    let mut h = with_state(SyncState::UpToDate);
+    h.get_by_label("SETTINGS").click();
+    h.run();
+    assert_eq!(crate::theme::Tokens::get(&h.ctx), crate::theme::Tokens::DARK);
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "CraftCloud").click();
+    h.run();
+    for name in ["Catppuccin", "Dracula (dark only)", "Gruvbox", "One Dark (dark only)", "Solarized Light (light only)", "Tokyo Night"] {
+        h.get_by_label(name);
+    }
+    h.get_by_label("Nord (dark only)").click();
+    h.run();
+    assert_eq!(h.state().host.prefs.as_ref().map(|s| s.theme.as_str()), Some("craft.nord"));
+    let nord = crate::themes::Palette::for_id("craft.nord");
+    assert_eq!(crate::theme::Tokens::get(&h.ctx), nord.dark);
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Nord (dark only)").click();
+    h.run();
+    h.get_by_role_and_label(egui::accesskit::Role::MenuItem, "CraftCloud").click();
+    h.run();
+    assert_eq!(h.state().host.prefs.as_ref().map(|s| s.theme.as_str()), Some(""));
+    assert_eq!(crate::theme::Tokens::get(&h.ctx), crate::theme::Tokens::DARK);
+}
+
 #[test]
 fn checking_for_updates_is_switched_in_settings() {
     let mut h = with_state(SyncState::UpToDate);

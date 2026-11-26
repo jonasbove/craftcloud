@@ -112,7 +112,15 @@ pub struct WebApp<B: Backend> {
     account_open: bool,
     /// The Apps menu (the Craft web apps), from the header's APPS entry.
     apps_menu: apps_menu::AppsMenu,
+    /// The colour theme's id, as this browser keeps it ([`THEME_PREF`]); empty for CraftCloud's
+    /// own look.
+    theme: String,
+    /// The colour theme last given to the context.
+    applied_theme: Option<String>,
 }
+
+/// The key this browser keeps the colour theme under (localStorage on the web).
+pub const THEME_PREF: &str = "craftcloud.theme";
 
 /// The web-apps choice being edited (setup step 4, Admin › Server).
 #[derive(Default)]
@@ -134,6 +142,7 @@ impl<B: Backend> WebApp<B> {
             craftcloud_core::http::HttpRequest::new(craftcloud_core::http::Method::Get, server.join("craftcloud/config.json")),
         );
         net.send(&mut backend, Key::Me, auth::me(&server));
+        let theme = backend.load_pref(THEME_PREF).unwrap_or_default();
         let form = Form { code: code.unwrap_or_default(), ..Form::default() };
         let files = files::Files::new(server.clone());
         let links = links::Links::new(server.clone());
@@ -170,6 +179,8 @@ impl<B: Backend> WebApp<B> {
             links,
             account_open: false,
             apps_menu: apps_menu::AppsMenu::default(),
+            theme,
+            applied_theme: None,
         }
     }
 
@@ -182,6 +193,12 @@ impl<B: Backend> WebApp<B> {
         if self.themed.as_ref() != Some(ui.ctx()) {
             crate::theme::install(ui.ctx());
             self.themed = Some(ui.ctx().clone());
+            self.applied_theme = None;
+        }
+        // On the first frame and when it changes; CraftCloud's own look reads no theme file.
+        if self.applied_theme.as_deref() != Some(self.theme.as_str()) {
+            crate::theme::set_palette(ui.ctx(), crate::themes::Palette::for_id(&self.theme));
+            self.applied_theme = Some(self.theme.clone());
         }
         let mut answers = self.backend.poll();
         for (key, result) in self.net.receive(&mut answers) {
@@ -339,6 +356,7 @@ impl<B: Backend> WebApp<B> {
         let x = anchor.left().min(screen.right() - width - 8.0).max(screen.left() + 8.0);
         let count = self.links.count();
         let mut go = false;
+        let mut picked = None;
         let area = egui::Area::new(ui.scope_id().with("account-menu"))
             .order(egui::Order::Foreground)
             .fixed_pos(egui::pos2(x, anchor.bottom() + 4.0))
@@ -370,11 +388,20 @@ impl<B: Backend> WebApp<B> {
                     };
                     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::MenuItem, true, &label));
                     go = resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+                    let (rule, _) = ui.allocate_exact_size(egui::vec2(width, 1.0), egui::Sense::hover());
+                    ui.painter().hline(rule.x_range(), rule.center().y, t.hairline());
+                    picked = theme_rows(ui, width, &self.theme);
                 });
             });
         let outside = !opened_now
             && ui.input(|i| i.pointer.any_pressed())
             && ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| !area.response.rect.contains(p) && !anchor.contains(p));
+        if let Some(id) = picked {
+            // The menu stays open, so another theme is one click away.
+            self.backend.save_pref(THEME_PREF, &id);
+            self.theme = id;
+            ui.ctx().request_repaint();
+        }
         if go {
             self.account_open = false;
             self.enter(Page::Links);
@@ -1111,6 +1138,51 @@ pub fn bytes(n: u64) -> String {
         unit += 1;
     }
     if unit == 0 || value >= 100.0 { format!("{value:.0} {}", UNITS[unit]) } else { format!("{value:.1} {}", UNITS[unit]) }
+}
+
+/// The account menu's colour themes: a THEME heading, then CraftCloud's own look and each theme,
+/// the one in use marked. A theme with one variant says so ("dark only"). Returns the id clicked
+/// (empty for CraftCloud's own look).
+fn theme_rows(ui: &mut Ui, width: f32, current: &str) -> Option<String> {
+    let t = Tokens::get(ui.ctx());
+    let (head, _) = ui.allocate_exact_size(egui::vec2(width, 30.0), egui::Sense::hover());
+    let g = chrome::hud_galley(ui, "Theme", t.muted);
+    ui.painter().galley(egui::pos2(head.left() + 14.0, head.bottom() - g.size().y - 4.0), g, t.muted);
+    let rows = std::iter::once(("", crate::themes::CRAFTCLOUD_LOOK.to_owned(), None))
+        .chain(crate::themes::all().iter().map(|th| (th.id, th.name.clone(), th.only())));
+    let mut picked = None;
+    for (id, name, only) in rows {
+        // An id this build doesn't know shows CraftCloud's own look, so that is the one marked.
+        let on = if crate::themes::find(current).is_some() { id == current } else { id.is_empty() };
+        let (row, resp) = ui.allocate_exact_size(egui::vec2(width, 30.0), egui::Sense::click());
+        if resp.hovered() {
+            ui.painter().rect_filled(row, 0.0, t.sunken);
+        }
+        if on {
+            let mark = egui::Rect::from_center_size(egui::pos2(row.left() + 18.0, row.center().y), egui::vec2(6.0, 6.0));
+            ui.painter().rect_filled(mark, 0.0, t.accent_ink);
+        }
+        let color = if on { t.ink_strong } else { t.ink };
+        ui.painter().text(egui::pos2(row.left() + 30.0, row.center().y), egui::Align2::LEFT_CENTER, &name, egui::FontId::proportional(13.5), color);
+        if let Some(only) = only {
+            ui.painter().text(
+                egui::pos2(row.right() - 14.0, row.center().y),
+                egui::Align2::RIGHT_CENTER,
+                only,
+                egui::FontId::proportional(12.0),
+                t.muted,
+            );
+        }
+        let label = match only {
+            Some(only) => format!("Theme: {name} ({only})"),
+            None => format!("Theme: {name}"),
+        };
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, true, on, &label));
+        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && !on {
+            picked = Some(id.to_owned());
+        }
+    }
+    picked
 }
 
 #[cfg(all(test, feature = "shots"))]

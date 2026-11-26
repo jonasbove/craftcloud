@@ -13,6 +13,8 @@ workspace = true
 
 [dependencies]
 craftcloud-core = { workspace = true }
+# The colour themes (crate::themes): parsing, derivation and the built-ins, without craft-ui.
+craft-theme = { workspace = true }
 egui = { workspace = true }
 serde_json = { workspace = true }
 # The share sheet's dates and calendar (as in crates/core: no time zone database, no system clock).

@@ -1114,6 +1114,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-theme"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=de994d8ddfbd4cb78a1b05d690bd86e41c680ca4#de994d8ddfbd4cb78a1b05d690bd86e41c680ca4"
+dependencies = [
+ "bitflags 2.13.2",
+ "craft-tracked",
+ "craft-ui-macros",
+ "ecolor",
+ "log",
+ "serde",
+ "serde_json",
+ "smallvec",
+]
+
+[[package]]
+name = "craft-tracked"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=de994d8ddfbd4cb78a1b05d690bd86e41c680ca4#de994d8ddfbd4cb78a1b05d690bd86e41c680ca4"
+
+[[package]]
+name = "craft-ui-macros"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=de994d8ddfbd4cb78a1b05d690bd86e41c680ca4#de994d8ddfbd4cb78a1b05d690bd86e41c680ca4"
+dependencies = [
+ "proc-macro-crate 3.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "craft-update"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=de994d8ddfbd4cb78a1b05d690bd86e41c680ca4#de994d8ddfbd4cb78a1b05d690bd86e41c680ca4"
@@ -1240,6 +1271,7 @@ dependencies = [
 name = "craftcloud-ui-egui"
 version = "0.2.0"
 dependencies = [
+ "craft-theme",
  "craftcloud-core",
  "egui",
  "egui_kittest",

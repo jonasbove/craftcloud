@@ -158,6 +158,20 @@ impl Backend for FetchBackend {
         // getTimezoneOffset is UTC minus local time.
         Some(WallClock { unix: now.get_time() / 1000.0, utc_offset_minutes: -(now.get_timezone_offset() as i32) })
     }
+
+    // localStorage: `None` or nothing kept when the browser blocks it (private windows, storage
+    // switched off), which throws rather than returning null.
+    fn load_pref(&self, key: &str) -> Option<String> {
+        web_sys::window()?.local_storage().ok()??.get_item(key).ok()?
+    }
+
+    fn save_pref(&mut self, key: &str, value: &str) {
+        if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten())
+            && storage.set_item(key, value).is_err()
+        {
+            log::warn!("this browser won't keep the choice of {key}");
+        }
+    }
 }
 
 async fn fetch(request: HttpRequest) -> Result<HttpResponse, JsValue> {

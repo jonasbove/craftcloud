@@ -9,6 +9,7 @@ mod connect;
 pub mod desktop;
 pub mod kit;
 pub mod theme;
+pub mod themes;
 pub mod web;
 mod widgets;
 

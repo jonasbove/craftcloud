@@ -79,6 +79,13 @@ fn visit(path: &str, code: Option<&str>, size: egui::Vec2, theme: egui::Theme) -
     )
 }
 
+/// `h` in the colour theme `id`, as if the browser had kept it.
+fn themed(mut h: H, id: &str) -> H {
+    h.state_mut().theme = id.to_owned();
+    h.run();
+    h
+}
+
 fn start(h: &mut H, status: &[u8], signed_in: bool) {
     let b = &mut h.state_mut().backend;
     b.answer("/api/auth/status", ok(status));
@@ -422,6 +429,15 @@ fn scenes() -> Vec<Scene> {
         }),
         ("device-connected", |s, t| device_answered(s, t, "APPROVE", "approved")),
         ("device-denied", |s, t| device_answered(s, t, "DENY", "denied")),
+        // Two of the colour themes (a dark-only and a light-only one, so all three renders show
+        // the same variant), and the account menu that picks them.
+        ("files-theme-nord", |s, t| themed(files(s, t, &sample()), "craft.nord")),
+        ("files-theme-solarized-light", |s, t| themed(files(s, t, &sample()), "craft.solarized-light")),
+        ("account-menu-theme-gruvbox", |s, t| {
+            let mut h = themed(files(s, t, &sample()), "craft.gruvbox");
+            click(&mut h, "Account: john");
+            h
+        }),
         ("files-upload", |s, t| {
             let mut h = files(s, t, &sample());
             h.state_mut().backend.to_pick = vec![local(7, "Q4 plan.docx", 248_000), local(8, "Moodboard.png", 6_400_000), local(9, "notes.md", 11)];

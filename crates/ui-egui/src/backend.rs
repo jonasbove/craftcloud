@@ -74,6 +74,14 @@ pub trait Backend {
     fn wall_clock(&self) -> Option<WallClock> {
         None
     }
+    /// A choice this browser keeps for the next visit (the colour theme), `None` when it has none
+    /// or keeps nothing (storage switched off or blocked).
+    fn load_pref(&self, _key: &str) -> Option<String> {
+        None
+    }
+    /// Keeps a choice for the next visit. A browser that won't keep it only loses it at the end of
+    /// the visit, so a failure is not shown.
+    fn save_pref(&mut self, _key: &str, _value: &str) {}
 }
 
 /// Request ids, unique across every [`Net`] in the process, so several of them can share one
@@ -156,6 +164,8 @@ pub struct FakeBackend {
     /// Pages opened in a new tab.
     pub tabs: Vec<String>,
     pub wall: Option<WallClock>,
+    /// What the browser keeps between visits ([`Backend::load_pref`]).
+    pub prefs: std::collections::BTreeMap<String, String>,
 }
 
 impl FakeBackend {
@@ -227,5 +237,13 @@ impl Backend for FakeBackend {
 
     fn wall_clock(&self) -> Option<WallClock> {
         self.wall
+    }
+
+    fn load_pref(&self, key: &str) -> Option<String> {
+        self.prefs.get(key).cloned()
+    }
+
+    fn save_pref(&mut self, key: &str, value: &str) {
+        self.prefs.insert(key.to_owned(), value.to_owned());
     }
 }

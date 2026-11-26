@@ -142,6 +142,15 @@ fn scenes() -> Vec<Scene> {
             app
         }),
         ("activity", || with(SyncState::UpToDate)),
+        // Colour themes: a dark-only one, a light-only one, and Tokyo Night (both variants).
+        ("activity-theme-nord", || themed(with(SyncState::UpToDate), "craft.nord")),
+        ("activity-theme-solarized-light", || themed(with(SyncState::UpToDate), "craft.solarized-light")),
+        ("activity-theme-tokyo-night", || themed(with(SyncState::UpToDate), "craft.tokyo-night")),
+        ("settings-theme-catppuccin", || {
+            let mut app = themed(with(SyncState::UpToDate), "craft.catppuccin");
+            app.overlay = Some(Overlay::Settings);
+            app
+        }),
         ("activity-syncing", || {
             let mut app = signed_in();
             app.host.progress = SyncProgress {
@@ -215,6 +224,12 @@ fn scenes() -> Vec<Scene> {
             app
         }),
     ]
+}
+
+/// `app` with the colour theme `id` chosen.
+fn themed(mut app: App, id: &str) -> App {
+    app.settings.theme = id.to_owned();
+    app
 }
 
 #[test]
