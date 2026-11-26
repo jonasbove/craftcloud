@@ -44,7 +44,8 @@ it on each server, and refuse what can't be met".
 - A **check on connect** (the probe) that measures what this server guarantees, and a plain answer to the person:
   two-way sync, download only, or not possible, and why.
 - Sign-in without the client ever seeing the account password: the server's own browser sign-in, or an app
-  password the person makes on the server.
+  password the person makes on the server. The one limit is a plain WebDAV server that offers only its account
+  password (section 10).
 - Every existing OxiCloud user sees no change at all.
 
 ### Non-goals
@@ -87,7 +88,7 @@ it on each server, and refuse what can't be met".
 | Upstream gaps go in UPSTREAM.md | AGENTS.md | OpenCloud's gaps are already reported upstream (reva#866, #959, #961); UPSTREAM.md links them and proposes nothing new to file |
 | No panics, no `unsafe` | Rust rule 1 | All server answers are hostile input: hrefs outside the base, missing ETags, odd status codes |
 | Shared libraries first | Core rule 16 | WebDAV requests and multistatus parsing go through `craft-dav` from `storytold/craft-libs`, as today (it knows the `oc:` and `nc:` namespaces); what it lacks (trash and version properties, say) is proposed there rather than parsed by hand here. Server profiles stay in CraftCloud |
-| The client never asks for or stores the account password | AGENTS.md (amended in this change, Q11) | The server's browser sign-in where there is one; otherwise an app password the person makes on the server |
+| The client never asks for or stores the account password | AGENTS.md (amended in this change, Q11; its limit named on 2026-11-26) | The server's browser sign-in where there is one; otherwise an app password the person makes on the server. A plain WebDAV server may offer only the account password: kept in the keychain, and the sign-in is to say so (section 10; the wording is still to change) |
 | Clean room | Rust rule 2 | Learn from public specifications (RFC 4918, RFC 8628, the servers' public API docs) and observed behaviour; never from another client's code |
 | Licence allowlist | AGENTS.md | New crates only from the allowlist (`sha1` from RustCrypto is MIT OR Apache-2.0). The test servers (AGPL and Apache) are test containers, never shipped or linked |
 | Rust only | Rust rule 4 | Nothing outside Rust is added |
@@ -106,7 +107,7 @@ What had to change, and what the design does instead:
 | The spike had to … | Spike hack (not to copy) | The design |
 |---|---|---|
 | Use another WebDAV base (`remote.php/dav/files/<user>/`) and strip it from hrefs | An environment variable | The driver holds its base URL; hrefs are parsed against it, absolute or relative, and an href outside it fails the listing (unknown, never "gone") |
-| Send Basic auth | A `basic:<user>:<pass>` access token | A `Credential` type (section 10); never the account password |
+| Send Basic auth | A `basic:<user>:<pass>` access token | A `Credential` type (section 10); never the account password where the server has another way in |
 | Trash without OxiCloud's REST ids | `DELETE` with `If-Match` | `RemoteStorage::trash`, which is a server-trash `DELETE` only where the probe saw it land in a trash, else a `MOVE` into `.craftcloud/trash/` |
 | Restore from the trash | XML split by string search | Trash listing and restore per profile, parsed with `craft_dav` |
 | Not snapshot versions | `snapshot` returns early | `keep_version` is a no-op only where the probe saw the server keep a version |
@@ -783,7 +784,7 @@ local side:
 | Nextcloud | Login Flow v2: the client opens the browser, the person signs in there, the client polls and receives an app password made for this device | The login name and that app password | `DELETE` the app password (`/ocs/v2.php/core/apppassword`), then forget it |
 | ownCloud | An app password the person makes in Settings › Security and pastes in. OAuth2 only where an admin has set it up for CraftCloud (later, a bonus) | Login name and app password | Forget it; the person revokes it on the server (the client says where) |
 | OpenCloud | OIDC with PKCE in the browser, through the server's own identity provider. **To verify in its profile pull request**: which client registration a third-party desktop app can use without an admin, and whether app tokens are available to a person. Basic auth works only when an admin turns on `PROXY_ENABLE_BASIC_AUTH`, so it is not relied on | Tokens, like OxiCloud | Ends the session where the server allows |
-| Other WebDAV | Address, user name and an app or WebDAV password (Q6) | User name and password | Forget it |
+| Other WebDAV | Address, user name and an app or WebDAV password (Q6); on a server that has nothing else, the account's password | User name and password | Forget it |
 
 - **Storage.** The same `TokenStore` (system keychain, else the private file), keyed by server as today. What it
   stores becomes a `Credential`: `Bearer { access, refresh }` or `AppPassword { user, secret }`, serialised with a
@@ -791,9 +792,14 @@ local side:
   entries keep today's exact shape (an older client can still read them).
 - **Refresh.** `Session`'s refresh, lock file and take-over logic apply to `Bearer` only. An app password doesn't
   refresh; a 401 with one is "signed out" (it was revoked).
-- **Never the account password.** The Connect sheet and `craftcloud login` ask for "an app or WebDAV password, not
-  your account password", and where the server has a browser sign-in the client uses it instead of asking. The client can't
-  verify which kind of password it was given; the wording and the flows are the guard.
+- **Never the account password, with one limit.** On CraftCloud's own server, Nextcloud and ownCloud the client
+  never asks for the account password: where the server has a browser sign-in the client uses it, otherwise it asks
+  for an app password made on the server. A plain WebDAV server (a NAS, `rclone serve webdav`, Apache `mod_dav`)
+  may offer only its account password. The Connect sheet and `craftcloud login --kind webdav` ask for "an app or
+  WebDAV password" and say that where the server has no app passwords, the account's password is what it takes and
+  is kept in the system keychain like an app password. The client can't verify which kind of password it was given;
+  the wording and the flows are the guard. (As built, `login --kind webdav` still asks for "an app or WebDAV
+  password, not your account password"; its wording is to change to this.)
 - **HTTPS.** A password is never sent over plain HTTP, except to a loopback address (tests, a local server).
 - **CLI.** The app password comes from a prompt or the `CRAFTCLOUD_APP_PASSWORD` environment variable, never from
   the command line (it would land in the shell history and the process list). It never reaches a log or an error.
@@ -930,7 +936,7 @@ on.
 | Nextcloud is slow (about 4 uploads a second) | Acceptable for 0.3.0; per-server live timeouts; parallel guarded uploads later (Q7) |
 | Probe files in the person's server trash | One folder per probe, named clearly (`.craftcloud/probe/…`) |
 | Client trash fills the person's storage | 30 days, flat (Q5); only the person empties it sooner; storage use counts it |
-| A person gives the account password anyway | The wording and the browser sign-ins; nothing more can be checked |
+| A person gives the account password anyway | The wording and the browser sign-ins; nothing more can be checked. On a plain WebDAV server with nothing else it is the expected case: kept in the keychain, and the sign-in says so (section 10) |
 | OpenCloud's sign-in for a third-party app needs an admin | Verified first in PR 8; if it needs an admin, OpenCloud waits, the rest ships |
 
 ## 16. Decisions

@@ -99,7 +99,10 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
      never two-way. Servers differ here, so the check runs against each, not once per product.
    - **Known servers add what they have.** Nextcloud and ownCloud: their own trash, versions and file ids, and
      Nextcloud's sign-in in the browser (Login Flow v2). Elsewhere the person signs in with an app password made on
-     the server, never the account's password.
+     the server; a plain WebDAV server that has only the account's password gets that, kept in the keychain, and
+     the sign-in is to say so. Still to change: the command line's prompt (`apps/craftcloud/src/cli/account.rs`,
+     "not your account password"), the `secrets.rs` comment and CLI.md's "(never your account password)"; the
+     desktop's wording comes with the Connect sheet (M9 pull request 10).
    - Desktop and command line only; the web frontend stays with OxiCloud. It changes how the sync decides, so it
      comes with an "upgrade all devices together" entry in [RELEASE-NOTES.md](RELEASE-NOTES.md).
    - The design, with the decisions taken: [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) (the storage trait, the check,
@@ -112,6 +115,11 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: Agents: AGENTS.md's facts: the repository is public (the reasons for its own CI and Linux-only CI
+  were set while it was private); the CI `live` job's owner has a random password made for the run; `deny.toml` is
+  stricter than the licence allowlist. The password rule names its limit: never the account password on
+  CraftCloud's server, Nextcloud or ownCloud, but a plain WebDAV server may offer only that; it is then kept in the
+  keychain and the sign-in says so (also in WEBDAV-STORAGE.md § 10).
 - 2026-11-26: Docs: ROADMAP, STATUS and README in step: the M9 row says it is in progress (pull requests 1 to 6
   on `main` behind the opt-in), and the README no longer calls it planned or lists the share links page as missing;
   0.1.0 was the first release; the Windows command line was tried on Windows 11, Ctrl+C there unconfirmed; STATUS

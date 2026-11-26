@@ -72,7 +72,8 @@ them, this says why. Nothing here weakens a rule for new work; it says what exis
   code, issues, pull requests, releases and images are all there. It follows the Craft apps' house rules by choice.
   Its CI does not call `storytold/craft-common-actions` (core rule 11): `.github/workflows/ci.yml` writes the same gate
   out, because the shared workflow needs a paid StepSecurity subscription in a private repository (see the comment
-  at its top). For the same reason there is no `house-rules.yml` workflow yet.
+  at its top), which this repository was when that was decided; it is public since 2026-11-14. For the same reason
+  there is no `house-rules.yml` workflow yet.
 - **`main` changes only through a pull request** (core rule 8), enforced by a GitHub ruleset. **Every pull
   request is merged by a maintainer's explicit confirmation; agents open pull requests and ask, they never merge on
   their own.** One topic per pull request, on a branch (`fix/…`, `docs/…`, `feature/…`, `chore/…`), titled with a
@@ -100,7 +101,9 @@ them, this says why. Nothing here weakens a rule for new work; it says what exis
   [Contributor credits](#contributor-credits-about-window) below.
 - **Licences:** CraftCloud's own code is MIT OR Apache-2.0. The server image runs the upstream OxiCloud image
   unmodified (MIT, `upstream/oxicloud/LICENSE`) with Caddy (Apache-2.0) in front; both are in the allowlist.
-  A dependency licence check (`deny.toml`, `cargo deny`) follows the allowlist above.
+  A dependency licence check (`deny.toml`, `cargo deny`) follows the allowlist above, and is stricter: `MPL-2.0`,
+  `Unlicense` and `CC0-1.0` pass only for the crates `deny.toml` names (its `exceptions`), so a new crate under one of
+  them needs its own entry there.
 
 # CraftCloud — instructions for agents
 
@@ -162,10 +165,14 @@ has the map.
 - **The window always opens.** Nothing slow blocks the main thread before the first frame: the keychain and the tray
   answer over D-Bus on Linux and may hang, so they run on threads of their own (`apps/craftcloud/src/main.rs`,
   `tray.rs`). A missing tray, keychain or notification service degrades the client, never stops it.
-- **The client never asks for or stores your account password:** it signs in through the server's browser sign-in
-  (OxiCloud's OAuth 2.0 device flow, Nextcloud's Login Flow v2), or with an app password you make on the server
-  ([docs/WEBDAV-STORAGE.md](docs/WEBDAV-STORAGE.md) § 10). Tokens and app passwords live in the OS keychain. Treat
-  either like the account's password.
+- **The client never asks for or stores your account password** on CraftCloud's own server, Nextcloud or ownCloud:
+  it signs in through the server's browser sign-in (OxiCloud's OAuth 2.0 device flow, Nextcloud's Login Flow v2), or
+  with an app password you make on the server ([docs/WEBDAV-STORAGE.md](docs/WEBDAV-STORAGE.md) § 10). **The limit:**
+  a plain WebDAV server (a NAS, `rclone serve webdav`, Apache `mod_dav`) may offer only its account password. The
+  client asks there for "an app or WebDAV password" and can't tell which it was given; if it is the account
+  password, the client keeps it in the OS keychain like an app password, and the sign-in screen is to say so (not yet:
+  the command line's prompt still reads "not your account password"; roadmap Upcoming). Tokens and
+  passwords live in the OS keychain. Treat any of them like the account's password.
 - **Never break wasm.** `crates/core` and `crates/ui-egui` build for `wasm32-unknown-unknown`, and `cargo xtask ci`
   checks it. Desktop-only code goes in `crates/native` or `apps/craftcloud`.
 - **The gate:** `cargo xtask ci` (fmt, clippy `-D warnings`, tests, wasm clippy) before every commit; run
@@ -202,7 +209,8 @@ has the map.
   by side; `WEB_APPS=on` needs the `-apps` image (`--target with-apps`). Tear it down afterwards:
   `docker compose -p craftcloud-<name> down -v`.
 - **Live sync tests** against that server (on a fresh server they create the owner first; CI's `live` job runs them
-  on every pull request against an image built from the tree):
+  on every pull request against an image built from the tree, as a throwaway owner with a random password made for
+  the run and masked in the log):
   `CRAFTCLOUD_TEST_SERVER=http://127.0.0.1:<port> CRAFTCLOUD_TEST_USER=john CRAFTCLOUD_TEST_PASSWORD=… CRAFTCLOUD_HTTP_IDLE_SECS=5 cargo test -p craftcloud-native --test live -- --test-threads 1`.
 - **The two-client smoke test** (any server, a test account; never in CI): the same variables, then
   `cargo xtask e2e-sync` (`--bin PATH` for another build, `--keep` to look afterwards). Two scratch clients sync a
@@ -256,8 +264,8 @@ README's Status section in step.
 - `.github/workflows/ci.yml` (**CI**): `test` runs `cargo xtask ci` on Linux and checks that `Cargo.lock` is
   unchanged; `web` builds the web frontend with Trunk; `live` builds the server image from the tree, starts it with
   `scripts/smoke-test` (`KEEP=1`) and runs `apps/craftcloud/tests/cli_live.rs` and `crates/native/tests/live.rs`
-  against it, the server's logs kept as an artifact when they fail. Linux only: in a private repository macOS and
-  Windows minutes cost 10× and 2×.
+  against it, the server's logs kept as an artifact when they fail. Linux only. macOS and Windows build on `v*` tags
+  and by hand (`release.yml`): a choice made while the repository was private, where their minutes cost 10× and 2×.
 - `.github/workflows/release.yml` (**Release**, replaces the old `desktop.yml`): on `v*` tags and by hand, the
   Craft apps' release file set from `packaging/` (Linux AppImage, deb, rpm, tar.gz, Flatpak and Arch packages for
   x86_64 and aarch64; Windows x64 and arm64 MSI and portable zip; a universal macOS DMG; FreeBSD and Linux riscv64
