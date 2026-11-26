@@ -112,6 +112,11 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: CLI: `save --if-match` compares the tag exactly (review #123): quotes aside, a weak `W/` tag never
+  matches the strong one the server lists, since the comparison before the write is the only check of the
+  caller's tag (the write carries the server's own). A file listed without a tag is a conflict in the plan itself,
+  with `--force` too, so the WebDAV upload's second check is gone and the OxiCloud path no longer sends an empty
+  `If-Match`. `save --help` says `--wait` does nothing with `--if-match`.
 - 2026-11-26: Docs: M10 part 1 is done and marked so: `scripts/create-owner`, `add-user`, `app-password` and
   `smoke-test` need only sh and curl, and the packaging icons come from `cargo xtask icons`; nothing in `.github/`,
   `docker/`, the Dockerfile, `compose.yaml` or `nix/` runs Python. The design build in `design/tools/` is the one

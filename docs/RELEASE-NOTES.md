@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`craftcloud save --if-match` compares the tag exactly.** A weak tag (`W/"…"`) no longer matches the strong
+  one the server lists (exit code 5, nothing written); with or without quotes still works. `save --force` over a
+  file the server lists without a version tag is now refused with code 5 before anything is written or kept.
 - **Seven colour themes** besides CraftCloud's own look, which stays the default: Catppuccin, Dracula, Gruvbox,
   Nord, One Dark, Solarized Light and Tokyo Night. Pick one in the desktop client's Settings › Theme, or on the
   web in the account menu (under your name; the browser remembers it). Themes with a light and a dark variant

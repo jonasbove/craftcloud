@@ -164,7 +164,8 @@ pub enum Cmd {
         /// even with the desktop client running; the old version is kept.
         #[arg(long, value_name = "ETAG", conflicts_with = "force")]
         if_match: Option<String>,
-        /// Wait until the desktop client has uploaded it.
+        /// Wait until the desktop client has uploaded it. Nothing to wait for with --if-match,
+        /// which goes straight to the server: --wait then changes nothing.
         #[arg(long)]
         wait: bool,
     },

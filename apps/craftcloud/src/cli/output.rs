@@ -274,11 +274,17 @@ pub fn http_etag(tag: &str) -> Option<String> {
     }
 }
 
-/// Whether two version tags name the same version, with or without their quotes.
+/// Whether two version tags name the same version: exactly, with or without their quotes. A weak
+/// tag (`W/"…"`) never names the same version as a strong one, as in HTTP's strong comparison
+/// (RFC 9110 § 8.8.3.2), which `If-Match` uses.
 pub fn same_etag(a: &str, b: &str) -> bool {
-    let bare = |t: &str| t.trim().trim_start_matches("W/").trim_matches('"').to_owned();
-    let (a, b) = (bare(a), bare(b));
-    !a.is_empty() && a == b
+    let split = |t: &str| {
+        let t = t.trim();
+        let (weak, tag) = t.strip_prefix("W/").map_or((false, t), |tag| (true, tag));
+        (weak, tag.trim_matches('"').to_owned())
+    };
+    let (a, b) = (split(a), split(b));
+    !a.1.is_empty() && a == b
 }
 
 /// Prints a value as one line of JSON.
@@ -461,5 +467,8 @@ mod tests {
         assert_eq!(http_etag("  "), None);
         assert!(same_etag("\"v1\"", "v1") && same_etag("v1", "\"v1\"") && same_etag("\"v1\"", "\"v1\""));
         assert!(!same_etag("\"v1\"", "\"v2\"") && !same_etag("", "\"\""), "an empty tag never matches");
+        // Exact: a weak tag is never the same version as a strong one (#123).
+        assert!(!same_etag("W/\"v1\"", "\"v1\"") && !same_etag("\"v1\"", "W/\"v1\"") && !same_etag("W/v1", "v1"));
+        assert!(same_etag("W/\"v1\"", "W/\"v1\"") && same_etag("W/\"v1\"", "W/v1"));
     }
 }

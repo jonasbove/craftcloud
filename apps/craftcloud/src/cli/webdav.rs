@@ -156,9 +156,6 @@ pub fn upload_to(storage: &mut dyn RemoteStorage, file: &Path, path: &str, exist
     let written = match plan_write(path, existing.as_ref().map(|e| (e.is_folder, e.etag.as_deref())), overwrite)? {
         Plan::Create => storage.create(path, file),
         Plan::Replace(etag) => {
-            let etag = etag.ok_or_else(|| {
-                CliError::conflict(format!("{path} is listed without a version tag, so it can't be shown unchanged; nothing was written"))
-            })?;
             storage.keep_version(path).map_err(cli)?;
             storage.replace(path, &etag, file)
         }

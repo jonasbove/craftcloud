@@ -17,7 +17,7 @@ use serde_json::json;
 
 use super::TrashCmd;
 use super::craft;
-use super::output::{CliError, Fail, Item, Result, line, print_json};
+use super::output::{CliError, Fail, Item, Result, line, print_json, same_etag};
 use super::remote::{Ctx, Remote, clean, join, split};
 
 /// Prints items: JSON array, or one line each (`show` picks the name shown).
@@ -200,14 +200,17 @@ impl Overwrite {
 pub enum Plan {
     /// Nothing is there: create it (`If-None-Match: *`).
     Create,
-    /// Replace the version with this tag (`If-Match`), once the old bytes are kept; `None` when
-    /// the listing gave none.
-    Replace(Option<String>),
+    /// Replace the version with this tag (`If-Match`), once the old bytes are kept. A file listed
+    /// without a tag is never replaced: that is a conflict before anything is written or kept.
+    Replace(String),
 }
 
 /// Decides a write from what is at `path` (`existing`: whether it is a folder, and its version
 /// tag) and what `overwrite` allows. With `--if-match` a file that isn't there, or isn't that
-/// version any more, is a conflict before anything is written or kept.
+/// version any more, is a conflict before anything is written or kept, and so is a file listed
+/// without a version tag (it can't be shown unchanged, so no guarded write can name it). The
+/// comparison with `--if-match` is the only check of the caller's tag: the write itself carries
+/// the server's tag, so it is exact (only the quotes may differ, see [`same_etag`]).
 pub fn plan_write(path: &str, existing: Option<(bool, Option<&str>)>, overwrite: &Overwrite) -> Result<Plan> {
     match (existing, overwrite) {
         (Some((true, _)), _) => Err(CliError::conflict(format!("{path} is a folder"))),
@@ -216,12 +219,14 @@ pub fn plan_write(path: &str, existing: Option<(bool, Option<&str>)>, overwrite:
         }
         (None, _) => Ok(Plan::Create),
         (Some(_), Overwrite::Never) => Err(CliError::conflict(format!("{path} is already there (--force replaces it; the old version is kept)"))),
-        (Some((_, etag)), Overwrite::Any) => Ok(Plan::Replace(etag.map(str::to_owned))),
-        (Some((_, etag)), Overwrite::IfMatch(wanted)) => match etag {
-            Some(now) if crate::cli::output::same_etag(now, wanted) => Ok(Plan::Replace(Some(now.to_owned()))),
-            Some(now) => Err(CliError::conflict(format!("{path} changed in the cloud (it is version {now} now, not {wanted}); nothing was written"))),
-            None => Err(CliError::conflict(format!("{path} is listed without a version tag, so it can't be shown unchanged; nothing was written"))),
-        },
+        (Some((_, None)), _) => {
+            Err(CliError::conflict(format!("{path} is listed without a version tag, so it can't be shown unchanged; nothing was written")))
+        }
+        (Some((_, Some(now))), Overwrite::Any) => Ok(Plan::Replace(now.to_owned())),
+        (Some((_, Some(now))), Overwrite::IfMatch(wanted)) if same_etag(now, wanted) => Ok(Plan::Replace(now.to_owned())),
+        (Some((_, Some(now))), Overwrite::IfMatch(wanted)) => {
+            Err(CliError::conflict(format!("{path} changed in the cloud (it is version {now} now, not {wanted}); nothing was written")))
+        }
     }
 }
 
@@ -243,7 +248,7 @@ pub(super) fn upload_to(remote: &mut Remote, file: &Path, path: &str, existing: 
         Plan::Create => Write::Create,
         Plan::Replace(etag) => {
             remote.session.snapshot(&path).map_err(CliError::transport)?;
-            Write::Replace { etag: etag.unwrap_or_default() }
+            Write::Replace { etag }
         }
     };
     let req = dav::upload(remote.server(), &path, Vec::new(), &write).header("Content-Type", content_type(&name));
@@ -697,16 +702,23 @@ mod tests {
 
         // A file there: refused by default, replaced with --force under the listed tag.
         assert_eq!(code(plan_write("a.md", file("\"v1\""), &Overwrite::Never)), 5);
-        assert_eq!(plan_write("a.md", file("\"v1\""), &Overwrite::Any).unwrap(), Plan::Replace(Some("\"v1\"".into())));
+        assert_eq!(plan_write("a.md", file("\"v1\""), &Overwrite::Any).unwrap(), Plan::Replace("\"v1\"".into()));
 
         // --if-match: the same version (quotes or not) is replaced, under the server's own tag.
-        assert_eq!(plan_write("a.md", file("\"v1\""), &if_match("\"v1\"")).unwrap(), Plan::Replace(Some("\"v1\"".into())));
-        assert_eq!(plan_write("a.md", file("\"v1\""), &if_match("v1")).unwrap(), Plan::Replace(Some("\"v1\"".into())));
+        assert_eq!(plan_write("a.md", file("\"v1\""), &if_match("\"v1\"")).unwrap(), Plan::Replace("\"v1\"".into()));
+        assert_eq!(plan_write("a.md", file("\"v1\""), &if_match("v1")).unwrap(), Plan::Replace("\"v1\"".into()));
         // Another version, or one without a tag: a conflict, nothing written or kept.
         let changed = plan_write("a.md", file("\"v2\""), &if_match("\"v1\"")).unwrap_err();
         assert_eq!((changed.kind.code(), changed.kind.name()), (5, "conflict"));
         assert!(changed.message.contains("changed in the cloud") && changed.message.contains("nothing was written"), "{}", changed.message);
         assert_eq!(code(plan_write("a.md", Some((false, None)), &if_match("\"v1\""))), 5);
+        // Exact: a weak tag isn't the strong one the server lists (#123).
+        assert_eq!(code(plan_write("a.md", file("\"v1\""), &if_match("W/\"v1\""))), 5);
+        // A file listed without a tag is never replaced, --force or not: no guarded write can
+        // name it (#123; the conflict is the plan's, before any old version is kept).
+        let untagged = plan_write("a.md", Some((false, None)), &Overwrite::Any).unwrap_err();
+        assert_eq!(untagged.kind.code(), 5);
+        assert!(untagged.message.contains("without a version tag"), "{}", untagged.message);
 
         // A folder is never written over.
         for o in [Overwrite::Never, Overwrite::Any, if_match("\"v1\"")] {
