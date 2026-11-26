@@ -3,7 +3,7 @@
 **Stage: early alpha** · version 0.2.0 (share links and version history on the web, the Windows fixes, server hardening)
 
 > **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-26 · **Change:** minor (the desktop client says when a new version is out; version 0.2.0; the web header's Apps menu for the Craft web apps, for 0.3.0; M9 moves to
-> 0.3.0; M9 pull requests 1 to 6, the sync engine behind a storage trait, sync modes, the check on connect with `craftcloud server check`, the generic WebDAV driver, the client trash's retention, the Nextcloud profile, the trash and version commands and the runtime watch, all behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in); on Linux the tray counts as up only while a tray
+> 0.3.0; M9 pull requests 1 to 6, the sync engine behind a storage trait, sync modes, the check on connect with `craftcloud server check`, the generic WebDAV driver, the client trash's retention, the Nextcloud profile, the trash and version commands and the runtime watch, all behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in); M8 gains a trial of the server image built by Nix; on Linux the tray counts as up only while a tray
 > host is on the bus, so closing the window on stock GNOME quits instead of leaving an invisible client; a start at
 > login stays in the tray on Windows and X11, and opens the window where there is no tray; an offline desktop window waits before asking who is signed in again; the
 > release checklist and the Release workflow check the Craft web app pins; an idle window uses next to no CPU; trace
@@ -55,7 +55,7 @@ backup of anything you sync with it.
 | M5 Craft web apps in the browser | Open a cloud file in its Craft web app from the web file browser and save it back (`craft-web-host`, the shim for the others) | Serving and gating done; the Apps menu in the web header opens an app in a new tab (0.3.0); the editor page and the shim not built |
 | M6 Files on demand | Placeholders that download when opened (Windows, Linux, macOS) | Design only |
 | M7 Signed desktop builds | Signed and notarized macOS builds, signed Windows builds | Not started; v1 is unsigned |
-| M8 Native NixOS deployment | OxiCloud, Caddy and craftcloud-admin as NixOS services without Docker, with the Craft web apps built by Nix from `apps.toml` | Not started; the NixOS module runs the Docker image today |
+| M8 Native NixOS deployment | OxiCloud, Caddy and craftcloud-admin as NixOS services without Docker, with the Craft web apps built by Nix from `apps.toml`; then, as a trial, the server image built by Nix from the same parts | Not started; the NixOS module runs the Docker image today |
 | M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Planned for 0.3.0, on `main` behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in until the release; the storage trait with OxiCloud as its first driver, the sync modes (two-way, download only, refused) with the plan cut to each, the check on connect (the probe's steps and verdict in `core`, its runner in `native`, `craftcloud server check`) and the generic WebDAV driver (an app-password sign-in, the client's own trash by `MOVE` and versions by `COPY`, the command line's file and sync commands through the trait, the client trash's 30-day retention by the server's clock, the trash and version commands through the trait, the check's re-run schedule and the runtime watch) are in; without the opt-in a person sees only `server check`, which reports CraftCloud's own server's known capabilities. The live suite runs against Nextcloud, ownCloud, OpenCloud, `rclone serve webdav` and Apache `mod_dav` by hand (`CRAFTCLOUD_TEST_KIND`, `tests/other-servers/`), asserting the mode each gets. Nextcloud's profile is in (6: Login Flow v2, its trash and versions after the check's round trips, the checksum check on every write). Next: the ownCloud and OpenCloud profiles (7, 8), the CI job (9), the desktop's Connect sheet (10) |
 | M10 No Python in the tree | The operator scripts without Python (sh and curl) and the packaging icons in Rust (0.3.0), then the design build (`design/tools`, FigCraft) as `cargo xtask design` | 0.3.0: scripts and icons in progress; the design build later |
 
@@ -85,6 +85,14 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
    Caddy and `craftcloud-admin` as NixOS services, not while the module runs the image, since two ways of
    fetching the apps would drift apart. `scripts/bump-apps` (moving to `cargo xtask` in 0.2.0) stays the way to
    move the pins.
+   - **Then the image from the same parts (a trial).** Once the services work, Nix can build the slim and `-apps`
+     images itself (`dockerTools.buildLayeredImage`, `nix build .#image`) from the same derivations, so NixOS and
+     Docker run the same Caddy configuration, `craftcloud-admin`, web frontend and Craft apps. Not a NixOS system in
+     the container (systemd in Docker): a small image with the programs and an entrypoint, as today. OxiCloud is still
+     never compiled: Nix takes its binary from the pinned upstream image by digest (`dockerTools.pullImage`) or from
+     an upstream release binary, which M8 needs anyway. amd64 and arm64 need Nix builders for both in CI. It runs
+     beside the Dockerfile first; the Dockerfile goes only when the Nix image passes the same smoke and live tests,
+     with the same tags, `settings.env` and size or better. Moving `image.yml` to it is a CI change of its own.
 8. **Any WebDAV server as the storage (M9):** the desktop client and the command line sync with a WebDAV server of
    the person's choosing, not only OxiCloud. First the sync engine moves behind a storage layer that says what the
    server guarantees, with OxiCloud as its first driver; then generic WebDAV:
@@ -174,6 +182,9 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   the first desktop-only app: `web = false` means no pins and no bridge, `fetch-apps` leaves it out of the `-apps`
   image and `bump-apps` passes it by. LoveCraft uses `files --app prosecraft-rs` and `save` for its Open from
   and Save to CraftCloud.
+- 2026-11-22: Roadmap: M8 gains a second step, a trial of building the server image with Nix from the same parts
+  as the NixOS services (OxiCloud still taken unmodified from the pinned upstream image), beside the Dockerfile
+  until it passes the same tests.
 - 2026-11-22: Web (M5, for 0.3.0): an **Apps** menu in the web header. When the server has the Craft web apps on
   and at least one switched on (`/craftcloud/config.json`'s `web_apps` and `enabled_apps`, now read by
   `core::RuntimeConfig`), a signed-in person gets APPS between FILES and ADMIN (the app-grid glyph alone on a
@@ -696,3 +707,4 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 | 2026-11-18 | minor | M9 pull request 4a: the generic WebDAV driver, `Credential`, `login --kind webdav`, exit code 10, behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in; OxiCloud syncs as before. |
 | 2026-11-18 | minor | M9 pull request 5: the live suite against Nextcloud, ownCloud, OpenCloud, `rclone serve webdav` and Apache `mod_dav` (`CRAFTCLOUD_TEST_KIND`, `tests/other-servers/`); the OxiCloud suite unchanged. |
 | 2026-11-18 | minor | M9 pull request 6: the Nextcloud profile (Login Flow v2, its trash and versions after the check's round trips, the checksum check on every write, Q13), behind the opt-in; OxiCloud syncs as before. |
+| 2026-11-22 | minor | M8: the server image built by Nix from the same parts as the NixOS services, as a trial beside the Dockerfile. |
