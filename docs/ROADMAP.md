@@ -57,7 +57,7 @@ backup of anything you sync with it.
 | M7 Signed desktop builds | Signed and notarized macOS builds, signed Windows builds | Not started; v1 is unsigned |
 | M8 Native NixOS deployment | OxiCloud, Caddy and craftcloud-admin as NixOS services without Docker, with the Craft web apps built by Nix from `apps.toml` | Not started; the NixOS module runs the Docker image today |
 | M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Planned for 0.3.0, on `main` behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in until the release; the storage trait with OxiCloud as its first driver, the sync modes (two-way, download only, refused) with the plan cut to each, the check on connect (the probe's steps and verdict in `core`, its runner in `native`, `craftcloud server check`) and the generic WebDAV driver (an app-password sign-in, the client's own trash by `MOVE` and versions by `COPY`, the command line's file and sync commands through the trait, the client trash's 30-day retention by the server's clock, the trash and version commands through the trait, the check's re-run schedule and the runtime watch) are in; without the opt-in a person sees only `server check`, which reports CraftCloud's own server's known capabilities. The live suite runs against Nextcloud, ownCloud, OpenCloud, `rclone serve webdav` and Apache `mod_dav` by hand (`CRAFTCLOUD_TEST_KIND`, `tests/other-servers/`), asserting the mode each gets. Nextcloud's profile is in (6: Login Flow v2, its trash and versions after the check's round trips, the checksum check on every write). Next: the ownCloud and OpenCloud profiles (7, 8), the CI job (9), the desktop's Connect sheet (10) |
-| M10 No Python in the tree | The operator scripts without Python (sh and curl) and the packaging icons in Rust (0.3.0), then the design build (`design/tools`, FigCraft) as `cargo xtask design` | 0.3.0: scripts and icons in progress; the design build later |
+| M10 No Python in the tree | The operator scripts without Python (sh and curl) and the packaging icons in Rust (0.3.0), then the design build (`design/tools`, FigCraft) as `cargo xtask design` | Part 1 done for 0.3.0 (the scripts need only sh and curl; `cargo xtask icons`); the design build later |
 
 ## Current focus
 
@@ -106,16 +106,16 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
      the modes, sign-in per server, the tests and the order of the pull requests).
    - The work lands on `main`, one pull request at a time; the new server kinds stay hidden and refused unless
      `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` is set, until the 0.3.0 release turns them on.
-9. **No Python in the tree (M10), part 1, for 0.3.0:** `scripts/create-owner`, `add-user`, `app-password` and
-   `smoke-test` read and write JSON through `python3 -c` one-liners; they read and write it with sed instead, so they
-   run without Python (sh and curl). `packaging/icons.sh` (Pillow) becomes
-   `cargo xtask icons`.
-10. **No Python in the tree (M10), part 2:** the design build, about 7,000 lines in `design/tools/*.py` that drive
+9. **No Python in the tree (M10), part 2:** the design build, about 7,000 lines in `design/tools/*.py` that drive
    `figcraft-cli` over MCP to make `design/craftcloud.figcraft` and its exports, becomes `cargo xtask design`,
    building on craft-libs' `jsonrpc` and `mcp` crates. Until then it is the one Python left (AGENTS.md).
 
 ## Progress log
 
+- 2026-11-26: Docs: M10 part 1 is done and marked so: `scripts/create-owner`, `add-user`, `app-password` and
+  `smoke-test` need only sh and curl, and the packaging icons come from `cargo xtask icons`; nothing in `.github/`,
+  `docker/`, the Dockerfile, `compose.yaml` or `nix/` runs Python. The design build in `design/tools/` is the one
+  Python left (part 2). AGENTS.md and the Upcoming list now say so.
 - 2026-11-26: UI: seven colour themes besides CraftCloud's own look, on the desktop and the web: Catppuccin,
   Dracula, Gruvbox, Nord, One Dark, Solarized Light and Tokyo Night. They are craft-libs `craft-design-theme`
   files, parsed and derived by craft-libs' `craft-theme` (not craft-ui) and mapped onto CraftCloud's colour
