@@ -86,7 +86,7 @@ it on each server, and refuse what can't be met".
 | The upstream server runs unmodified | AGENTS.md | Nothing changes on the OxiCloud side; other servers are used as they come |
 | Upstream gaps go in UPSTREAM.md | AGENTS.md | OpenCloud's gaps are already reported upstream (reva#866, #959, #961); UPSTREAM.md links them and proposes nothing new to file |
 | No panics, no `unsafe` | Rust rule 1 | All server answers are hostile input: hrefs outside the base, missing ETags, odd status codes |
-| Shared libraries first | Core rule 16 | WebDAV requests and multistatus parsing go through `craft-dav` from `storytold/craft-libs`, as today; what it lacks (extra namespaces such as `oc:`, `nc:`, trash and version properties) is proposed there rather than parsed by hand here. Server profiles stay in CraftCloud |
+| Shared libraries first | Core rule 16 | WebDAV requests and multistatus parsing go through `craft-dav` from `storytold/craft-libs`, as today (it knows the `oc:` and `nc:` namespaces); what it lacks (trash and version properties, say) is proposed there rather than parsed by hand here. Server profiles stay in CraftCloud |
 | The client never asks for or stores the account password | AGENTS.md (amended in this change, Q11) | The server's browser sign-in where there is one; otherwise an app password the person makes on the server |
 | Clean room | Rust rule 2 | Learn from public specifications (RFC 4918, RFC 8628, the servers' public API docs) and observed behaviour; never from another client's code |
 | Licence allowlist | AGENTS.md | New crates only from the allowlist (`sha1` from RustCrypto is MIT OR Apache-2.0). The test servers (AGPL and Apache) are test containers, never shipped or linked |
