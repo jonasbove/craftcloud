@@ -6,7 +6,7 @@ The layers, from the fastest to the slowest:
 |---|---|---|
 | `cargo xtask ci` | fmt check, clippy (`-D warnings`), the workspace tests, the wasm build: the gate before every commit, and what CI runs | nothing |
 | `PROPTEST_CASES=50000 cargo test -p craftcloud-core properties` | the property tests of the sync decisions with more generated cases than the gate's 256 | nothing |
-| `cargo test --workspace` on Windows | the same workspace tests on Windows x64 (`windows-test` in `release.yml`, on `v*` tags and by hand; not on every pull request, since CI runs on Linux), so the Windows code (`core::names`' Windows rules, `craftcloud.com`, the window geometry, the Windows paths) is tested on Windows itself; the draft release waits for it (about 10 minutes) | nothing |
+| `cargo test --workspace` on Windows | the same workspace tests on Windows x64 (`windows-test` in `release.yml`, on `v*` tags and by hand; not on every pull request, since CI runs on Linux), so the Windows code (`core::names`' Windows rules, `craftcloud.com`, the window geometry, the Windows paths) is tested on Windows itself; the draft release waits for it (about 10 minutes). Windows arm64, whose MSI and zip ship too, runs no tests yet (issue #11) | nothing |
 | `crates/native/tests/live.rs` | the sync engine against a real server: two computers in one process, renames, folder moves, deletes, quota, resumed downloads, a silent connection; each test syncs only folders of its own and removes them afterwards; where both computers are at the server at once (each also syncs on its own) or the server may answer "not now" to one request, a test syncs until two rounds change nothing (`settle`, at most ten rounds, every pass up to date) instead of counting passes; CI's `live` job runs it on every pull request and push to `main`, against a server image built from the tree in the same job | a throwaway server (CI starts one) |
 | `apps/craftcloud/tests/cli_live.rs` | every command of the command line against a real server; in CI's `live` job too, before `live.rs` | a throwaway server (CI starts one) |
 | `live.rs` and `cli_live.rs` with `CRAFTCLOUD_TEST_KIND=nextcloud\|owncloud\|opencloud\|webdav` | the same sync suite against another kind of server through the generic WebDAV driver, and the command line's `login --kind webdav`, `server check`, file, trash and version commands and "not available on this server" answers there ([WEBDAV-STORAGE.md § 13](WEBDAV-STORAGE.md)). Only with `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` (a run naming another kind without it fails at once). Every pass asserts the sync mode the server is expected to get, so a server that got better or worse fails; the two-way tests run where two-way sync is expected (Nextcloud, ownCloud, Apache `mod_dav`), the download-only suite of § 9 where download only is (OpenCloud, `rclone serve webdav`). The quota tests, the REST-id and star checks and the UI transport's test are CraftCloud's own server's. Nextcloud's passes get a longer deadline (about 4 uploads a second). Not in CI yet (§ 14 row 9) | the servers of `tests/other-servers/compose.yaml` ([its README](../tests/other-servers/README.md): images pinned by digest, loopback only, one at a time on a small machine) |
@@ -154,6 +154,11 @@ KEEP=1 PROJECT=craftcloud-e2eweb scripts/smoke-test craftcloud:dev 8100   # a fr
 cargo xtask e2e-web --server http://127.0.0.1:8100
 docker compose -p craftcloud-e2eweb down -v
 ```
+
+With `KEEP=1` the smoke test makes no owner, so it skips its own sign-in cookie checks (that the session cookie is
+`Secure` exactly when the address is https) and says so, unless the web apps are on (`WEB_APPS=on`), whose checks
+need the sign-in. `SMOKE_SIGN_IN=1` runs them anyway, but then the server has an owner and `e2e-web` can't start on
+it; `e2e-web`'s sign-in case checks the cookie itself.
 
 | Option | Meaning |
 |---|---|

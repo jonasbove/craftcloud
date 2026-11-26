@@ -115,6 +115,11 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: Docs: testing, releasing and the Linux desktops: TESTING.md says a `KEEP=1` smoke test skips its
+  cookie checks and that Windows arm64 runs no tests yet (#11); RELEASING.md says how to re-run only a failed
+  `windows-test`; LINUX-DESKTOPS.md names the fixes by pull request (#86, #90), marks what wasn't tested without
+  "nothing here is guessed", and says when to run its checks again; the README says where LoveCraft's web build is
+  served.
 - 2026-11-26: Docs: the sync, storage and integration docs: WEBDAV-STORAGE.md names pull request 1 (#97) and
   where `Download` lives, says the runtime watch misses a file of the same size kept under another tag, and that a
   server with coarser than one-second times may be refused at the check's step 6; OIDC.md says the password-off guard

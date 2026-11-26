@@ -4,7 +4,11 @@ How the desktop client behaves on KDE Plasma, GNOME and Xfce, checked on 2026-11
 with a release build of `craftcloud` (0.1.1) and a throwaway server from `scripts/smoke-test`. Everything ran
 headlessly, in Arch Linux containers on one x86_64 computer (the client was built on the same glibc), with the
 desktops' own pieces started by hand where a full login session won't start in a container. What needs a real
-session is marked so; nothing here is guessed.
+session is marked so, and so is what wasn't tested ("Not tested") or rests on unit tests only.
+
+Run these checks again before a release that changes the tray, the notifications, the keychain, start at login or
+the window, and when a new major version of one of these desktops is out; then update the date, the commit and
+the versions above.
 
 The columns are the desktop as it ran, not a full login: **Xfce** 4.20 (`xfce4-session` under Xvfb, X11);
 **GNOME** 51.1 (`gnome-shell --headless --wayland`, mutter's virtual monitor, Wayland); **KDE Plasma** 6.8.3
@@ -42,14 +46,13 @@ card (everything drew in software).
   but eframe shows every window after its first frame (`post_rendering` calls `set_visible(true)`, before the
   frame's viewport commands are handled), so on Xfce the window came up visible 1 s after a hidden start, both
   from `xfce4-session`'s autostart and by hand. The cause is in eframe, so it applies to any X11 session (GNOME
-  on Xorg, KDE on X11); on Wayland a hidden start makes no window at all and is unaffected. Fix: the branch
-  `fix/hidden-start-x11` (the window's first pass hides it again where there is a tray), which builds on the
-  next one.
+  on Xorg, KDE on X11); on Wayland a hidden start makes no window at all and is unaffected. Fixed in #90
+  (the window's first pass hides it again where there is a tray), which builds on #86, below.
 - **Without a tray host the client thinks the tray is up.** The StatusNotifierItem backend registers the icon
   whether or not a watcher is there (so a bar that starts later can show it), and the client took the
   registration as "ready": on stock GNOME closing the window left the client running with no icon and no window,
   and `--hidden` showed nothing at all. Starting it again from the launcher brings the window back (the control
-  channel), which is the only way back. Fix: the branch `fix/tray-host` (the tray counts as up only while a
+  channel), which is the only way back. Fixed in #86 (the tray counts as up only while a
   host owns `org.kde.StatusNotifierWatcher`; without one, closing the window quits and `--hidden` opens it).
 - **KWallet's Secret Service without a wallet** isn't usable by the client until a person has made the wallet in
   KWallet's dialog; the client falls back to the private file and says so in its log, and nothing in the window
