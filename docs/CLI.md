@@ -88,7 +88,8 @@ and work without one.
 a missing drive or a mistake than intent, those deletions wait and everything else keeps syncing. `status` then
 says `mass_delete`, lists the files (`pending_deletes` in `--json`) and exits with code 9, until the desktop
 client, `sync --confirm-deletes` or `sync --discard-deletes` decides. While it waits, the folders those files are in
-still count as synced: no pass makes them again (empty) on the side they were deleted from.
+still count as synced: no pass makes them again (empty) on the side they were deleted from. Under download only, files
+deleted on this computer don't count and never wait: nothing is deleted in the cloud, and they come down again.
 
 One sync engine per folder: the desktop client, a daemon and `sync --once` each claim the sync folder
 (`<folder>/.craftcloud/engine.lock`) before syncing, and the second one says so and stops. A folder another sync

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Download only: files deleted here no longer wait as a mass delete.** On a server the client syncs downwards
+  only, a delete made on this computer never reaches the cloud, so the client no longer stops to ask about many
+  of them: the files come down again on the next pass. Many files deleted in the cloud still wait for you, as
+  before. Nothing needs care when updating: this changes what one client asks, not what reaches the cloud, so
+  devices need not be upgraded together.
 - **Seven colour themes** besides CraftCloud's own look, which stays the default: Catppuccin, Dracula, Gruvbox,
   Nord, One Dark, Solarized Light and Tokyo Night. Pick one in the desktop client's Settings › Theme, or on the
   web in the account menu (under your name; the browser remembers it). Themes with a light and a dark variant

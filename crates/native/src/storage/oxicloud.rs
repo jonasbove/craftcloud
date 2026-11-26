@@ -17,7 +17,7 @@ use craftcloud_core::api::{admin, auth, files, folders, trash};
 use craftcloud_core::http::HttpResponse;
 use craftcloud_core::storage::Capabilities;
 
-use super::{Download, Entry, LISTERS, MoveGuard, Moved, OwnPath, RemoteStorage, StorageError, TrashGuard, TrashItem, Trashed, Written};
+use super::{Download, Entry, LISTERS, MoveGuard, Moved, OwnPath, RemoteStorage, StorageError, TrashGuard, TrashItem, Trashed, Written, listed_at};
 use crate::http;
 use crate::session::Session;
 
@@ -46,14 +46,10 @@ impl OxiCloud {
     fn still_at(&mut self, path: &str, etag: &str) -> Result<Option<Result<bool, ()>>, StorageError> {
         let (parent, _) = path.rsplit_once('/').unwrap_or(("", path));
         match self.list(parent).map(|entries| entries.into_iter().find(|e| e.path == path)) {
-            Ok(Some(e)) => {
-                let now = e.etag.as_deref().map(|now| now.trim_matches('"')).filter(|now| !now.is_empty());
-                Ok(Some(now.map(|now| now == etag.trim_matches('"')).ok_or(())))
-            }
-            Ok(None) => Ok(None),
-            // By its words, exactly as the engine always matched it (a `StorageError::NotFound`,
-            // and nothing else that happens to end so), so this move changes nothing.
-            Err(e) if e.to_string().ends_with(": 404") => Ok(None),
+            Ok(Some(e)) => Ok(Some(listed_at(e.etag.as_deref(), etag).ok_or(()))),
+            // Gone: the listing answered 404. By its kind, never by its words: another failure
+            // whose text happens to end in ": 404" (a proxy's 500 page) is unknown, not gone.
+            Ok(None) | Err(StorageError::NotFound(_)) => Ok(None),
             Err(e) => Err(e),
         }
     }
@@ -77,11 +73,7 @@ impl OxiCloud {
             }
             level = next;
         }
-        Ok(found.len() == files.len()
-            && files.iter().all(|(p, etag)| {
-                let now = found.get(p).and_then(Option::as_deref).map(|now| now.trim_matches('"')).filter(|now| !now.is_empty());
-                now.is_some_and(|now| now == etag.trim_matches('"'))
-            }))
+        Ok(found.len() == files.len() && files.iter().all(|(p, etag)| listed_at(found.get(p).and_then(Option::as_deref), etag) == Some(true)))
     }
 
     /// Moves a cloud file to the trash by its REST id. One already gone counts as done.
@@ -406,6 +398,20 @@ mod tests {
         assert_eq!(seen[1].header("if-match"), Some("\"e1\""), "an overwrite only of the version given");
         assert_eq!(seen[2].header("overwrite"), Some("F"), "a move never onto an existing name");
         assert!(seen[3].is("DELETE", "/webdav/.craftcloud/"), "for good only inside .craftcloud/");
+    }
+
+    /// #97: a file is gone only when its folder's listing answers 404, never because some other
+    /// failure's words end in ": 404" (a proxy's error page): that is unknown, and nothing is
+    /// taken as trashed or moved on it.
+    #[test]
+    fn only_a_404_listing_means_gone() {
+        let server = FakeServer::start(|r| match r.path.trim_start_matches("/webdav/").trim_end_matches('/') {
+            "Gone" => (404, String::new()),
+            _ => (500, "upstream answered: 404".into()),
+        });
+        let mut s = driver(&server);
+        assert_eq!(s.still_at("Gone/a.txt", "\"e1\"").unwrap(), None, "a 404 listing: gone");
+        assert!(s.still_at("Docs/a.txt", "\"e1\"").is_err(), "a 500 is unknown, whatever its words");
     }
 
     #[test]

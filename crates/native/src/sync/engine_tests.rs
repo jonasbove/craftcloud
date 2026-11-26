@@ -1649,3 +1649,88 @@ fn walkdir(dir: &Path) -> Vec<std::path::PathBuf> {
     }
     out
 }
+
+// --- Review follow-ups ------------------------------------------------------------------------
+
+/// #99: a file deleted in the cloud but changed here since stays here, and the activity list says
+/// why instead of nothing.
+#[test]
+fn a_cloud_delete_of_a_file_changed_here_is_said_not_silent() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let file = write(root, "Docs/f.txt", "abc");
+    let mut state = State::default();
+    state.files.insert("Docs/f.txt".into(), as_synced(&file));
+    std::fs::write(&file, "abcd").unwrap();
+    let mut engine = engine(ServerUrl::parse("http://127.0.0.1:9").unwrap(), root, &[]);
+    let root_path = engine.root();
+    let mut folders = BTreeSet::new();
+    let done = engine.apply(&root_path, &Action::TrashLocal("Docs/f.txt".into()), &mut state, &mut folders, &Tree::default()).unwrap();
+    assert!(matches!(&done, Some((ActivityKind::Skipped, why)) if why.contains("changed here")), "{done:?}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "abcd", "the change made here stays");
+    assert!(state.files.contains_key("Docs/f.txt"), "and the next pass sees it as this computer's");
+}
+
+const EIGHT: [&str; 8] = ["f0.txt", "f1.txt", "f2.txt", "f3.txt", "f4.txt", "f5.txt", "f6.txt", "f7.txt"];
+
+/// A server under download only whose `Docs` holds [`EIGHT`] (`listed`) or nothing.
+fn eight_files_server(listed: bool) -> FakeServer {
+    FakeServer::start(move |r| {
+        if r.method == "GET" {
+            return (200, "abc".into());
+        }
+        match r.path.trim_start_matches("/webdav/").trim_end_matches('/') {
+            "" => listing("", &[], &["Docs"]),
+            "Docs" if listed => listing("Docs", &EIGHT.map(|n| (n, Some("e1"))), &[]),
+            "Docs" => listing("Docs", &[], &[]),
+            _ => (404, String::new()),
+        }
+    })
+}
+
+/// Eight files synced into `root/Docs`; `here`: still here.
+fn eight_files_synced(engine: &Engine<WithCapabilities>, root: &Path, here: bool) {
+    let mut state = State::default();
+    for name in EIGHT {
+        let file = write(root, &format!("Docs/{name}"), "abc");
+        state.files.insert(format!("Docs/{name}"), as_synced(&file));
+        if !here {
+            std::fs::remove_file(&file).unwrap();
+        }
+    }
+    state.folders.insert("Docs".into());
+    save_saved(&engine.state_path(), &Saved { server: engine.plan.server.clone(), state, ..Saved::default() }).unwrap();
+}
+
+/// #99: under download only, files deleted here never wait as a mass delete: the deletes never
+/// reach the cloud (they are forgotten), and the files come down again on the next pass.
+#[test]
+fn download_only_never_holds_deletes_made_here_and_the_files_come_back() {
+    let server = eight_files_server(true);
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let mut engine = engine_with(server.server(), root, download_only());
+    eight_files_synced(&engine, root, false);
+    engine.cycle(Deletes::Hold);
+    let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    assert!(!matches!(p.state, SyncState::MassDelete { .. }), "nothing to wait for: {:?}", p.state);
+    engine.cycle(Deletes::Hold);
+    assert!(EIGHT.iter().all(|n| root.join("Docs").join(n).exists()), "back from the cloud");
+    let writes: Vec<String> = server.seen().iter().filter(|r| !matches!(r.method.as_str(), "PROPFIND" | "GET")).map(|r| r.method.clone()).collect();
+    assert!(writes.is_empty(), "nothing deleted or written in the cloud: {writes:?}");
+}
+
+/// The other side of #99: files deleted in the cloud would leave this computer, so under download
+/// only too they wait for the person, all still here.
+#[test]
+fn download_only_still_holds_a_mass_delete_made_in_the_cloud() {
+    let server = eight_files_server(false);
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let mut engine = engine_with(server.server(), root, download_only());
+    eight_files_synced(&engine, root, true);
+    engine.cycle(Deletes::Hold);
+    let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    assert_eq!(p.state, SyncState::MassDelete { deletes: 8 });
+    assert!(EIGHT.iter().all(|n| root.join("Docs").join(n).exists()), "all still here");
+}

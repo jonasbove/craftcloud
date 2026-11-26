@@ -546,7 +546,11 @@ impl<S: RemoteStorage> Engine<S> {
             return true;
         }
         self.two_way_off = true;
-        let _ = self.storage.recheck();
+        // The re-check's own failures (saving it) are logged where they happen; its verdict is
+        // for the record, since the mode is already down for this run.
+        if let Some(mode) = self.storage.recheck() {
+            log::warn!("checked the server again after it replaced a file: {mode:?}");
+        }
         self.update(|p| {
             p.mode = Some(Mode::DownloadOnly);
             p.record(event(
@@ -614,7 +618,7 @@ impl<S: RemoteStorage> Engine<S> {
         // A folder move that waits: the plan doesn't see the folder under either name (so nothing
         // of it counts as deleted or new), and the state keeps it as it was.
         let moving_folders = set_aside_waiting_moves(&waiting_moves, &state, &mut local, &mut remote);
-        let (actions, held) = match reconcile::reconcile(&state, &local, &remote, confirm == Deletes::Confirm) {
+        let (actions, held) = match reconcile::reconcile_in(&state, &local, &remote, confirm == Deletes::Confirm, mode) {
             Ok(actions) => (actions, Vec::new()),
             Err(reconcile::Refusal::TooManyDeletes { .. }) => {
                 let all = reconcile::reconcile(&state, &local, &remote, true).map_err(|e| e.to_string())?;
@@ -638,7 +642,7 @@ impl<S: RemoteStorage> Engine<S> {
                             }
                         }
                     }
-                    let back = bring_back(&mut state, &all, &restored);
+                    let back = bring_back(&mut state, &all, &restored, mode);
                     save_saved(
                         &state_path,
                         &Saved { server: self.plan.server.clone(), state: state.clone(), kept_conflicts: kept_conflicts.clone() },
@@ -652,7 +656,7 @@ impl<S: RemoteStorage> Engine<S> {
                     (reconcile::reconcile(&state, &local, &remote, true).map_err(|e| e.to_string())?, Vec::new())
                 } else {
                     // Only the deletes wait; everything else syncs.
-                    split_deletes(all)
+                    split_deletes(all, mode)
                 }
             }
         };
@@ -1265,7 +1269,7 @@ impl<S: RemoteStorage> Engine<S> {
                 // Only the version last synced: a change made here meanwhile stays where it is
                 // (the next pass sees it as a file of this computer's).
                 if !replaceable(&src, state.files.get(p)) {
-                    return Ok(None);
+                    return Ok(Some((ActivityKind::Skipped, "deleted in the cloud, but changed here since: kept here".into())));
                 }
                 if std::fs::symlink_metadata(&src).is_ok() {
                     let rel = local_relative(p).ok_or_else(|| format!("{p}: name not allowed here"))?;
@@ -1280,10 +1284,11 @@ impl<S: RemoteStorage> Engine<S> {
     }
 
     /// Says once that the cloud file at `path` is listed without an ETag: it can't be shown to be
-    /// the version planned, so it is never trashed or moved on that guess.
-    fn note_unversioned(&mut self, path: &str) {
+    /// the version planned, so it is never trashed or moved on that guess. `what` says what
+    /// happens instead.
+    fn note_unversioned(&mut self, path: &str, what: &str) {
         if self.reported.insert(format!("no-etag:{path}")) {
-            let note = event(ActivityKind::Skipped, path, None, "the cloud lists no version for it, so it is left as it is there".into());
+            let note = event(ActivityKind::Skipped, path, None, format!("the cloud lists no version for it, so {what}"));
             self.update(|p| p.record(note));
         }
     }
@@ -1313,7 +1318,7 @@ impl<S: RemoteStorage> Engine<S> {
                 return Err(format!("the server answered {status} (not now); it's tried again"));
             }
             Moved::Refused(status) => log::warn!("moving {from} to {to} in the cloud: the server answered {status}; uploading instead"),
-            Moved::Unversioned => self.note_unversioned(from),
+            Moved::Unversioned => self.note_unversioned(from, &format!("it isn't moved there; {to} is uploaded as a new file instead")),
             Moved::Changed => {}
         }
         state.files.remove(from);
@@ -1330,7 +1335,7 @@ impl<S: RemoteStorage> Engine<S> {
             Trashed::Done => Ok(true),
             Trashed::Changed => Ok(false),
             Trashed::Unversioned => {
-                self.note_unversioned(path);
+                self.note_unversioned(path, "it is left as it is there");
                 Ok(false)
             }
         }
@@ -1388,6 +1393,8 @@ impl<S: RemoteStorage> Engine<S> {
         let items = self.storage.trash_list()?;
         let listed: Vec<(String, String, String)> = items.iter().map(|i| (i.id.clone(), i.path.clone(), i.trashed_at.clone())).collect();
         for (id, place, covers) in trash_to_restore(&gone, &listed) {
+            // Always found: the id came from `items`. The stand-in only keeps this free of a panic;
+            // a restore goes by the id and the path, never by the time.
             let item = items.iter().find(|i| i.id == id).cloned().unwrap_or(TrashItem { id, path: place.clone(), trashed_at: String::new() });
             match self.storage.restore(&item) {
                 Ok(()) => back.extend(covers),
@@ -1498,10 +1505,7 @@ impl<S: RemoteStorage> Engine<S> {
             local_relative(c).is_none_or(|rel| std::fs::symlink_metadata(root.join(rel)).is_ok())
         });
         let copy_local = local_relative(&copy).map(|rel| root.join(rel)).ok_or("name not allowed")?;
-        std::fs::rename(&local, &copy_local).map_err(|e| e.to_string())?;
-        std::fs::rename(&part.0, &local).map_err(|e| e.to_string())?;
-        flush_folder_of(&local);
-        let meta = local_meta(&local).ok_or("the file disappeared")?;
+        let meta = put_conflict_in_place(part, &local, &copy_local, craft_atomic::RenameRetry::platform(), |from, to| std::fs::rename(from, to))?;
         state.files.insert(path.to_owned(), Known { etag, size: meta.size, mtime: meta.mtime, hash: None });
         let name = copy.rsplit('/').next().unwrap_or(&copy).to_owned();
         if !upload {
@@ -1547,6 +1551,8 @@ fn put_in_place_with(
     let placed = craft_atomic::retry_rename(retry, || {
         if !replaceable(dest, known) {
             changed = true;
+            // `retry_rename` tries again only after a lock (`PermissionDenied`, a sharing
+            // violation); this kind ends the tries at once, which is what a change here needs.
             return Err(std::io::Error::other("changed here"));
         }
         rename(&part.0, dest)
@@ -1560,12 +1566,29 @@ fn put_in_place_with(
     local_meta(dest).ok_or_else(|| "the file disappeared".into())
 }
 
+/// The conflict path's swap: the local file goes to its conflict copy `copy`, then the download
+/// takes its place at `local`, through [`put_in_place_with`]: a rename held up by another program
+/// is tried again, and a file that appears at `local` meanwhile is never overwritten (the part
+/// file goes, and the next pass sees both). The local edit is safe in its copy either way.
+fn put_conflict_in_place(
+    part: PartFile,
+    local: &Path,
+    copy: &Path,
+    retry: craft_atomic::RenameRetry,
+    mut rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> Result<LocalFile, String> {
+    craft_atomic::retry_rename(retry, || rename(local, copy)).map_err(|e| e.to_string())?;
+    put_in_place_with(part, local, None, retry, rename)
+}
+
 /// Flushes the folder `path` is in, so a rename into it survives a crash (Unix; nothing elsewhere).
 /// Best effort: the rename itself already happened.
 fn flush_folder_of(path: &Path) {
     use craft_atomic::AtomicFs;
-    if let Some(dir) = path.parent() {
-        let _ = craft_atomic::RealFs.sync_dir(dir);
+    if let Some(dir) = path.parent()
+        && let Err(e) = craft_atomic::RealFs.sync_dir(dir)
+    {
+        log::warn!("flushing {}: {e}", dir.display());
     }
 }
 
@@ -1786,14 +1809,20 @@ fn is_delete(action: &Action) -> bool {
 }
 
 /// A plan without its deletions, and the files those would delete.
-fn split_deletes(actions: Vec<Action>) -> (Vec<Action>, Vec<String>) {
+fn split_deletes(actions: Vec<Action>, mode: Mode) -> (Vec<Action>, Vec<String>) {
+    // Under download only a delete made here never reaches the cloud: it is forgotten, and the
+    // file comes down again (`reconcile::restrict`). Nothing to wait for (#99).
+    let never_sent = |a: &Action| {
+        mode == Mode::DownloadOnly && matches!(a, Action::DeleteRemote { .. } | Action::DeleteRemoteFolder { .. } | Action::RemoveRemoteFolder(_))
+    };
     // What takes the place of something whose removal waits (a file replacing a synced folder,
     // T-052) waits with it: it can't be put there while the old one is still in the way.
-    let removed: Vec<String> = actions.iter().filter(|a| is_delete(a)).map(|a| action_path(a).to_owned()).collect();
+    let removed: Vec<String> = actions.iter().filter(|a| is_delete(a) && !never_sent(a)).map(|a| action_path(a).to_owned()).collect();
     let mut held = Vec::new();
     let mut rest = Vec::new();
     for action in actions {
         match action {
+            a if never_sent(&a) => rest.push(a),
             Action::DeleteRemote { path, .. } | Action::DeleteLocal(path) | Action::TrashLocal(path) => held.push(path),
             Action::DeleteRemoteFolder { files, .. } => held.extend(files.into_iter().map(|(p, _)| p)),
             a if is_delete(&a) => {}
@@ -1815,8 +1844,8 @@ fn held_folders(state: &State, held: &[String]) -> Vec<String> {
 /// Forgets that the files `actions` would delete were ever synced, so the next plan copies them
 /// back to the side they are missing from instead; the `restored` ones are back in the cloud
 /// already and stay as they were. Returns how many are kept.
-fn bring_back(state: &mut State, actions: &[Action], restored: &BTreeSet<String>) -> usize {
-    let (_, held) = split_deletes(actions.to_vec());
+fn bring_back(state: &mut State, actions: &[Action], restored: &BTreeSet<String>, mode: Mode) -> usize {
+    let (_, held) = split_deletes(actions.to_vec(), mode);
     for path in held.iter().filter(|p| !restored.contains(*p)) {
         state.files.remove(path);
     }
@@ -2433,19 +2462,19 @@ mod tests {
         assert!(reconcile::reconcile(&state, &local, &remote, false).is_err(), "too many deletes");
 
         let all = reconcile::reconcile(&state, &local, &remote, true).unwrap();
-        let (rest, held) = split_deletes(all.clone());
+        let (rest, held) = split_deletes(all.clone(), craftcloud_core::storage::Mode::TwoWay);
         assert_eq!(rest, [reconcile::Action::UploadNew("new.txt".into())], "the rest still syncs");
         assert_eq!(held.len(), 20);
         assert!(held.contains(&"Gone/7.txt".to_owned()));
 
         // A file that replaced the folder (T-052) waits with its delete: the folder is in the way.
         local.files.insert("Gone".into(), LocalFile { size: 2, mtime: 9 });
-        let (rest, _) = split_deletes(reconcile::reconcile(&state, &local, &remote, true).unwrap());
+        let (rest, _) = split_deletes(reconcile::reconcile(&state, &local, &remote, true).unwrap(), craftcloud_core::storage::Mode::TwoWay);
         assert_eq!(rest, [reconcile::Action::UploadNew("new.txt".into())]);
         local.files.remove("Gone");
 
         // Brought back instead: they come down again, nothing is deleted.
-        assert_eq!(bring_back(&mut state, &all, &BTreeSet::new()), 20);
+        assert_eq!(bring_back(&mut state, &all, &BTreeSet::new(), craftcloud_core::storage::Mode::TwoWay), 20);
         let again = reconcile::reconcile(&state, &local, &remote, false).unwrap();
         assert!(again.contains(&reconcile::Action::Download("Gone/7.txt".into())), "{again:?}");
         assert!(!again.iter().any(super::is_delete), "{again:?}");
@@ -2478,7 +2507,7 @@ mod tests {
             state.files.insert(p.to_owned(), reconcile::Known { etag: "e".into(), size: 1, mtime: 1, hash: None });
         }
         let all: Vec<reconcile::Action> = gone.iter().map(|p| reconcile::Action::DeleteLocal((*p).to_owned())).collect();
-        assert_eq!(bring_back(&mut state, &all, &back), 5);
+        assert_eq!(bring_back(&mut state, &all, &back, craftcloud_core::storage::Mode::TwoWay), 5);
         let kept: Vec<&str> = state.files.keys().map(String::as_str).collect();
         assert_eq!(kept, ["Notes/c.md", "Old/a.txt", "Old/sub/b.txt"]);
     }
@@ -2503,7 +2532,7 @@ mod tests {
             remote.files.insert(p, RemoteFile { etag: format!("e{i}"), size: 1 });
         }
         let all = reconcile::reconcile(&state, &local, &remote, true).unwrap();
-        let (rest, held) = split_deletes(all);
+        let (rest, held) = split_deletes(all, craftcloud_core::storage::Mode::TwoWay);
         assert_eq!(held.len(), 50);
         assert!(rest.is_empty(), "{rest:?}");
 
@@ -3058,6 +3087,46 @@ mod tests {
         });
         assert!(placed.is_err());
         assert_eq!(std::fs::read_to_string(&dest).unwrap(), "saved here meanwhile", "never overwritten");
+        assert!(!part.exists(), "the part file is gone");
+    }
+
+    /// #122: the conflict path puts the download in place the same way as any download: a rename
+    /// held up for a moment is tried again, and a file saved at the name meanwhile is never
+    /// overwritten. The local edit is in its conflict copy either way.
+    #[test]
+    fn a_conflict_download_waits_out_a_lock_and_never_overwrites_a_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let read = |p: &std::path::Path| std::fs::read_to_string(p).unwrap();
+        let (part, local) = (dir.path().join(".f.txt.e-2.craftcloud-part"), dir.path().join("f.txt"));
+        let retry = craft_atomic::RenameRetry { attempts: 3, first_delay_ms: 0 };
+
+        std::fs::write(&part, "cloud bytes").unwrap();
+        std::fs::write(&local, "mine").unwrap();
+        let copy = dir.path().join("f (conflict 1).txt");
+        let mut locked = true;
+        let placed = super::put_conflict_in_place(super::PartFile(part.clone()), &local, &copy, retry, |from, to| {
+            if from == part && std::mem::take(&mut locked) {
+                return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+            }
+            std::fs::rename(from, to)
+        });
+        assert!(placed.is_ok(), "{placed:?}");
+        assert_eq!((read(&local), read(&copy)), ("cloud bytes".to_owned(), "mine".to_owned()));
+        assert!(!part.exists());
+
+        std::fs::write(&part, "cloud bytes 2").unwrap();
+        std::fs::write(&local, "mine 2").unwrap();
+        let copy = dir.path().join("f (conflict 2).txt");
+        let placed = super::put_conflict_in_place(super::PartFile(part.clone()), &local, &copy, retry, |from, to| {
+            if from == part && !to.exists() {
+                // Someone saves at the name while the rename is held up.
+                std::fs::write(to, "saved meanwhile").unwrap();
+                return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+            }
+            std::fs::rename(from, to)
+        });
+        assert!(placed.is_err());
+        assert_eq!((read(&local), read(&copy)), ("saved meanwhile".to_owned(), "mine 2".to_owned()), "never overwritten");
         assert!(!part.exists(), "the part file is gone");
     }
 

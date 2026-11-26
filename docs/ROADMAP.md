@@ -112,6 +112,16 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: Sync: the engine's loose ends from the review. Under download only, files deleted here no longer
+  wait as a mass delete (the deletes never reach the cloud: the files come down again next pass); a mass delete
+  made in the cloud still waits (#99). A cloud delete of a file changed here says so in the activity list
+  instead of nothing (#99). The conflict path puts the download in place like every download, with the retry
+  and the look before each try (#122). OxiCloud's "is it still that version" check takes only a 404 listing as
+  gone, by its kind, not by its words (#97). One helper compares listed version tags in both drivers (#78); the
+  note for a move of a file listed without a tag says what happens instead (#78); the re-check's verdict and a failed
+  folder flush are logged (#102, #122); both uploads choose their checksum in one place (#106); comments say why
+  a 404 on a trash `DELETE` is done (#106), why the stand-in trash item can't happen (#97) and why a change here
+  ends the rename's retries (#122).
 - 2026-11-26: Docs: M10 part 1 is done and marked so: `scripts/create-owner`, `add-user`, `app-password` and
   `smoke-test` need only sh and curl, and the packaging icons come from `cargo xtask icons`; nothing in `.github/`,
   `docker/`, the Dockerfile, `compose.yaml` or `nix/` runs Python. The design build in `design/tools/` is the one

@@ -61,7 +61,9 @@ use craftcloud_core::storage::{Capabilities, Checksum, Trash, Versions};
 
 use super::probe::{self, Limits, Transport, load_check, save_check};
 use super::profile::{Generic, ServerProfile};
-use super::{Download, Entry, MoveGuard, Moved, OwnPath, RemoteStorage, Restored, StorageError, TrashGuard, TrashItem, Trashed, Written, versions};
+use super::{
+    Download, Entry, MoveGuard, Moved, OwnPath, RemoteStorage, Restored, StorageError, TrashGuard, TrashItem, Trashed, Written, listed_at, versions,
+};
 use crate::session::AppPasswordSession;
 
 /// How a trash entry's time is written in its folder's name (UTC, whole seconds).
@@ -297,10 +299,7 @@ impl WebDav {
     fn still_at(&mut self, path: &str, etag: &str) -> Result<Option<Result<bool, ()>>, StorageError> {
         let (parent, _) = path.rsplit_once('/').unwrap_or(("", path));
         match self.listing(parent).map(|entries| entries.into_iter().find(|e| e.path == path)) {
-            Ok(Some(e)) => {
-                let now = e.etag.as_deref().map(|now| now.trim_matches('"')).filter(|now| !now.is_empty());
-                Ok(Some(now.map(|now| now == etag.trim_matches('"')).ok_or(())))
-            }
+            Ok(Some(e)) => Ok(Some(listed_at(e.etag.as_deref(), etag).ok_or(()))),
             Ok(None) | Err(StorageError::NotFound(_)) => Ok(None),
             Err(e) => Err(e),
         }
@@ -320,11 +319,7 @@ impl WebDav {
                 }
             }
         }
-        Ok(found.len() == files.len()
-            && files.iter().all(|(p, etag)| {
-                let now = found.get(p).and_then(Option::as_deref).map(|now| now.trim_matches('"')).filter(|now| !now.is_empty());
-                now.is_some_and(|now| now == etag.trim_matches('"'))
-            }))
+        Ok(found.len() == files.len() && files.iter().all(|(p, etag)| listed_at(found.get(p).and_then(Option::as_deref), etag) == Some(true)))
     }
 
     /// Makes `folder` and its missing parents (`MKCOL`, parent first); one already there is fine.
@@ -401,14 +396,7 @@ impl WebDav {
     /// server holds someone else's write under our tag, and that is a conflict, never a silent
     /// overwrite.
     fn upload(&mut self, path: &str, file: &Path, write: &Write) -> Result<Written, StorageError> {
-        let checksum = match self.profile.verify_writes() {
-            Some(Checksum::Sha1) => Some(format!("SHA1:{}", sha1_hex(file)?)),
-            Some(other) => {
-                log::warn!("verifying writes by {other:?} isn't supported; writes to {} go unverified", self.base.url());
-                None
-            }
-            None => None,
-        };
+        let checksum = self.write_checksum(|| sha1_hex(file))?;
         let mut req = dav::upload_under(self.base.url(), path, Vec::new(), &bare(write));
         if let Some(sum) = &checksum {
             req = req.header("OC-Checksum", sum.clone());
@@ -420,19 +408,30 @@ impl WebDav {
     /// [`Self::upload`] for bytes in memory (a version being restored): the same guard, the same
     /// checksum check.
     fn upload_bytes(&mut self, path: &str, bytes: Vec<u8>, write: &Write) -> Result<Written, StorageError> {
-        let checksum = match self.profile.verify_writes() {
-            Some(Checksum::Sha1) => {
-                use sha1::Digest;
-                Some(format!("SHA1:{}", sha1::Sha1::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect::<String>()))
-            }
-            _ => None,
-        };
+        let checksum = self.write_checksum(|| {
+            use sha1::Digest;
+            Ok(sha1::Sha1::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect())
+        })?;
         let mut req = dav::upload_under(self.base.url(), path, bytes, &bare(write));
         if let Some(sum) = &checksum {
             req = req.header("OC-Checksum", sum.clone());
         }
         let resp = self.session.call(&req)?;
         self.uploaded(path, &resp, checksum.as_deref())
+    }
+
+    /// The checksum a write carries where the profile asks for one (`SHA1:<sha1>`, from `sha1`), the
+    /// same for both kinds of upload. A kind this client can't make is said in the log, and the
+    /// write goes unverified.
+    fn write_checksum(&self, sha1: impl FnOnce() -> Result<String, StorageError>) -> Result<Option<String>, StorageError> {
+        match self.profile.verify_writes() {
+            Some(Checksum::Sha1) => Ok(Some(format!("SHA1:{}", sha1()?))),
+            Some(other) => {
+                log::warn!("verifying writes by {other:?} isn't supported; writes to {} go unverified", self.base.url());
+                Ok(None)
+            }
+            None => Ok(None),
+        }
     }
 
     /// What a guarded `PUT`'s answer means, with the checksum read back where one was sent.
@@ -493,6 +492,9 @@ impl WebDav {
         let resp = self.session.call(&req)?;
         match resp.status {
             412 => Ok(Trashed::Changed),
+            // Gone meanwhile (deleted or moved elsewhere): there is nothing left to trash, and the
+            // state then forgets it. A folder moved elsewhere comes down again under its new name
+            // from the next listing, so nothing is lost by taking this as done.
             404 => Ok(Trashed::Done),
             _ if resp.is_success() => Ok(Trashed::Done),
             s => Err(StorageError::Failed(format!("deleting {path} into the server's trash: the server answered {s}"))),

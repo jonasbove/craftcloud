@@ -550,3 +550,28 @@ fn a_folder_a_set_aside_file_was_leaving_is_not_removed() {
     let r = remote(&[("A/S", "e0", 3)], &["A"]);
     assert_eq!(plan(&s, &l, &r), [Action::LocalClash("A/S".into())]);
 }
+
+/// #99: under download only a file deleted here is never deleted in the cloud (it is forgotten and
+/// comes down again), so those deletes don't count towards the mass-delete limit; files deleted in
+/// the cloud, which would leave this computer, still do.
+#[test]
+fn download_only_counts_only_the_deletes_that_leave_this_computer() {
+    use crate::storage::Mode;
+    let names: Vec<String> = (0..8).map(|i| format!("f{i}.txt")).collect();
+    let s = state(&names.iter().map(|n| (n.as_str(), known("e1", 3, 100))).collect::<Vec<_>>(), &[]);
+    let everything_here = local(&names.iter().map(|n| (n.as_str(), 3, 100)).collect::<Vec<_>>(), &[]);
+    let everything_there = remote(&names.iter().map(|n| (n.as_str(), "e1", 3)).collect::<Vec<_>>(), &[]);
+    let (nothing_here, nothing_there) = (local(&[], &[]), remote(&[], &[]));
+
+    // Deleted here: held both ways, not under download only (where they become `Forget`).
+    let deleted_here = super::reconcile_in(&s, &nothing_here, &everything_there, false, Mode::TwoWay);
+    assert!(matches!(deleted_here, Err(Refusal::TooManyDeletes { deletes: 8, .. })), "{deleted_here:?}");
+    let plan = super::reconcile_in(&s, &nothing_here, &everything_there, false, Mode::DownloadOnly).unwrap();
+    assert!(super::restrict(plan, Mode::DownloadOnly).iter().all(|a| matches!(a, Action::Forget(_))));
+
+    // Deleted in the cloud: held either way.
+    for mode in [Mode::TwoWay, Mode::DownloadOnly] {
+        let deleted_there = super::reconcile_in(&s, &everything_here, &nothing_there, false, mode);
+        assert!(matches!(deleted_there, Err(Refusal::TooManyDeletes { deletes: 8, .. })), "{mode:?}: {deleted_there:?}");
+    }
+}

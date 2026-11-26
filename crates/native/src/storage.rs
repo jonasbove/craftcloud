@@ -218,6 +218,13 @@ impl std::fmt::Display for StorageError {
     }
 }
 
+/// Whether a listed version tag names version `etag`, quotes aside: `None` when the listing gives
+/// no tag (or an empty one), so the file can't be shown to be at that version. The one comparison
+/// both drivers make before a guarded trash or move.
+pub(crate) fn listed_at(listed: Option<&str>, etag: &str) -> Option<bool> {
+    listed.map(|now| now.trim_matches('"')).filter(|now| !now.is_empty()).map(|now| now == etag.trim_matches('"'))
+}
+
 impl From<String> for StorageError {
     fn from(why: String) -> Self {
         Self::Failed(why)

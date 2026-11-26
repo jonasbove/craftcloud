@@ -154,21 +154,37 @@ impl std::fmt::Display for Refusal {
 }
 
 /// The plan, or a refusal when it would delete too much at once. `confirm_deletes` lifts the limit.
-/// Order: folders to create (parents first), then file actions, then empty folders to remove
+/// The deletes counted are those both ways ([`reconcile_in`] counts for a mode). Order: folders to create (parents first), then file actions, then empty folders to remove
 /// (deepest first); a path that is a file on one side and a folder on the other changes that a
 /// little (see `settle_clashes`), so that every action can be done in one pass, in plan order.
 pub fn reconcile(state: &State, local: &Tree<LocalFile>, remote: &Tree<RemoteFile>, confirm_deletes: bool) -> Result<Vec<Action>, Refusal> {
+    reconcile_in(state, local, remote, confirm_deletes, Mode::TwoWay)
+}
+
+/// [`reconcile`] for the server's `mode`: the same plan (cut to the mode with [`restrict`]), with
+/// the mass-delete limit counting only the deletes the mode carries out. Under download only a
+/// file deleted here is never deleted in the cloud (it is forgotten, and comes down again next
+/// pass), so only files deleted in the cloud, which would leave this computer, count.
+pub fn reconcile_in(
+    state: &State,
+    local: &Tree<LocalFile>,
+    remote: &Tree<RemoteFile>,
+    confirm_deletes: bool,
+    mode: Mode,
+) -> Result<Vec<Action>, Refusal> {
     let paths: BTreeSet<&String> = state.files.keys().chain(local.files.keys()).chain(remote.files.keys()).collect();
     let files: Vec<Action> =
         paths.into_iter().filter_map(|path| decide(state.files.get(path), local.files.get(path), remote.files.get(path), path)).collect();
     let files = pair_moves(state, local, remote, files);
     let files = group_folder_deletes(state, local, remote, files);
 
+    let deletes_here_count = mode != Mode::DownloadOnly;
     let deletes: usize = files
         .iter()
         .map(|a| match a {
-            Action::DeleteLocal(_) | Action::DeleteRemote { .. } => 1,
-            Action::DeleteRemoteFolder { files, .. } => files.len(),
+            Action::DeleteLocal(_) => 1,
+            Action::DeleteRemote { .. } if deletes_here_count => 1,
+            Action::DeleteRemoteFolder { files, .. } if deletes_here_count => files.len(),
             _ => 0,
         })
         .sum();
