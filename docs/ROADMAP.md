@@ -16,8 +16,8 @@ This page is the summary: where each part stands, the milestones, what comes nex
 [STATUS.md](STATUS.md) says what works today, how it was checked, and the known limits.
 
 **Why early alpha:** the server image, the sync client, the web frontend and the command line all work end to end
-against OxiCloud 0.10.0, and the sync has been through a round of testers' reports (T-001 to T-064). 0.10.0 is the first
-release, its desktop packages are new, and the desktop builds are unsigned. Keep a
+against OxiCloud 0.10.0, and the sync has been through a round of testers' reports (T-001 to T-064). 0.1.0 (2026-11-14) was
+the first release and 0.2.0 is the latest; the desktop packages are new, and the desktop builds are unsigned. Keep a
 backup of anything you sync with it.
 
 ## By area
@@ -33,7 +33,7 @@ backup of anything you sync with it.
 | Web file browser (upload, download, rename, move, delete, trash, versions, details, recent, starred, search) | done | [design-notes/pass-2.md](design-notes/pass-2.md) |
 | Share links | done: public share page, CLI, the web's "Share link" sheet and "Your share links" page | [CLI.md › Share links](CLI.md#share-links) |
 | Admin (users, server settings, Craft web apps on or off) | done, on the web and in the CLI | [CLI.md](CLI.md#server-administration-owners-and-admins) |
-| Command line | done; `save --if-match` and `etag` in listings for cloud backends; on Windows through `craftcloud.com` (untried on Windows); `server check` says what the server guarantees the sync; behind `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, `login --kind webdav|nextcloud` and the file and sync commands on any other WebDAV server or a Nextcloud (its own trash and versions) | [CLI.md](CLI.md) |
+| Command line | done; `save --if-match` and `etag` in listings for cloud backends; on Windows through `craftcloud.com` (tried on Windows 11; Ctrl+C unconfirmed); `server check` says what the server guarantees the sync; behind `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, `login --kind webdav|nextcloud` and the file and sync commands on any other WebDAV server or a Nextcloud (its own trash and versions) | [CLI.md](CLI.md) |
 | Craft apps through the sync folder | done (every app) | [CRAFT-INTEGRATION.md § 1](CRAFT-INTEGRATION.md#1-the-sync-folder-works-today-every-app) |
 | `craftcloud://` deep links | done on Linux and Windows; macOS needs an Apple Event handler | [CRAFT-INTEGRATION.md § 2](CRAFT-INTEGRATION.md#2-deep-links-craftcloud) |
 | Integration contract (`craftcloud apps`, `files`, `save`) | done; desktop-only apps (`web = false`) listed too | [CRAFT-INTEGRATION.md § 3](CRAFT-INTEGRATION.md#3-the-integration-contract-the-craftcloud-command) |
@@ -50,13 +50,13 @@ backup of anything you sync with it.
 | M0 Server image | OxiCloud unmodified behind Caddy, CraftCloud's settings service, slim and `-apps` images, NixOS module | Done |
 | M1 Sync client | Device sign-in, a two-way sync folder with guarded writes, versions and conflict copies, tray | Done; hardening continues from testers' reports |
 | M2 Web frontend | Setup, sign-in, device approval, home, the file browser, admin, single sign-on, share links | Done |
-| M3 Command line and integration | `craftcloud <command>` for files, sync, sharing, versions and admin; the contract the Craft apps and the launcher can use | Done; the command line prints in Windows terminals too (tried on Windows 11) |
+| M3 Command line and integration | `craftcloud <command>` for files, sync, sharing, versions and admin; the contract the Craft apps and the launcher can use | Done; the command line prints in Windows terminals too (tried on Windows 11; Ctrl+C there is unconfirmed) |
 | M4 First release | Published images, a tagged desktop release, release notes | Done: 0.1.0 on 2026-11-14, then 0.1.1 and 0.2.0 |
 | M5 Craft web apps in the browser | Open a cloud file in its Craft web app from the web file browser and save it back (`craft-web-host`, the shim for the others) | Serving and gating done; the Apps menu in the web header opens an app in a new tab (0.3.0); the editor page and the shim not built |
 | M6 Files on demand | Placeholders that download when opened (Windows, Linux, macOS) | Design only |
 | M7 Signed desktop builds | Signed and notarized macOS builds, signed Windows builds | Not started; v1 is unsigned |
 | M8 Native NixOS deployment | OxiCloud, Caddy and craftcloud-admin as NixOS services without Docker, with the Craft web apps built by Nix from `apps.toml` | Not started; the NixOS module runs the Docker image today |
-| M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | Planned for 0.3.0, on `main` behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in until the release; the storage trait with OxiCloud as its first driver, the sync modes (two-way, download only, refused) with the plan cut to each, the check on connect (the probe's steps and verdict in `core`, its runner in `native`, `craftcloud server check`) and the generic WebDAV driver (an app-password sign-in, the client's own trash by `MOVE` and versions by `COPY`, the command line's file and sync commands through the trait, the client trash's 30-day retention by the server's clock, the trash and version commands through the trait, the check's re-run schedule and the runtime watch) are in; without the opt-in a person sees only `server check`, which reports CraftCloud's own server's known capabilities. The live suite runs against Nextcloud, ownCloud, OpenCloud, `rclone serve webdav` and Apache `mod_dav` by hand (`CRAFTCLOUD_TEST_KIND`, `tests/other-servers/`), asserting the mode each gets. Nextcloud's profile is in (6: Login Flow v2, its trash and versions after the check's round trips, the checksum check on every write). Next: the ownCloud and OpenCloud profiles (7, 8), the CI job (9), the desktop's Connect sheet (10) |
+| M9 Any WebDAV server as the storage | The desktop client and command line sync with any WebDAV server (Nextcloud, ownCloud, a NAS, `rclone serve webdav` …), not only OxiCloud: a check of the server on connect, and the client's own trash and versions where the server has none | In progress for 0.3.0: pull requests 1 to 6 of the plan ([WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14) are on `main`, behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in until the release; the storage trait with OxiCloud as its first driver, the sync modes (two-way, download only, refused) with the plan cut to each, the check on connect (the probe's steps and verdict in `core`, its runner in `native`, `craftcloud server check`) and the generic WebDAV driver (an app-password sign-in, the client's own trash by `MOVE` and versions by `COPY`, the command line's file and sync commands through the trait, the client trash's 30-day retention by the server's clock, the trash and version commands through the trait, the check's re-run schedule and the runtime watch) are in; without the opt-in a person sees only `server check`, which reports CraftCloud's own server's known capabilities. The live suite runs against Nextcloud, ownCloud, OpenCloud, `rclone serve webdav` and Apache `mod_dav` by hand (`CRAFTCLOUD_TEST_KIND`, `tests/other-servers/`), asserting the mode each gets. Nextcloud's profile is in (6: Login Flow v2, its trash and versions after the check's round trips, the checksum check on every write). Next: the ownCloud and OpenCloud profiles (7, 8), the CI job (9), the desktop's Connect sheet (10) |
 | M10 No Python in the tree | The operator scripts without Python (sh and curl) and the packaging icons in Rust (0.3.0), then the design build (`design/tools`, FigCraft) as `cargo xtask design` | Part 1 done for 0.3.0 (the scripts need only sh and curl; `cargo xtask icons`); the design build later |
 
 ## Current focus
@@ -83,8 +83,8 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
    release zip with `fetchurl` and its sha256, unpack and precompress it, and write `apps.json`: reproducible,
    cached in the Nix store, and no network during the build. It is worth doing together with running OxiCloud,
    Caddy and `craftcloud-admin` as NixOS services, not while the module runs the image, since two ways of
-   fetching the apps would drift apart. `scripts/bump-apps` (moving to `cargo xtask` in 0.2.0) stays the way to
-   move the pins.
+   fetching the apps would drift apart. `cargo xtask bump-apps` stays the way to move the
+   pins.
 8. **Any WebDAV server as the storage (M9):** the desktop client and the command line sync with a WebDAV server of
    the person's choosing, not only OxiCloud. First the sync engine moves behind a storage layer that says what the
    server guarantees, with OxiCloud as its first driver; then generic WebDAV:
@@ -112,6 +112,11 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: Docs: ROADMAP, STATUS and README in step: the M9 row says it is in progress (pull requests 1 to 6
+  on `main` behind the opt-in), and the README no longer calls it planned or lists the share links page as missing;
+  0.1.0 was the first release; the Windows command line was tried on Windows 11, Ctrl+C there unconfirmed; STATUS
+  names the property tests' file, the build the Windows check used and `cargo xtask icons`; CLI.md says
+  `sync --once --json` always has `waiting_moves`. The progress log is one list again, in date order.
 - 2026-11-26: Docs: M10 part 1 is done and marked so: `scripts/create-owner`, `add-user`, `app-password` and
   `smoke-test` need only sh and curl, and the packaging icons come from `cargo xtask icons`; nothing in `.github/`,
   `docker/`, the Dockerfile, `compose.yaml` or `nix/` runs Python. The design build in `design/tools/` is the one
@@ -335,7 +340,6 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   is `core::storage::Capabilities`, OxiCloud's filled in by hand. Nothing changes for a person: 15 scenarios'
   requests, activity lines and saved state were recorded against the old engine (`crates/native/src/sync/golden/`)
   and the new one sends exactly the same; every recorded write carries its guard.
-
 - 2026-11-17: Server scripts: `scripts/create-owner`, `add-user`, `app-password` and `smoke-test` need only sh and
   curl, no Python. A JSON string is escaped with sed (`\`, `"`, control characters as `\u00XX`; other characters
   pass through as they are), and the answers' few fields are read with sed. Passwords now reach curl on its stdin,
@@ -356,11 +360,6 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 - 2026-11-17: Web: the version a page shows before the server's config arrives is this build's own, not a fixed
   "0.1.0"; the README's screenshots (`docs/screenshots/`) are rendered again by `web_shots`, which now takes the
   version from the build too, so they say 0.2.0.
-- 2026-11-16: Version 0.2.0: share links, the public share page and version history on the web, single sign-on
-  setup in plain words, Linux notifications, the Windows fixes found testing 0.1.1, the server hardening, a Home
-  Manager module, the sync fixes the property tests and the engine tests found (upgrade all devices together), and
-  the sign-out and trace-log fixes. Tests: property, engine, mixed-version e2e, e2e-web, live tests in CI and on
-  Windows. M9 (any WebDAV server) moves to 0.3.0.
 - 2026-11-17: Desktop (Linux, X11): a start at login (`--hidden`) stays in the tray, and opens the window where
   there is no tray. X11 had the Windows problem below (eframe shows the window after its first frame), and the
   same rule hides it again; once unmapped, X11 sends no new `VisibilityNotify`, so eframe still takes the window
@@ -369,6 +368,13 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   instead of leaving a client nobody can reach, and every hidden start gives the Linux tray up to 3 s before the
   window is made, so that is known. `a_hidden_start_stays_hidden_where_there_is_a_tray` fails without it; the
   Windows test now runs with a tray up. Found in a headless Xfce session while checking the desktops.
+- 2026-11-17: Desktop: Settings' "Pause syncing" switch (Off | On, where Off meant syncing) is now "Syncing" with
+  Paused | Active. The design (`design/`, rebuilt with FigCraft 0.18.1) matches it and shows version 0.2.0.
+- 2026-11-16: Version 0.2.0: share links, the public share page and version history on the web, single sign-on
+  setup in plain words, Linux notifications, the Windows fixes found testing 0.1.1, the server hardening, a Home
+  Manager module, the sync fixes the property tests and the engine tests found (upgrade all devices together), and
+  the sign-out and trace-log fixes. Tests: property, engine, mixed-version e2e, e2e-web, live tests in CI and on
+  Windows. M9 (any WebDAV server) moves to 0.3.0.
 - 2026-11-16: Desktop, Windows: a start at login stays in the tray (#9), and a window hidden in the tray draws
   nothing. eframe creates every window hidden and calls `set_visible(true)` itself after the first frame it paints
   (`post_rendering`), whatever `with_visible(false)` asked; and winit's Windows backend never reports occlusion, so
@@ -379,7 +385,6 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   brings it back in the same pass. `a_hidden_start_keeps_the_window_hidden_and_draws_nothing` fails without the
   fix. `craftcloud status` now tells a name Windows can't have, and a case clash, from a name the cloud can't
   take. Not yet checked on the Windows VM.
-
 - 2026-11-16: Desktop (Linux): the tray counts as up only while a tray host owns `org.kde.StatusNotifierWatcher`
   on the session bus. The StatusNotifierItem backend registers the icon whether or not anything shows it (a
   bar may start later), and the client took that registration as "the tray is up": on stock GNOME (no
@@ -394,8 +399,6 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   `xdg-open`, the autostart entry, and the window drawn in software. Found: on X11 a start at login opens the
   window, and with no tray host (stock GNOME) the client takes the tray as up, so closing the window leaves it
   invisible; both have fixes of their own. A real login, the lock screen and the KDE panel stay untested.
-- 2026-11-17: Desktop: Settings' "Pause syncing" switch (Off | On, where Off meant syncing) is now "Syncing" with
-  Paused | Active. The design (`design/`, rebuilt with FigCraft 0.18.1) matches it and shows version 0.2.0.
 - 2026-11-16: CI: the live sync tests run on every pull request and push to `main`. A `live` job in `ci.yml`,
   beside the gate, builds the server image from the tree, starts it with `scripts/smoke-test` and runs
   `cli_live.rs` and `live.rs` against it (the server's logs kept as an artifact when they fail), so a change to the
@@ -572,6 +575,20 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 - 2026-11-15: Sync: a file being saved (written in the last 2 s) is held for the next pass instead of looking
   unchanged, and a download never replaces a local file that changed since the last sync (#36: a cloud change
   made while a file was being saved could replace the local edit with no conflict copy).
+- 2026-11-15: Single sign-on: the sign-in sheet follows the v2 frames: "Sign in with <button name>" spans the
+  form with its label centred, the "or" rule sits closer to it, and "Signing you in…" has no empty action row.
+  Web shots of every sign-in state (`login-sso*`).
+- 2026-11-15: Single sign-on: **Admin › Server › Single sign-on** follows the v2 frames: "Asking <host> for its
+  OpenID configuration…" and "Testing…" while Test connection runs, a failed test in plain words with the
+  server's own words under it, and password sign-in stays on until Test connection has worked for the issuer URL.
+  The three Off/On switches are separate widgets again, and the actions wrap on a phone. Web shots `admin-sso*`.
+- 2026-11-15: Web: the public share page follows the v2 Sharing frames (#20): 40 px folder rows, names cut to fit
+  on a phone, the Type fact names the format ("DOCX document"). A shared folder's subfolders open in place through
+  OxiCloud's folder listing, which accepts the link's cookie; a folder lists up to 1000 items (five pages, then "The
+  first 1000 items") and opens up to 32 levels down, never a folder already open above. A folder shows LOADING…
+  until it is listed and an error when it can't be, never "empty". Names from the server are shown without control
+  characters, a download is saved under the bare file name, and a token no link could have is "This link doesn't
+  work" without asking the server.
 - 2026-11-14: CI: Claude checks every pull request and issue (`claude-pr.yml`, `claude-issues.yml`). A pull
   request gets a gitmoji in front of a title without one (so contributors needn't know gitmoji, and the merge
   commit still starts with one), labels, and one automated review comment that is updated on every push; an
@@ -599,14 +616,6 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   words and keeps the form. The expiry rules are the command line's `--expires`, now shared in `crates/core`
   (`shares::expiry_at`). Built to the v2 Sharing frames; checked with egui_kittest tests and screenshots, not yet
   against a live server.
-- 2026-11-15: Single sign-on: the sign-in sheet follows the v2 frames: "Sign in with <button name>" spans the
-  form with its label centred, the "or" rule sits closer to it, and "Signing you in…" has no empty action row.
-  Web shots of every sign-in state (`login-sso*`).
-
-- 2026-11-15: Single sign-on: **Admin › Server › Single sign-on** follows the v2 frames: "Asking <host> for its
-  OpenID configuration…" and "Testing…" while Test connection runs, a failed test in plain words with the
-  server's own words under it, and password sign-in stays on until Test connection has worked for the issuer URL.
-  The three Off/On switches are separate widgets again, and the actions wrap on a phone. Web shots `admin-sso*`.
 - 2026-11-14: Desktop on Linux (Hyprland and Sway with a bar's tray, checked with Wayle): desktop notifications for
   conflicts, a sign-in that ran out and a sync that can't go on (clicking one opens the window); starting the app
   again while it runs shows its window instead of a second copy with its own tray icon, and a second start at login
@@ -619,13 +628,6 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   conflict copy on both sides and temporary-looking names (T-063, T-064). It checks that no other client syncs
   the account (through its sessions, for an admin account) and that the cloud and both clients end the same,
   keeps every pass's `--json` and ends with a PASS/FAIL table ([TESTING.md](TESTING.md)).
-- 2026-11-15: Web: the public share page follows the v2 Sharing frames (#20): 40 px folder rows, names cut to fit
-  on a phone, the Type fact names the format ("DOCX document"). A shared folder's subfolders open in place through
-  OxiCloud's folder listing, which accepts the link's cookie; a folder lists up to 1000 items (five pages, then "The
-  first 1000 items") and opens up to 32 levels down, never a folder already open above. A folder shows LOADING…
-  until it is listed and an error when it can't be, never "empty". Names from the server are shown without control
-  characters, a download is saved under the bare file name, and a token no link could have is "This link doesn't
-  work" without asking the server.
 - 2026-11-14: Releases: the Release workflow install-tests every Linux package before it makes a draft
   (`package-test`): the deb on Debian 12 and Ubuntu 22.04/24.04, the rpm on Fedora 41/42 (x86_64 and aarch64),
   the Arch package, the AppImage and the tarball, each installed with its package manager, checked, signed in and
