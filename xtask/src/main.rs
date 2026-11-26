@@ -12,6 +12,8 @@ mod manifest;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+use craft_xtask::runner::{self, RunOptions, Step};
+
 const USAGE: &str = "\
 usage: cargo xtask <command>
 
@@ -82,30 +84,55 @@ fn cargo(args: &[&str]) -> Result<(), String> {
     run(&cargo, args, &root())
 }
 
+/// The commands `ci` runs, in order: `cargo <args>` in the workspace, and the wasm check.
+const CI_CARGO_STEPS: [(&str, &[&str]); 3] = [
+    ("fmt", &["fmt", "--all", "--", "--check"]),
+    ("clippy", &["clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"]),
+    ("test", &["test", "--workspace", "--locked"]),
+];
+
+/// `cargo xtask ci`, on craft-xtask's step runner (the Craft apps' gate runner): the steps in order,
+/// stopping at the first failure, then the summary. The summary of a passing run names the tree it
+/// checked (AGENTS.md: commit only when it says `all 4 steps passed` in the tree you meant), which
+/// craft-xtask's own summary doesn't, so [`summary_naming_tree`] adds it.
 fn cmd_ci() -> Result<(), String> {
-    type Step = (&'static str, fn() -> Result<(), String>);
-    let steps: [Step; 4] = [
-        ("fmt", || cargo(&["fmt", "--all", "--", "--check"])),
-        ("clippy", || cargo(&["clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"])),
-        ("test", || cargo(&["test", "--workspace", "--locked"])),
-        ("wasm", cmd_wasm),
-    ];
-    eprintln!("ci: checking {}", root().display());
-    let mut done = Vec::new();
-    for (name, step) in steps {
-        eprintln!("\n=== ci: {name} ===");
-        if let Err(e) = step() {
-            println!("\nCI summary:");
-            for d in &done {
-                println!("  ok    {d}");
+    let root = root();
+    eprintln!("ci: checking {}", root.display());
+    let mut steps: Vec<Step<'_>> = CI_CARGO_STEPS
+        .iter()
+        .map(|&(name, args)| {
+            let root = root.clone();
+            let label = format!("cargo {}", args.join(" "));
+            Step::new(name, move |log| {
+                let mut c = runner::cargo(&root);
+                c.args(args);
+                runner::run(c, log.command(&label))
+            })
+        })
+        .collect();
+    steps.push(Step::new("wasm", |log| {
+        log.command("cargo clippy (wasm32-unknown-unknown)");
+        cmd_wasm()
+    }));
+    let mut summary = Vec::new();
+    let result = runner::run_steps_to(&mut steps, &RunOptions::default(), &mut summary, &mut std::io::stderr());
+    print!("{}", summary_naming_tree(&String::from_utf8_lossy(&summary), &root));
+    result.map(|_| ()).map_err(|e| format!("ci failed: {e}"))
+}
+
+/// `summary` with ` in <root>` after the line that says every step passed; other lines unchanged.
+fn summary_naming_tree(summary: &str, root: &Path) -> String {
+    summary
+        .split_inclusive('\n')
+        .map(|line| {
+            let body = line.trim_end_matches('\n');
+            if body.starts_with("CI summary: all ") && body.contains(" steps passed") {
+                format!("{body} in {}{}", root.display(), &line[body.len()..])
+            } else {
+                line.to_owned()
             }
-            println!("  FAIL  {name}: {e}");
-            return Err(format!("ci failed at `{name}`"));
-        }
-        done.push(name);
-    }
-    println!("\nCI summary: all {} steps passed ({}) in {}", done.len(), done.join(", "), root().display());
-    Ok(())
+        })
+        .collect()
 }
 
 fn cmd_wasm() -> Result<(), String> {
@@ -128,4 +155,35 @@ fn cmd_wasm() -> Result<(), String> {
 
 fn cmd_web() -> Result<(), String> {
     run("trunk", &["build", "--release", "--cargo-profile", "wasm-release"], &root().join("apps").join("craftcloud-web"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_passing_summary_names_the_tree_it_checked() {
+        let summary = "\nCI summary: all 4 steps passed (fmt, clippy, test, wasm)\n";
+        assert_eq!(
+            summary_naming_tree(summary, Path::new("/work/craftcloud")),
+            "\nCI summary: all 4 steps passed (fmt, clippy, test, wasm) in /work/craftcloud\n"
+        );
+    }
+
+    #[test]
+    fn a_failing_summary_is_left_as_it_is() {
+        let summary = "\nCI summary:\n  ok    fmt\n  FAIL  clippy: cargo clippy: exited with 101\n  skip  test\n  skip  wasm\n";
+        assert_eq!(summary_naming_tree(summary, Path::new("/work/craftcloud")), summary);
+    }
+
+    #[test]
+    fn the_runner_prints_the_line_the_tree_is_added_to() {
+        // craft-xtask's own wording; if it changes, the tree would silently drop out of the summary.
+        let mut steps = vec![Step::new("fmt", |_| Ok(())), Step::new("wasm", |_| Ok(()))];
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let result = runner::run_steps_to(&mut steps, &RunOptions::default(), &mut out, &mut err);
+        assert!(result.is_ok());
+        let named = summary_naming_tree(&String::from_utf8_lossy(&out), Path::new("/t"));
+        assert!(named.contains("CI summary: all 2 steps passed (fmt, wasm) in /t\n"), "{named}");
+    }
 }

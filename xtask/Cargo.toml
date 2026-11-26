@@ -9,6 +9,8 @@ publish = false
 workspace = true
 
 [dependencies]
+# ci: the Craft apps' gate step runner and summary (craft-libs).
+craft-xtask = { workspace = true }
 # fetch-apps and bump-apps (and e2e-sync, which uses the same HTTP client as craftcloud-native): GitHub downloads (rustls, as in crates/native), apps.toml, the sha256
 # pins, unpacking the release zips, and the .gz/.br siblings Caddy serves.
 brotli = { version = "8", default-features = false, features = ["std"] }

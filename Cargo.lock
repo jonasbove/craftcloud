@@ -1124,6 +1124,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-xtask"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=de994d8ddfbd4cb78a1b05d690bd86e41c680ca4#de994d8ddfbd4cb78a1b05d690bd86e41c680ca4"
+
+[[package]]
 name = "craftcloud"
 version = "0.2.0"
 dependencies = [
@@ -6446,6 +6451,7 @@ name = "xtask"
 version = "0.2.0"
 dependencies = [
  "brotli",
+ "craft-xtask",
  "flate2",
  "image",
  "serde",
