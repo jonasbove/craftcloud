@@ -539,9 +539,9 @@ jobs:
   # on any machine with Docker). The containers run on the runner of the package's architecture.
   package-test:
     name: Install ${{ matrix.ext }} on ${{ matrix.distro }} ${{ matrix.arch }}
-    needs: [linux, arch, server-image]
+    needs: [linux, flatpak, arch, server-image]
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
-    timeout-minutes: 25
+    timeout-minutes: 30
     permissions:
       contents: read # the previous release's packages (gh release list/download)
     strategy:
@@ -564,6 +564,10 @@ jobs:
           # The oldest glibc the build supports (it is built on Ubuntu 22.04).
           - { ext: AppImage, arch: x86_64, distro: ubuntu-22.04, image: "ubuntu:22.04@sha256:74b12b11ffa550fba1929ad4d8d16533c34f6612728469671afba1b03b66881c" }
           - { ext: tar.gz, arch: x86_64, distro: ubuntu-22.04, image: "ubuntu:22.04@sha256:74b12b11ffa550fba1929ad4d8d16533c34f6612728469671afba1b03b66881c" }
+          # The bundle carries no runtime: flatpak fetches the freedesktop one from Flathub, so the
+          # distro only supplies flatpak itself. The container is privileged (bubblewrap).
+          - { ext: flatpak, arch: x86_64, distro: ubuntu-24.04, image: "ubuntu:24.04@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5" }
+          - { ext: flatpak, arch: aarch64, distro: ubuntu-24.04, image: "ubuntu:24.04@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5" }
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -576,6 +580,11 @@ jobs:
         if: matrix.ext == 'pkg.tar.zst'
         with:
           name: release-arch-${{ matrix.arch }}
+          path: dist/linux
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: matrix.ext == 'flatpak'
+        with:
+          name: release-flatpak-${{ matrix.arch }}
           path: dist/linux
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
