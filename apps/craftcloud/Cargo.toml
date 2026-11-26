@@ -44,6 +44,8 @@ zbus = { version = "5", default-features = false, features = ["async-io", "block
 
 [dev-dependencies]
 tempfile = "3"
+# The scripted HTTP server the CLI tests talk to (crates/native's `fake_server`); tests only.
+craftcloud-native = { workspace = true, features = ["test-support"] }
 
 [build-dependencies]
 # The logo as craftcloud.exe's icon; build.rs only uses it when targeting Windows (as craft-launcher).

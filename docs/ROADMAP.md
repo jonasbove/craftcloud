@@ -115,6 +115,10 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: Tests: crates/native's scripted HTTP server (`fake_server`) is open to the apps' tests through a
+  `test-support` feature of `craftcloud-native`, off by default and turned on only in `apps/craftcloud`'s
+  `[dev-dependencies]`, so no normal build carries it (review #71). The CLI logout tests now use it instead of
+  their own hand-written loopback server.
 - 2026-11-26: Agents: AGENTS.md's facts: the repository is public (the reasons for its own CI and Linux-only CI
   were set while it was private); the CI `live` job's owner has a random password made for the run; `deny.toml` is
   stricter than the licence allowlist. The password rule names its limit: never the account password on

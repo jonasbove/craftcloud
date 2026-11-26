@@ -38,6 +38,11 @@ keyring = { version = "3.6", default-features = false, features = ["apple-native
 # Checks a system font parses before the UI gets it (egui panics on a bad face); already in the tree through egui.
 skrifa = "0.44"
 
+[features]
+# The scripted HTTP server of this crate's own tests (`fake_server`), for other crates' tests: the
+# apps enable it in their [dev-dependencies] only, so no normal build carries it.
+test-support = []
+
 [target.'cfg(windows)'.dependencies]
 # Start at login (HKCU Run key), as craft-launcher.
 winreg = "0.55"

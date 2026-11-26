@@ -3,8 +3,12 @@
 
 pub mod control;
 pub mod experimental;
-#[cfg(test)]
-mod fake_server;
+// The scripted HTTP server of the tests (this crate's, and the apps' through the `test-support`
+// feature, which only their [dev-dependencies] turn on). A test harness: a port it can't bind is
+// a failed test, so it may panic where it can't go on; no normal build compiles it.
+#[cfg(any(test, feature = "test-support"))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+pub mod fake_server;
 pub mod http;
 pub mod local_files;
 pub mod login;

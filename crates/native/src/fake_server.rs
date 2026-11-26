@@ -1,4 +1,5 @@
-//! A scripted HTTP server on `127.0.0.1:0` for unit tests: the real `Session` and sync engine talk
+//! A scripted HTTP server on `127.0.0.1:0` for tests (this crate's, and the apps' through the
+//! `test-support` feature): the real `Session` and sync engine talk
 //! to it over the loopback, so the paths that need a server answer run in `cargo xtask ci`
 //! without Docker. Each connection carries one request and is closed after the answer.
 
