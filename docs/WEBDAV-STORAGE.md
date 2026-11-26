@@ -86,14 +86,14 @@ it on each server, and refuse what can't be met".
 | `crates/core` builds for wasm | AGENTS.md, "Never break wasm" | Capabilities, modes, the probe's verdict and name rules are pure data and functions in `crates/core`; the trait, drivers, HTTP and the probe runner live in `crates/native` |
 | The upstream server runs unmodified | AGENTS.md | Nothing changes on the OxiCloud side; other servers are used as they come |
 | Upstream gaps go in UPSTREAM.md | AGENTS.md | OpenCloud's gaps are already reported upstream (reva#866, #959, #961); UPSTREAM.md links them and proposes nothing new to file |
-| No panics, no `unsafe` | Rust rule 1 | All server answers are hostile input: hrefs outside the base, missing ETags, odd status codes |
-| Shared libraries first | Core rule 16 | WebDAV requests and multistatus parsing go through `craft-dav` from `storytold/craft-libs`, as today (it knows the `oc:` and `nc:` namespaces); what it lacks (trash and version properties, say) is proposed there rather than parsed by hand here. Server profiles stay in CraftCloud |
+| No panics, no `unsafe` | AGENTS.md rule 13 | All server answers are hostile input: hrefs outside the base, missing ETags, odd status codes |
+| Shared libraries first | AGENTS.md rule 9 | WebDAV requests and multistatus parsing go through `craft-dav` from `storytold/craft-libs`, as today (it knows the `oc:` and `nc:` namespaces); what it lacks (trash and version properties, say) is proposed there rather than parsed by hand here. Server profiles stay in CraftCloud |
 | The client never asks for or stores the account password | AGENTS.md (amended in this change, Q11; its limit named on 2026-11-26) | The server's browser sign-in where there is one; otherwise an app password the person makes on the server. A plain WebDAV server may offer only the account password: kept in the keychain, and the sign-in is to say so (section 10; the wording is still to change) |
-| Clean room | Rust rule 2 | Learn from public specifications (RFC 4918, RFC 8628, the servers' public API docs) and observed behaviour; never from another client's code |
-| Licence allowlist | AGENTS.md | New crates only from the allowlist (`sha1` from RustCrypto is MIT OR Apache-2.0). The test servers (AGPL and Apache) are test containers, never shipped or linked |
-| Rust only | Rust rule 4 | Nothing outside Rust is added |
-| CI changes in their own pull request | Core rule 11 | The live jobs for other servers are a separate `👷 CI:` pull request |
-| Time through a date crate | Rust rule 5 | Trash and probe stamps use `jiff`, as the rest of the client does |
+| Clean room | AGENTS.md rule 23 | Learn from public specifications (RFC 4918, RFC 8628, the servers' public API docs) and observed behaviour; never from another client's code |
+| Licence allowlist | AGENTS.md rule 26 (craft-contrib's `standards/licences.md`) | New crates only from the allowlist (`sha1` from RustCrypto is MIT OR Apache-2.0). The test servers (AGPL and Apache) are test containers, never shipped or linked |
+| Rust only | AGENTS.md rule 11 | Nothing outside Rust is added |
+| CI changes in their own pull request | AGENTS.md rule 17 | The live jobs for other servers are a separate `👷 CI:` pull request |
+| Time through a date crate | AGENTS.md rule 12 and its stated departure (`jiff`) | Trash and probe stamps use `jiff`, as the rest of the client does |
 
 ## 4. What the spike taught
 
@@ -606,7 +606,7 @@ As built (pull request 5, § 14's row 5; `crates/native/tests/live.rs`, `crates/
   `DirectorySlash`, on by default); the HTTP layer followed the redirect as a `GET` without the `Authorization`
   header, and `AppPasswordSession` read the 401 as a revoked password. 4b's "Redirects are never followed"
   (above) is the fix; the test set keeps Apache as a person's would be, and the suite passes there whole.
-- **No CI job** (core rule 11; § 14 row 9).
+- **No CI job** (AGENTS.md rule 17; § 14 row 9).
 
 As built (pull request 6, § 14's row 6; `crates/core/src/api/nextcloud.rs`, `crates/native/src/storage/profile.rs`
 and `profile/nextcloud.rs`, `crates/native/src/storage/{webdav,probe}.rs`, `apps/craftcloud/src/cli/{account,check,remote,webdav}.rs`):

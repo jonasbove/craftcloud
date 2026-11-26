@@ -1,0 +1,34 @@
+# Fails unless AGENTS.md starts with the Craft repositories' shared agent rules (the craft-agents block,
+# standards/app-agents.md in storytold/craft-contrib) unchanged, at a commit on craft-contrib's main. Copied
+# from craft-launcher's house-rules.yml. It calls the shared workflow at @main on purpose: that workflow runs
+# its own checker action at @main and compares against craft-contrib's main, so pinning the call would pin
+# nothing that matters. Update the block with craft-common-actions'
+# `python3 actions/house-rules/house_rules.py write-agents --directory . --source <craft-contrib checkout>`.
+name: House rules
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - AGENTS.md
+      - CLAUDE.md
+      - .github/workflows/house-rules.yml
+  pull_request:
+    paths:
+      - AGENTS.md
+      - CLAUDE.md
+      - .github/workflows/house-rules.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: house-rules-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  house-rules:
+    uses: storytold/craft-common-actions/.github/workflows/house-rules.yml@main
+    with:
+      rust: true

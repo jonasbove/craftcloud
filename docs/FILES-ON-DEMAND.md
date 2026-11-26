@@ -349,10 +349,10 @@ Worth proposing upstream (drafts go into UPSTREAM.md first; **ask before filing*
 | Callback timeouts | Slow server fails the app's open | Progress reporting; whole-file fetch with a clear error |
 | Testing | Needs real Windows and macOS, kernel features, GUI shells | See below |
 
-Testing difficulty, honestly: CI runs on Linux; Windows and macOS build only on release tags and manual runs (cost
-on a private repo). A GitHub Windows runner cannot easily run the Linux server image, so Windows live tests need a
-server reachable from it, or a local Windows VM against a throwaway server. FUSE tests need `/dev/fuse` in the
-runner (available on GitHub's Ubuntu runners; to verify). macOS tests need a signed build.
+Testing difficulty, honestly: CI runs on Linux; Windows and macOS build only on release tags and manual runs (a
+choice made while the repository was private, where those minutes cost more). A GitHub Windows runner cannot easily
+run the Linux server image, so Windows live tests need a server reachable from it, or a local Windows VM against a
+throwaway server. FUSE tests need `/dev/fuse` in the runner (available on GitHub's Ubuntu runners; to verify). macOS tests need a signed build.
 
 ## 6. Staged plan
 

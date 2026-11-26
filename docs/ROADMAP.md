@@ -115,6 +115,14 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: Agents: AGENTS.md starts with the Craft repositories' current shared rules, the `craft-agents` block
+  (craft-contrib's `standards/app-agents.md`, RFC-0072), written with craft-common-actions' `house_rules.py
+  write-agents`; the retired house-rules blocks are gone. CraftCloud's own instructions follow under `## This
+  repository`, with every departure from the shared rules said there and why (personal-account repository, merges
+  only on the maintainer's yes, agent attribution, `PLAN.md`, no-panic status, vendored fonts and `NOTICE`, the
+  planned `craftcloud-shim.js`, `jiff`, licences, CI). A new `house-rules.yml` workflow calls the shared check, as
+  craft-launcher does. Stale "private repository" wording fixed; WEBDAV-STORAGE.md's rule numbers follow the new
+  block.
 - 2026-11-26: Agents: AGENTS.md's facts: the repository is public (the reasons for its own CI and Linux-only CI
   were set while it was private); the CI `live` job's owner has a random password made for the run; `deny.toml` is
   stricter than the licence allowlist. The password rule names its limit: never the account password on
