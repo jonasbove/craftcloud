@@ -21,6 +21,7 @@ use craftcloud_core::api::auth::Tokens;
 use craftcloud_core::api::dav::{self, Write};
 use craftcloud_core::names::{self, NameRules, Platform};
 use craftcloud_core::reconcile::{self, Action, Known, LocalFile, RemoteFile, State, Tree};
+use craftcloud_core::storage::probe::older_than;
 use craftcloud_core::storage::{Mode, mode_for};
 use craftcloud_core::sync::{
     ActivityEvent, ActivityKind, ConflictCopy, FileStatus, Keep, LeftOut, MOVE_LAST_NOTICE_AFTER, MOVE_WARNS_AFTER, SyncPlan, SyncProgress,
@@ -581,6 +582,14 @@ impl<S: RemoteStorage> Engine<S> {
             let removed = sweep_stale_parts(&root, STALE_PART);
             if removed > 0 {
                 log::info!("removed {removed} leftover part files of downloads that never finished");
+            }
+            // The local trash's retention (files deleted in the cloud, both ways and under
+            // download only alike): its entries older than 30 days go, by this computer's clock,
+            // the one that named them. A failure never fails the cycle.
+            match sweep_local_trash(&root, jiff::Timestamp::now().as_second()) {
+                Ok(0) => {}
+                Ok(n) => log::info!("removed {n} items older than 30 days from the trash in the local folder"),
+                Err(e) => log::warn!("sweeping the trash in the local folder: {e}"),
             }
         }
         let saved = self.load().unwrap_or_default();
@@ -2220,6 +2229,43 @@ fn local_trash_place(root: &Path, rel: &Path, device: &str) -> Result<PathBuf, S
     Err("no free place in the trash here".into())
 }
 
+/// Removes the entries of the local folder's own trash (`.craftcloud/trash/<time>-<device>/`, made
+/// by [`local_trash_place`] for files deleted in the cloud) older than
+/// [`dav::TRASH_RETAIN_SECS`] (30 days), as the client trash on a server does
+/// (docs/WEBDAV-STORAGE.md § 16, Q5), through the same rule ([`older_than`]). The age is the time
+/// in the entry's name against `now` (seconds since 1970), both this computer's clock: the clock
+/// that named the entry. Only folders whose name starts with a time are looked at: anything else
+/// in there (put there by hand, a name without a time, a symbolic link) stays, and so does an
+/// entry from the future (a clock set back). A trash folder that can't be read removes nothing
+/// (an error); one that isn't there is nothing to do. Returns how many entries went.
+fn sweep_local_trash(root: &Path, now: i64) -> Result<usize, String> {
+    let trash = root.join(dav::CRAFTCLOUD_DIR).join("trash");
+    let entries = match std::fs::read_dir(&trash) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut dated: Vec<(String, Option<i64>)> = Vec::new();
+    for entry in entries {
+        // One entry that can't be read is left; the rest still count.
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
+        let at = crate::storage::webdav::entry_time(&name).parse::<jiff::Timestamp>().ok().map(|t| t.as_second());
+        dated.push((name, at));
+    }
+    let mut removed = 0;
+    for name in older_than(dated.iter().map(|(n, at)| (n.as_str(), *at)), Some(now), dav::TRASH_RETAIN_SECS) {
+        match std::fs::remove_dir_all(trash.join(&name)) {
+            Ok(()) => removed += 1,
+            Err(e) => log::warn!("couldn't remove {name} from the trash in the local folder: {e}"),
+        }
+    }
+    Ok(removed)
+}
+
 /// Whether a download may replace the local file at `dest`: it isn't there, or it is still the
 /// version last synced (same size and time). Anything else is a change made here (#36).
 fn replaceable(dest: &Path, known: Option<&Known>) -> bool {
@@ -3080,6 +3126,62 @@ mod tests {
         for (f, _, gone) in files {
             assert_eq!(root.join(f).exists(), !gone, "{f}");
         }
+    }
+
+    /// The local trash keeps a file deleted in the cloud 30 days: an entry past 30 days (by the
+    /// time in its name, against the clock given) goes with everything in it; one 30 days old to
+    /// the second, a newer one, one from the future, a name without a time and a plain file stay;
+    /// nothing outside the trash is touched. No trash folder is nothing to do.
+    #[test]
+    fn the_local_trash_keeps_thirty_days() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert_eq!(super::sweep_local_trash(root, 0), Ok(0), "no trash yet");
+        let trash = root.join(".craftcloud/trash");
+        let now: i64 = "2026-11-26T12:00:00Z".parse::<jiff::Timestamp>().unwrap().as_second();
+        let entries = [
+            ("20261027T115959Z-Laptop", true),  // 30 days and a second
+            ("20261027T120000Z-Laptop", false), // 30 days to the second
+            ("20261120T080000Z-Laptop", false), // six days
+            ("20261201T000000Z-Laptop", false), // from the future
+            ("20200101T000000Z-Laptop-2", true),
+            ("kept by hand", false),
+        ];
+        for (name, _) in entries {
+            std::fs::create_dir_all(trash.join(name).join("Docs")).unwrap();
+            std::fs::write(trash.join(name).join("Docs/f.txt"), name).unwrap();
+        }
+        std::fs::write(trash.join("20200101T000000Z-file"), "a plain file").unwrap();
+        std::fs::create_dir_all(root.join("Docs")).unwrap();
+        std::fs::write(root.join("Docs/20200101T000000Z-Laptop"), "a synced file").unwrap();
+        assert_eq!(super::sweep_local_trash(root, now), Ok(2));
+        for (name, gone) in entries {
+            assert_eq!(trash.join(name).exists(), !gone, "{name}");
+        }
+        assert!(trash.join("20200101T000000Z-file").exists(), "only entry folders");
+        assert!(root.join("Docs/20200101T000000Z-Laptop").exists(), "nothing outside the trash");
+    }
+
+    /// A trash folder that can't be read removes nothing: the sweep says so, and every entry
+    /// stays, however old.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_local_trash_removes_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let trash = root.join(".craftcloud/trash");
+        std::fs::create_dir_all(trash.join("20200101T000000Z-Laptop/Docs")).unwrap();
+        std::fs::write(trash.join("20200101T000000Z-Laptop/Docs/f.txt"), "f").unwrap();
+        std::fs::set_permissions(&trash, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let readable = std::fs::read_dir(&trash).is_ok();
+        let swept = super::sweep_local_trash(root, i64::MAX / 2);
+        std::fs::set_permissions(&trash, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if readable {
+            return; // running as root: permissions don't stop a read here
+        }
+        assert!(swept.is_err(), "{swept:?}");
+        assert!(trash.join("20200101T000000Z-Laptop/Docs/f.txt").exists(), "kept");
     }
 }
 

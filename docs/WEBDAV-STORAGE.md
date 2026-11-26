@@ -768,7 +768,8 @@ local side:
 - A file **deleted here** comes back from the cloud on the next cycle (the folder is a mirror of the cloud).
 - A file **deleted in the cloud** is never deleted here for good, since the server may have no trash and this may
   be the last copy: after the mass-delete hold, it is **moved into `.craftcloud/trash/` in the local folder**
-  (ignored by the sync, kept 30 days like the client trash, Q5, and shown by `craftcloud trash ls` beside the cloud's trash). A file
+  (ignored by the sync, kept 30 days like the client trash, Q5, but by this computer's clock, which named the
+  entry, both ways and under download only; and shown by `craftcloud trash ls` beside the cloud's trash). A file
   changed here since the last sync stays where it is, as today.
 - A folder whose **cloud listing failed** (an error, a non-207, an href outside the base) is unknown: everything
   under it is held, neither downloaded over nor taken as deleted, and the activity list says so, as in two-way

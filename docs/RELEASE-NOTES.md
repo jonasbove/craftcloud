@@ -2,10 +2,16 @@
 
 ## Unreleased
 
+- **The trash in your CraftCloud folder keeps a file deleted in the cloud for 30 days.** What the sync moves into
+  `.craftcloud/trash/` there (files deleted in the cloud, both ways and under download only) is removed for good
+  once it has been there more than 30 days, by this computer's clock, as the trash CraftCloud keeps on another
+  WebDAV server does. Until then you can copy a file back out by hand. Anything you put in that folder yourself,
+  under a name without a time, stays. Devices need not be upgraded together: this only empties the trash in this
+  computer's own folder, which the sync never looks into; what the sync skips, plans and sends is unchanged.
 - **A file deleted in the cloud is kept in this computer's `.craftcloud/trash/` too.** Before, a two-way sync
   removed it from the local folder for good (the cloud's trash still had it); now it goes into `.craftcloud/trash/`
   in your CraftCloud folder, as it already did under download only, and a file you saved after the sync looked is
-  never removed at all. Empty that folder by hand when you like. Nothing needs care when updating: what the sync
+  never removed at all. Nothing needs care when updating: what the sync
   skips, what it plans and what it sends to the cloud are unchanged, so devices need not be upgraded together.
 - **Seven colour themes** besides CraftCloud's own look, which stays the default: Catppuccin, Dracula, Gruvbox,
   Nord, One Dark, Solarized Light and Tokyo Night. Pick one in the desktop client's Settings › Theme, or on the

@@ -90,8 +90,8 @@ The desktop client keeps chosen server folders in a local folder, two ways.
   Any other failed download removes its part file, and part files older than a day are cleaned up.
 - **Mass deletes wait** for a decision (delete them, or bring the files back) while everything else syncs.
 - **A file deleted in the cloud** leaves its place here into `.craftcloud/trash/` in the local folder, both ways and
-  under download only, never removed for good; a file saved here since the scan is left where it is (the next
-  pass uploads it).
+  under download only, and is removed from there after 30 days (by this computer's clock, the entry's time in its
+  name); a file saved here since the scan is left where it is (the next pass uploads it).
 - **A missing sync folder** (moved, deleted, an unplugged drive) holds the sync; it is never made again on its own,
   only when the person chooses "Download everything again" (or sets the client up again).
 - **The storage layer** ([WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 7): the engine (`crates/native/src/sync.rs`)

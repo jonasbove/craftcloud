@@ -624,6 +624,28 @@ fn the_same_scene_both_ways_writes_to_the_cloud() {
     assert_eq!(std::fs::read_to_string(&trashed[0]).unwrap(), "abc", "kept whole");
 }
 
+/// A sync cycle empties the local trash of what has been there more than 30 days, both ways and
+/// under download only: the entry from years ago goes, the one the cycle itself just made stays.
+#[test]
+fn a_cycle_removes_local_trash_entries_older_than_thirty_days() {
+    for caps in [Capabilities::oxicloud(), download_only()] {
+        let server = download_only_server();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let state = download_only_scene(root);
+        let old = root.join(".craftcloud/trash/20200101T000000Z-Studio");
+        std::fs::create_dir_all(old.join("Docs")).unwrap();
+        std::fs::write(old.join("Docs/long-gone.txt"), "old").unwrap();
+        let mut engine = engine_with(server.server(), root, caps);
+        save_saved(&engine.state_path(), &Saved { server: engine.plan.server.clone(), state, ..Saved::default() }).unwrap();
+        engine.cycle(Deletes::Hold);
+        assert!(!old.exists(), "older than 30 days: removed");
+        let trashed = walkdir(&root.join(".craftcloud/trash"));
+        assert_eq!(trashed.len(), 1, "{trashed:?}");
+        assert!(trashed[0].ends_with("Docs/gone.txt"), "this cycle's entry stays: {trashed:?}");
+    }
+}
+
 /// A file deleted in the cloud that is saved here after the scan, before its delete runs: the
 /// last look before the delete sees the change, and the file stays (the next pass uploads it as
 /// new). Nothing is removed or trashed.

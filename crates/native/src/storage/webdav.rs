@@ -622,8 +622,9 @@ fn cache_is_stale(checked_at: &str, now: jiff::Timestamp) -> bool {
     }
 }
 
-/// `20261117T143205Z-Laptop` → `2026-11-17T14:32:05Z` (the entry's time, RFC 3339).
-fn entry_time(name: &str) -> String {
+/// `20261117T143205Z-Laptop` → `2026-11-17T14:32:05Z` (the entry's time, RFC 3339); empty when the
+/// name has no time. The local trash's retention reads its entries' names with it too.
+pub(crate) fn entry_time(name: &str) -> String {
     let b = name.as_bytes();
     let digits = |r: std::ops::Range<usize>| b.get(r.clone()).filter(|s| s.iter().all(u8::is_ascii_digit)).map(|_| &name[r]);
     match (digits(0..4), digits(4..6), digits(6..8), b.get(8), digits(9..11), digits(11..13), digits(13..15)) {

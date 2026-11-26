@@ -112,6 +112,13 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: Sync: the trash in the local folder keeps a file deleted in the cloud for 30 days. Once an hour,
+  with the sweep of leftover part files, each sync cycle removes the entries of `.craftcloud/trash/` in the local
+  folder (`<time>-<device>/`, both ways and under download only) whose time is more than 30 days ago, by this
+  computer's clock (the one that named them), with the client trash's rule (`older_than`, `TRASH_RETAIN_SECS`).
+  Anything else there (a name without a time, a plain file, a symbolic link, an entry dated ahead) stays, and a
+  trash folder that can't be read removes nothing. Before, nothing ever emptied it, although WEBDAV-STORAGE.md § 9
+  said 30 days.
 - 2026-11-26: Sync: a file deleted in the cloud is no longer removed for good here when syncing both ways. Like
   under download only, the engine first checks the file is still the version last synced (one saved here since
   the scan stays, and the next pass uploads it), then moves it into `.craftcloud/trash/` in the local folder.
