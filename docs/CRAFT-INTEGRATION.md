@@ -234,13 +234,12 @@ run against.
 **The proposal: a `CloudBackend` in craft-libs that runs `craftcloud`.** It lives in craft-libs, next to the
 others, and does what section 3 does: it runs the `craftcloud` program with `--json` and reads its answer. It speaks
 no HTTP and holds no token. So the sign-in, the kept versions and the write guards stay in CraftCloud, as section 3
-promises. Without
-`craftcloud` on the computer, the backend reports no account and the pages offer nothing.
+promises. Without `craftcloud` on the computer, the backend reports no account and the pages offer nothing.
 
 | `Job` | `craftcloud` command | Notes |
 |---|---|---|
 | `Account` | `status --json` (and `server info --json`) | Who is signed in and where. Not signed in (exit 3) is `Fault::NotLinked`; the capabilities are conditional writes and links |
-| `SignIn` | `login --no-browser --json` | The client's browser sign-in: the first line's `verification_uri` becomes `Event::Browser`, the second line the account |
+| `SignIn` | `login --no-browser --json` | The client's browser sign-in: the first line's `verification_uri` becomes `Event::Browser`, the second line the account ([CLI.md › JSON output](CLI.md#json-output)) |
 | `LinkStart`, `LinkPoll` | the same sign-in | CraftCloud's storage is the account itself, so there is nothing separate to link: signed in is linked |
 | `List` | `files --json` (`--in FOLDER`) | Each file with the server's current `etag`, so a later write can be guarded (§ 3.2) |
 | `Read` | `get PATH -`: the file's bytes on stdout | The `etag` comes from the listing read just before; a write over it is refused if the file changed in between (§ 3.5) |

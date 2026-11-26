@@ -94,12 +94,16 @@ provider's **issuer URL**, the **client ID** and the **client secret**.
 id.example.org for its OpenID configuration…" while it runs) and shows what it got, so you see a wrong address
 or an untrusted certificate before anyone signs in. A failure is put in plain words (the name doesn't resolve
 from inside the container, nothing answers, no answer in time, an untrusted certificate, no OpenID configuration
-at that address), with the server's own words under it ("Server said: …").
+at that address), with the server's own words under it ("Server said: …"). The plain words are picked by matching OxiCloud
+0.10.0's English error text (`test_failure_text` in `crates/core/src/api/oidc.rs`); if a later OxiCloud words it
+differently, the page falls back to a general line, and the server's own words still show.
 
 Password sign-in goes off only after **TEST CONNECTION** worked for the issuer URL in the form, in the same visit
 to the page: with the provider out of reach, nobody could sign in. The same holds when password sign-in is already
 off and the issuer URL changes. Otherwise the page answers "Password sign-in stays on until Test connection
-works" and saves nothing. **SAVE SINGLE SIGN-ON**
+works" and saves nothing. This guard is in the page only: a direct call to the server's
+`PUT /api/admin/settings/oidc` still turns password sign-in off. It keeps an admin from locking everyone out by
+mistake; it is not a security boundary. **SAVE SINGLE SIGN-ON**
 applies the settings at once; no restart is needed. Sign out and the sign-in page shows the new button.
 
 **In `.env` instead:** the compose file passes every `OXICLOUD_*` line in `.env` through (see `.env.example`).

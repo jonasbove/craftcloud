@@ -187,7 +187,7 @@ in `crates/core`, so they get unit and property tests and build for wasm. Everyt
 Every method that changes the server takes the precondition it must hold. There is no method that writes, moves
 or deletes without one, so "forgot the guard" is a type error, not a review comment.
 
-As built (pull request 1, `crates/native/src/storage.rs`):
+As built (pull request 1, #97, `crates/native/src/storage.rs`):
 
 ```rust
 pub trait RemoteStorage: Send {
@@ -252,8 +252,8 @@ Where it differs from the first sketch, and why:
   a pass ends, not from the error that stopped it, so a failure it shrugs off (the free-space lookup) still counts,
   as before. `StorageError` (`Status`, `NotFound`, `NoRoom`, `Refused`, `Failed`) carries the rest, in the engine's
   wording.
-- An ETag is a plain `&str`; `Entry`, `Written`, `Moved`, `Trashed`, the guards and `StorageError` are in
-  `crates/native::storage`.
+- An ETag is a plain `&str`; `Entry`, `Written`, `Moved`, `Trashed`, `Download`, the guards and `StorageError` are
+  in `crates/native::storage` (`crates/native/src/storage.rs`).
 
 The types:
 
@@ -385,14 +385,14 @@ As built (pull request 3, `crates/core/src/storage/probe.rs` and `crates/native/
   it fails the listing. The runner checks every request's guard once more before sending (`guarded`): a `PUT`
   without its guard, a `MOVE` or `COPY` without `Overwrite: F` or outside `.craftcloud/probe/`, or a `DELETE`
   anywhere but inside `.craftcloud/probe/` (an `OwnPath`) ends the probe, refused.
-- **A second between writes to the same file.** Measured while building this: Nextcloud 31 and ownCloud 10.15
-  keep a file's ETag when it is overwritten within the same second as the write before it (the tag is reused
-  while the file's modified time, in whole seconds, is unchanged; 3 of 3 rounds on each, with `curl`). The
-  probe's first run against ownCloud was therefore refused at step 6. The two overwrites of the test file
-  (steps 6 and 7) are marked `settles`, and the runner waits `Limits::settle` (1.1 s) before each, so the
-  probe measures what § 5 measured. This narrows § 5's "ETag changes on every write" to "on every write in a
-  later second"; what it means for the engine (two devices writing one file within a second) is for the
-  maintainer to weigh, not changed here.
+- **A second between writes to the same file.** Measured while building this: Nextcloud 31 and ownCloud 10.15 keep a
+  file's ETag when it is overwritten within the same second as the write before it (the tag is reused while the file's
+  modified time, in whole seconds, is unchanged; 3 of 3 rounds on each, with `curl`). The probe's first run against
+  ownCloud was therefore refused at step 6. The two overwrites of the test file (steps 6 and 7) are marked `settles`,
+  and the runner waits `Limits::settle` (1.1 s) before each, so the probe measures what § 5 measured. A server whose
+  modified times are coarser than a second (2 s, say) may still reuse the tag after that wait; the probe then refuses it
+  at step 6. This narrows § 5's "ETag changes on every write" to "on every write in a later second"; what it means for
+  the engine (two devices writing one file within a second) is for the maintainer to weigh, not changed here.
 - **Refused wins.** A transport error, a request over the per-step limit (30 s), a run over the total limit
   (180 s), a `verdict()` asked for before the end, a version tag that doesn't change when the bytes do, a file
   listed without one, a failed listing, or a server that won't make the probe folder or create a file: all
@@ -499,24 +499,25 @@ As built (pull request 4b, the second of two under § 14's row 4; `crates/native
   and `rm` purge inside `.craftcloud/trash/` only; `versions`/`restore` read and restore `.craftcloud/versions/`
   through the same code OxiCloud uses (`storage::versions`, now with a `restore` that snapshots the current file
   first, so the restore can be undone).
-- **The runtime watch** (§ 7.5, engine, `Engine::verify_write`). § 7.5 says "a replace that succeeds on a version
-  the listing says is newer": that isn't observable as written (a listing has no "newer than", and by the next
-  listing a later edit by another device looks the same). What the watch compares instead: right after a guarded
-  write answered "saved", **in the same step**, one depth-0 stat of the path (`RemoteStorage::stat`); if the file is
-  there at neither the size just uploaded nor the tag the write answered, the server said it saved ours yet kept
-  another file, a guard honoured at the check but ignored now. Then two-way sync stops for the rest of the run
+- **The runtime watch** (§ 7.5, engine, `Engine::verify_write`). § 7.5 says "a replace that succeeds on a version the
+  listing says is newer": that isn't observable as written (a listing has no "newer than", and by the next listing a
+  later edit by another device looks the same). What the watch compares instead: right after a guarded write answered
+  "saved", **in the same step**, one depth-0 stat of the path (`RemoteStorage::stat`); if the file is there at neither
+  the size just uploaded nor the tag the write answered, the server said it saved ours yet kept another file, a guard
+  honoured at the check but ignored now. (It compares the size and the tag, not the bytes: a server that kept another
+  file of exactly the same size under another tag is not caught.) Then two-way sync stops for the rest of the run
   (`Engine::effective_mode` forces download only; the rest of that cycle's writes are skipped), the check re-runs
   (`RemoteStorage::recheck`, which saves it and takes the fresh capabilities), the file is not recorded as synced (so
   the next cycle keeps the local version as a conflict copy, never overwrites it), and the activity list and `status`
-  say so once. Checking before anything else can list the new tag and write with an honoured guard is what tells a
-  lie from a later edit: another device's edit comes after the stat and is an ordinary change next cycle (a test
-  runs that sequence against the well-behaved scripted server: two-way stays on, no warning). The watch applies only
-  to a server whose capabilities were **measured** (`RemoteStorage::measured`: the generic driver); CraftCloud's own
-  server's guards are known and checked by its live suite, so it is never watched, sends no stat, and nothing changes
-  for it (a test over the OxiCloud driver; the golden logs are unchanged). The one extra request is the stat after
-  each write on a generic server. After the trip nothing is written but the re-check's probe, inside
-  `.craftcloud/probe/` and bounded by `Limits`; the retention sweep runs only under two-way sync. Two `fake::Flags`
-  stage the trip (`create_keeps_other`, `replace_keeps_other`).
+  say so once. Checking before anything else can list the new tag and write with an honoured guard is what tells a lie
+  from a later edit: another device's edit comes after the stat and is an ordinary change next cycle (a test runs that
+  sequence against the well-behaved scripted server: two-way stays on, no warning). The watch applies only to a server
+  whose capabilities were **measured** (`RemoteStorage::measured`: the generic driver); CraftCloud's own server's guards
+  are known and checked by its live suite, so it is never watched, sends no stat, and nothing changes for it (a test
+  over the OxiCloud driver; the golden logs are unchanged). The one extra request is the stat after each write on a
+  generic server. After the trip nothing is written but the re-check's probe, inside `.craftcloud/probe/` and bounded by
+  `Limits`; the retention sweep runs only under two-way sync. Two `fake::Flags` stage the trip (`create_keeps_other`,
+  `replace_keeps_other`).
 - **A version restore is a guarded write.** On the generic driver `versions … restore` keeps the current file as a
   version, then writes the chosen version's bytes over it with a `PUT` and `If-Match` on the tag read at the start:
   a change landing meanwhile answers 412 and nothing is restored (its new version is kept). Not OxiCloud's `COPY`
@@ -876,7 +877,7 @@ local side:
 | `crates/native` driver | Each driver against `fake_server`: every write carries its precondition (a request without `If-Match`/`If-None-Match`/`Overwrite: F` fails the test); hrefs outside the base fail the listing; `purge_own` refuses a path outside `.craftcloud/` | `cargo xtask ci` |
 | `crates/native` probe | Scripted servers that misbehave: answers 2xx to a stale `If-Match` → download only; ignores `If-None-Match` → download only; times out mid-probe → refused, and the probe folder is swept next time; no ETags → refused | `cargo xtask ci` |
 | `crates/native` engine | Today's engine tests run once per driver; a runtime guard failure stops two-way sync | `cargo xtask ci` |
-| `crates/native` golden logs | `crates/native/src/sync/golden_tests.rs` runs whole cycles of 15 scenarios against a small scripted OxiCloud (`fake_server`) and compares, line by line, every request (method, path, the guard headers, `Destination`, `Depth`, `Range`, the bearer token, the body or its hash), the activity lines, the sync state, the saved `state.json` and the final local folder and cloud with the logs in `crates/native/src/sync/golden/` (recorded before pull request 1; `CRAFTCLOUD_BLESS=1` records them again, only for a change meant to alter what goes over the wire). On every log it checks that every `PUT` carries `If-Match` or `If-None-Match: *`, every `MOVE` and `COPY` `Overwrite: F`, and a WebDAV `DELETE` only inside `.craftcloud/` | `cargo xtask ci` |
+| `crates/native` golden logs | `crates/native/src/sync/golden_tests.rs` runs whole cycles of 15 scenarios against a small scripted OxiCloud (`fake_server`) and compares, line by line, every request (method, path, the guard headers, `Destination`, `Depth`, `Range`, the bearer token, the body or its hash), the activity lines, the sync state, the saved `state.json` and the final local folder and cloud with the logs in `crates/native/src/sync/golden/` (recorded before pull request 1, #97; `CRAFTCLOUD_BLESS=1` records them again, only for a change meant to alter what goes over the wire). On every log it checks that every `PUT` carries `If-Match` or `If-None-Match: *`, every `MOVE` and `COPY` `Overwrite: F`, and a WebDAV `DELETE` only inside `.craftcloud/` | `cargo xtask ci` |
 | Live | `crates/native/tests/live.rs` with `CRAFTCLOUD_TEST_KIND` (`oxicloud` default, `nextcloud`, `owncloud`, `opencloud`, `webdav`; every kind but the first only with `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`): the same tests, the cloud side (trash, versions, ids, cleanup) per kind behind the trait; per-server deadlines (Nextcloud is slower); the mode asserted on every pass; the two-way tests where two-way sync is expected, the download-only suite (section 9) where download only is | By hand (`tests/other-servers/README.md`), and in CI (below) |
 | CLI live | `apps/craftcloud/tests/cli_live.rs` for `login --kind webdav`, `server check`, the file, trash and version commands, and the `unsupported` answers | Same |
 | Windows | The 0.2.0 Windows checks once, against Nextcloud | By hand, before the release |

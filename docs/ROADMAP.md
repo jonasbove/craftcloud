@@ -115,6 +115,11 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: Docs: the sync, storage and integration docs: WEBDAV-STORAGE.md names pull request 1 (#97) and
+  where `Download` lives, says the runtime watch misses a file of the same size kept under another tag, and that a
+  server with coarser than one-second times may be refused at the check's step 6; OIDC.md says the password-off guard
+  is in the page only and that the plain-words failures match OxiCloud 0.10.0's wording; CRAFT-INTEGRATION.md § 5
+  links the sign-in row to CLI.md's JSON output.
 - 2026-11-26: Agents: AGENTS.md's facts: the repository is public (the reasons for its own CI and Linux-only CI
   were set while it was private); the CI `live` job's owner has a random password made for the run; `deny.toml` is
   stricter than the licence allowlist. The password rule names its limit: never the account password on
