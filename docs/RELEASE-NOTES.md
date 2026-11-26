@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A download a virus scanner holds for a moment is no longer thrown away** (mostly Windows): putting it in
+  place is tried again for a moment, and a file you save meanwhile is never overwritten. The client's own state
+  and settings files are now flushed to disk before they replace the old ones, so a crash or power cut can't
+  leave a half-written one. Nothing needs care when updating: what the sync skips and how it decides are
+  unchanged.
 - **LoveCraft is a Craft app here.** `craftcloud apps` lists it, and `--app prosecraft-rs` (`files`, `ls`,
   `recent`, `search`, `starred`, `save`) keeps its `.prosecraft` backups; a `.prosecraft` file saved without `--to`
   goes to `LoveCraft/`. The `-apps` image serves its web build (0.2.0, with the `craft-web-host` bridge) at

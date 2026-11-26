@@ -190,9 +190,7 @@ pub const CHECK_FILE: &str = "storage-check.json";
 pub fn save_check(dir: &Path, check: &StoredCheck) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("can't make {}: {e}", dir.display()))?;
     let path = dir.join(CHECK_FILE);
-    let tmp = dir.join(format!("{CHECK_FILE}.tmp"));
-    std::fs::write(&tmp, check.to_json()).map_err(|e| format!("can't write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("can't save {}: {e}", path.display()))
+    craft_atomic::atomic_write(&path, check.to_json().as_bytes()).map_err(|e| format!("can't save {}: {e}", path.display()))
 }
 
 /// The check saved in `dir`, if there is a readable one.

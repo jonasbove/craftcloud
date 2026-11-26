@@ -116,6 +116,12 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: Sync: a finished download is put in place through craft-libs' `craft-atomic`. A rename another
+  program holds up for a moment (on Windows, a virus scanner reading the new part file) is tried again, with the
+  last look at the file here before every try, so a file saved here meanwhile is never overwritten; before, the
+  download was thrown away and fetched again. The folder is flushed after a file is put in place, and
+  `state.json`, `storage-check.json` and the token file are written crash-safe (flushed before they replace the
+  old one). Tests: a held part file goes in place once let go; a file changed while the rename waits is kept.
 - 2026-11-26: Docs: how the Craft apps would reach CraftCloud through craft-libs. CRAFT-INTEGRATION.md § 5 now
   builds on `craft-cloud-ui`'s `CloudBackend` (the `craft-cloud` name is taken by the vendor-neutral contract): a
   backend in craft-libs that runs `craftcloud --json`, with each job mapped to a command, what stays unsupported
