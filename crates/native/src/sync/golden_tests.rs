@@ -812,6 +812,48 @@ fn golden_moves_and_renames() {
 }
 
 #[test]
+fn golden_a_move_the_server_cant_do_right_now_is_tried_again() {
+    // A folder renamed here (seven files, one of them edited in the cloud since) and a file
+    // renamed here, while the server answers 500 to every `MOVE` of the first pass: neither is
+    // rebuilt as a copy. Nothing is uploaded under the new names, nothing is trashed or comes
+    // down under the old ones, no mass delete waits, and the state stays as it was. The second
+    // pass moves both, each by one `MOVE`, and then brings the edit down.
+    let moves = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let special: Special = Box::new(move |r, _| {
+        (r.method == "MOVE" && moves.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2).then(|| Answer::new(500, r#"{"message":"locked"}"#))
+    });
+    let mut files: Vec<(String, String, String)> = (1..=6).map(|n| (format!("Old/{n}.txt"), format!("o{n}"), n.to_string())).collect();
+    files[0] = ("Old/1.txt".into(), "o9".into(), "edited elsewhere".into());
+    files.push(("Old/Sub/x.txt".into(), "o7".into(), "x".into()));
+    files.push(("Docs/a.txt".into(), "e1".into(), "abc".into()));
+    files.push(("keep.txt".into(), "k1".into(), "keep".into()));
+    let listed: Vec<(&str, &str, &str)> = files.iter().map(|(p, e, b)| (p.as_str(), e.as_str(), b.as_str())).collect();
+    let mut s = Scenario::new(Cloud::new(&listed, &[]), Some(special));
+    let mut state = State::default();
+    for n in 1..=6 {
+        s.local(&format!("New/{n}.txt"), &n.to_string());
+        state.files.insert(format!("Old/{n}.txt"), s.known(&format!("New/{n}.txt"), &format!("o{n}")));
+    }
+    s.local("New/Sub/x.txt", "x");
+    state.files.insert("Old/Sub/x.txt".into(), s.known("New/Sub/x.txt", "o7"));
+    s.local("Docs/b.txt", "abc");
+    state.files.insert("Docs/a.txt".into(), s.known("Docs/b.txt", "e1"));
+    s.local("keep.txt", "keep");
+    state.files.insert("keep.txt".into(), s.known("keep.txt", "k1"));
+    state.folders.extend(["Docs", "Old", "Old/Sub"].map(str::to_owned));
+    s.save(state);
+    s.cycle(Deletes::Hold);
+    {
+        let cloud = s.cloud.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(cloud.folders.contains("Old/Sub") && !cloud.folders.contains("New"), "one folder, the old one: {:?}", cloud.folders);
+        assert!(cloud.files.contains_key("Docs/a.txt") && !cloud.files.contains_key("Docs/b.txt") && cloud.trash.is_empty());
+    }
+    s.cycle(Deletes::Hold);
+    s.cycle(Deletes::Hold);
+    s.finish("a_move_the_server_cant_do_right_now_is_tried_again");
+}
+
+#[test]
 fn golden_a_failed_listing_ends_the_cycle_with_nothing_done() {
     let special: Special = Box::new(|r, _| (r.method == "PROPFIND" && r.path.starts_with("/webdav/Docs/")).then(|| Answer::new(500, "{}")));
     let mut s = Scenario::new(Cloud::new(&[("Docs/a.txt", "e1", "abc"), ("Other/b.txt", "e2", "b")], &[]), Some(special));

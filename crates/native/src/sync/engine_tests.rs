@@ -1175,6 +1175,270 @@ fn the_runtime_watch_stops_two_way_after_a_replace_ignored_its_guard() {
     assert!(server.seen().iter().any(|r| r.path.contains("/.craftcloud/probe/")), "the probe re-ran");
 }
 
+// --- A server that can't right now: a move it couldn't do is tried again, never rebuilt ---------
+
+type Dav = Arc<std::sync::Mutex<craftcloud_core::storage::probe::fake::FakeDav>>;
+
+/// The cloud holds `Proj/` (eight files and `Sub/b.txt`) and `keep.txt`, all synced; since then
+/// the folder was renamed to `Proj2` here, and `Proj/0.txt` was edited in the cloud by another
+/// device. More files than a plan may delete at once without asking.
+fn renamed_folder_scene(engine: &mut Engine<WebDav>, dav: &Dav) {
+    let root = engine.root();
+    {
+        let mut dav = dav.lock().unwrap();
+        dav.add_folder("Proj/Sub", None);
+        for n in 0..8 {
+            dav.add_file(&format!("Proj/{n}.txt"), b"abc");
+        }
+        dav.add_file("Proj/Sub/b.txt", b"abc");
+        dav.add_file("keep.txt", b"abc");
+    }
+    let mut synced: Vec<(String, String)> = (0..8).map(|n| (format!("Proj/{n}.txt"), format!("Proj2/{n}.txt"))).collect();
+    synced.push(("Proj/Sub/b.txt".into(), "Proj2/Sub/b.txt".into()));
+    synced.push(("keep.txt".into(), "keep.txt".into()));
+    let mut state = State::default();
+    for (cloud, here) in synced {
+        let (folder, _) = cloud.rsplit_once('/').unwrap_or(("", &cloud));
+        let etag = engine.storage.list(folder).unwrap().into_iter().find(|e| e.path == cloud).unwrap().etag.unwrap();
+        let file = write(&root, &here, "abc");
+        state.files.insert(cloud, Known { etag, ..as_synced(&file) });
+    }
+    state.folders.extend(["Proj".to_owned(), "Proj/Sub".to_owned()]);
+    save_saved(&engine.state_path(), &Saved { server: engine.plan.server.clone(), state, ..Saved::default() }).unwrap();
+    dav.lock().unwrap().add_file("Proj/0.txt", b"edited elsewhere");
+}
+
+/// What a pass that couldn't move the folder must leave: one folder in the cloud (the old one,
+/// whole), nothing uploaded under the new name, nothing in any trash, nothing brought down under
+/// the old name, and the saved state as it was (so the next pass plans the same move).
+fn assert_folder_move_waits(engine: &Engine<WebDav>, server: &FakeServer, dav: &Dav) {
+    let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    assert_eq!(p.state, SyncState::UpToDate, "{:?}", p.activity);
+    let wrote = writes(server);
+    assert!(wrote.len() == 1 && wrote[0].starts_with("MOVE ") && wrote[0].ends_with("/Proj/"), "only the move that failed: {wrote:?}");
+    {
+        let dav = dav.lock().unwrap();
+        assert!(!dav.has("Proj2"), "nothing was built under the new name: {:?}", dav.folders());
+        assert_eq!(dav.body("Proj/Sub/b.txt"), Some(b"abc".as_slice()), "the old folder is whole");
+        assert_eq!(dav.body("Proj/0.txt"), Some(b"edited elsewhere".as_slice()));
+        assert!(!dav.folders().iter().any(|f| f.starts_with(".craftcloud/trash")), "nothing was trashed: {:?}", dav.folders());
+    }
+    let root = engine.root();
+    assert!(!root.join("Proj").exists(), "nothing came down under the old name");
+    assert_eq!(std::fs::read_to_string(root.join("Proj2/0.txt")).unwrap(), "abc");
+    let saved = synced_state(&root);
+    assert_eq!(saved.files.len(), 10, "the state is as it was: {:?}", saved.files.keys());
+    assert!(saved.files.contains_key("Proj/Sub/b.txt") && !saved.files.keys().any(|f| f.starts_with("Proj2/")), "{:?}", saved.files.keys());
+    assert!(saved.folders.contains("Proj") && saved.folders.contains("Proj/Sub") && !saved.folders.contains("Proj2"), "{:?}", saved.folders);
+    assert!(p.pending_deletes.is_empty(), "no mass delete to confirm: {:?}", p.pending_deletes);
+    let said: Vec<&ActivityEvent> = p.activity.iter().filter(|e| e.path == "Proj2").collect();
+    assert!(said.len() == 1 && said[0].kind == ActivityKind::Error && said[0].detail.contains("tried again"), "said once: {:?}", p.activity);
+    assert!(p.unsynced.contains_key("Proj2"), "the folder shows as not synced yet: {:?}", p.unsynced);
+}
+
+/// The next pass, the server well again: the same folder moved by one `MOVE`, nothing uploaded,
+/// nothing trashed; the edit made elsewhere comes down under the new name.
+fn assert_folder_moved_whole(engine: &Engine<WebDav>, server: &FakeServer, dav: &Dav, before: usize) {
+    let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    assert_eq!(p.state, SyncState::UpToDate, "{:?}", p.activity);
+    let wrote = writes(server)[before..].to_vec();
+    assert_eq!(wrote.iter().filter(|w| !w.contains("/.craftcloud/")).count(), 1, "one request outside .craftcloud/: {wrote:?}");
+    assert!(wrote.iter().any(|w| w.starts_with("MOVE ") && w.ends_with("/Proj/")), "{wrote:?}");
+    assert!(!wrote.iter().any(|w| w.starts_with("PUT ") || w.starts_with("DELETE ") || w.contains("/trash")), "{wrote:?}");
+    let dav = dav.lock().unwrap();
+    assert!(!dav.has("Proj"), "one folder, under its new name: {:?}", dav.folders());
+    assert_eq!(dav.body("Proj2/Sub/b.txt"), Some(b"abc".as_slice()));
+    let root = engine.root();
+    assert_eq!(std::fs::read_to_string(root.join("Proj2/0.txt")).unwrap(), "edited elsewhere", "{:?}", p.activity);
+    assert!(!root.join("Proj").exists());
+    let saved = synced_state(&root);
+    assert!(saved.files.contains_key("Proj2/Sub/b.txt") && !saved.files.keys().any(|f| f.starts_with("Proj/")), "{:?}", saved.files.keys());
+    assert!(p.activity.iter().any(|e| e.kind == ActivityKind::Moved && e.path == "Proj2"), "{:?}", p.activity);
+    assert!(p.unsynced.is_empty(), "{:?}", p.unsynced);
+}
+
+/// CI's Nextcloud run: the server answered 500 ("locked") to the `MOVE` of a renamed folder,
+/// and the client built the folder again beside the old one, file by file. A server that can't
+/// right now (500, 423 Locked, 429, 503) is asked again next pass instead; until then nothing
+/// under either name is uploaded, downloaded, trashed or forgotten.
+#[test]
+fn webdav_a_folder_move_the_server_cant_do_right_now_waits_and_is_one_move_next_pass() {
+    for status in [500, 423, 429, 503] {
+        let (server, dav) = scripted(Flags::default());
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = webdav_engine(&server, dir.path(), two_way());
+        renamed_folder_scene(&mut engine, &dav);
+        dav.lock().unwrap().flags.answers_once.push(("MOVE".into(), status));
+        engine.cycle(Deletes::Hold);
+        assert_folder_move_waits(&engine, &server, &dav);
+        let before = writes(&server).len();
+        engine.cycle(Deletes::Hold);
+        assert_folder_moved_whole(&engine, &server, &dav, before);
+    }
+}
+
+/// A second folder moved into the new name of one whose move waits: it waits too. Done now, its
+/// move would make the new name in the cloud (as its parent), and the first folder could never
+/// be moved there as one any more.
+#[test]
+fn webdav_a_folder_moved_into_one_whose_move_waits_waits_with_it() {
+    let (server, dav) = scripted(Flags::default());
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let mut engine = webdav_engine(&server, root, two_way());
+    renamed_folder_scene(&mut engine, &dav);
+    {
+        let mut dav = dav.lock().unwrap();
+        dav.add_folder("X", None);
+        dav.add_file("X/x.txt", b"abcde");
+    }
+    let etag = engine.storage.list("X").unwrap().into_iter().find(|e| e.path == "X/x.txt").unwrap().etag.unwrap();
+    let mut state = synced_state(root);
+    let moved = write(root, "Proj2/Y/x.txt", "abcde");
+    state.files.insert("X/x.txt".into(), Known { etag, ..as_synced(&moved) });
+    state.folders.insert("X".into());
+    save_saved(&engine.state_path(), &Saved { server: engine.plan.server.clone(), state, ..Saved::default() }).unwrap();
+
+    dav.lock().unwrap().flags.answers_once.push(("MOVE".into(), 500));
+    engine.cycle(Deletes::Hold);
+    let wrote = writes(&server);
+    assert!(wrote.len() == 1 && wrote[0].starts_with("MOVE ") && wrote[0].ends_with("/Proj/"), "only the move that failed: {wrote:?}");
+    assert!(!dav.lock().unwrap().has("Proj2") && dav.lock().unwrap().has("X/x.txt"), "{:?}", dav.lock().unwrap().folders());
+    let saved = synced_state(root);
+    assert!(saved.files.contains_key("X/x.txt") && saved.folders.contains("X") && saved.folders.contains("Proj"), "{saved:?}");
+
+    engine.cycle(Deletes::Hold);
+    let wrote = writes(&server)[1..].to_vec();
+    assert!(!wrote.iter().any(|w| w.starts_with("PUT ") || w.starts_with("DELETE ") || w.contains("/trash")), "{wrote:?}");
+    let dav = dav.lock().unwrap();
+    assert_eq!(dav.body("Proj2/Y/x.txt"), Some(b"abcde".as_slice()), "{wrote:?}");
+    assert!(!dav.has("Proj") && !dav.has("X") && dav.has("Proj2/Sub/b.txt"), "{:?}", dav.folders());
+}
+
+/// The same when the server never answers the `MOVE` at all (the connection closes): no answer
+/// says nothing about the folder, so it is not rebuilt.
+#[test]
+fn webdav_a_folder_move_that_gets_no_answer_waits() {
+    let dav: Dav =
+        Arc::new(std::sync::Mutex::new(craftcloud_core::storage::probe::fake::FakeDav::new("/remote.php/dav/files/john", Flags::default())));
+    let (inner, down) = (Arc::clone(&dav), Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    let is_down = Arc::clone(&down);
+    let server = FakeServer::start_full(move |seen: &Seen| {
+        if seen.method == "MOVE" && is_down.load(Ordering::SeqCst) {
+            return crate::fake_server::Answer::new(crate::fake_server::Answer::DROP, "");
+        }
+        let mut dav = inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let resp = dav.answer(&seen.method, &seen.path, &seen.headers, seen.body.as_bytes());
+        let mut answer = crate::fake_server::Answer::new(resp.status, String::from_utf8_lossy(&resp.body).into_owned());
+        for (name, value) in resp.headers {
+            answer = answer.header(&name, value);
+        }
+        answer
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let mut engine = webdav_engine(&server, dir.path(), two_way());
+    renamed_folder_scene(&mut engine, &dav);
+    down.store(true, Ordering::SeqCst);
+    engine.cycle(Deletes::Hold);
+    {
+        let dav = dav.lock().unwrap();
+        assert!(!dav.has("Proj2") && dav.has("Proj/Sub/b.txt"), "{:?}", dav.folders());
+        assert!(!dav.folders().iter().any(|f| f.starts_with(".craftcloud/trash")), "{:?}", dav.folders());
+    }
+    assert!(!writes(&server).iter().any(|w| !w.starts_with("MOVE ")), "{:?}", writes(&server));
+    assert_eq!(synced_state(dir.path()).files.len(), 10);
+    down.store(false, Ordering::SeqCst);
+    let before = writes(&server).len();
+    engine.cycle(Deletes::Hold);
+    assert_folder_moved_whole(&engine, &server, &dav, before);
+}
+
+/// A server that has no `MOVE` (405) refuses for what it is, not for now: the folder still
+/// syncs file by file, as before (nothing waits for ever on a server that will never move it).
+#[test]
+fn webdav_a_folder_move_refused_for_good_still_syncs_file_by_file() {
+    let (server, dav) = scripted(Flags { no_move: true, ..Flags::default() });
+    let dir = tempfile::tempdir().unwrap();
+    let mut engine = webdav_engine(&server, dir.path(), two_way());
+    renamed_folder_scene(&mut engine, &dav);
+    engine.cycle(Deletes::Confirm);
+    let dav = dav.lock().unwrap();
+    assert_eq!(dav.body("Proj2/Sub/b.txt"), Some(b"abc".as_slice()), "{:?}", writes(&server));
+    assert_eq!(dav.body("Proj2/7.txt"), Some(b"abc".as_slice()));
+    assert_eq!(engine.no_folder_move.len(), 1, "not asked again this run");
+}
+
+/// One renamed file: a `MOVE` the server can't do right now is an error tried again next pass.
+/// It is not uploaded under the new name with the old one left to come down again (two files
+/// where there was one).
+#[test]
+fn webdav_a_file_move_the_server_cant_do_right_now_is_tried_again() {
+    let (server, dav) = scripted(Flags::default());
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let mut engine = webdav_engine(&server, root, two_way());
+    {
+        let mut dav = dav.lock().unwrap();
+        dav.add_folder("Docs", None);
+        dav.add_file("Docs/a.txt", b"abc");
+        dav.add_file("Docs/keep.txt", b"abcd");
+    }
+    let listed = engine.storage.list("Docs").unwrap();
+    let etag = |path: &str| listed.iter().find(|e| e.path == path).unwrap().etag.clone().unwrap();
+    let mut state = State::default();
+    let renamed = write(root, "Docs/b.txt", "abc");
+    state.files.insert("Docs/a.txt".into(), Known { etag: etag("Docs/a.txt"), ..as_synced(&renamed) });
+    let keep = write(root, "Docs/keep.txt", "abcd");
+    state.files.insert("Docs/keep.txt".into(), Known { etag: etag("Docs/keep.txt"), ..as_synced(&keep) });
+    state.folders.insert("Docs".into());
+    save_saved(&engine.state_path(), &Saved { server: engine.plan.server.clone(), state, ..Saved::default() }).unwrap();
+
+    dav.lock().unwrap().flags.answers_once.push(("MOVE".into(), 500));
+    engine.cycle(Deletes::Hold);
+    assert_eq!(writes(&server).len(), 1, "only the move that failed: {:?}", writes(&server));
+    assert!(dav.lock().unwrap().has("Docs/a.txt") && !dav.lock().unwrap().has("Docs/b.txt"));
+    let saved = synced_state(root);
+    assert!(saved.files.contains_key("Docs/a.txt") && !saved.files.contains_key("Docs/b.txt"), "{:?}", saved.files.keys());
+    let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    assert!(p.activity.iter().any(|e| e.kind == ActivityKind::Error && e.path == "Docs/b.txt"), "{:?}", p.activity);
+
+    engine.cycle(Deletes::Hold);
+    let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    assert!(p.activity.iter().any(|e| e.kind == ActivityKind::Moved && e.path == "Docs/b.txt"), "{:?}", p.activity);
+    assert!(!writes(&server).iter().any(|w| w.starts_with("PUT ")), "{:?}", writes(&server));
+    let dav = dav.lock().unwrap();
+    assert!(!dav.has("Docs/a.txt") && dav.body("Docs/b.txt") == Some(b"abc".as_slice()));
+    assert!(!root.join("Docs/a.txt").exists(), "the old name didn't come down again");
+}
+
+/// CI's Nextcloud run: a `PUT` into a folder made a moment before answered 500. That is an
+/// error tried again next pass: the file is not marked refused (which would wait until it
+/// changes), and nothing is tried twice within the pass.
+#[test]
+fn webdav_an_upload_answered_500_is_tried_again_next_pass_and_not_marked_refused() {
+    let (server, dav) = scripted(Flags::default());
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let mut engine = webdav_engine(&server, root, two_way());
+    let file = write(root, "sf/a.txt", "inside");
+    std::fs::File::options().write(true).open(&file).unwrap().set_modified(std::time::SystemTime::now() - Duration::from_secs(3600)).unwrap();
+    dav.lock().unwrap().flags.answers_once.push(("PUT".into(), 500));
+    engine.cycle(Deletes::Hold);
+    let puts = |server: &FakeServer| writes(server).iter().filter(|w| w.starts_with("PUT ")).count();
+    assert_eq!(puts(&server), 1, "asked once in the pass: {:?}", writes(&server));
+    assert!(engine.refused.is_empty() && engine.no_room.is_empty(), "an error, not a refusal");
+    let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    assert!(p.activity.iter().any(|e| e.kind == ActivityKind::Error && e.path == "sf/a.txt"), "{:?}", p.activity);
+    assert_eq!(p.unsynced.get("sf/a.txt"), Some(&craftcloud_core::sync::FileStatus::Error));
+    assert!(!dav.lock().unwrap().has("sf/a.txt"));
+
+    engine.cycle(Deletes::Hold);
+    assert_eq!(puts(&server), 2);
+    assert_eq!(dav.lock().unwrap().body("sf/a.txt"), Some(b"inside".as_slice()));
+    let p = engine.progress.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    assert!(p.unsynced.is_empty() && p.activity.iter().any(|e| e.kind == ActivityKind::Up && e.path == "sf/a.txt"), "{:?}", p.activity);
+}
+
 /// Every file under `dir`.
 fn walkdir(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();

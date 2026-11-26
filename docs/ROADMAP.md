@@ -133,6 +133,16 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   links. Design frames `v2-web-apps-menu` (and `-light`, `-phone`, `design/tools/v2_apps.py`); tests of the
   visibility rule and the keyboard paths in `crates/ui-egui/src/web/apps_menu/tests.rs`, and the web shots
   `apps-closed`, `apps-menu`, `apps-off`.
+- 2026-11-19: Sync: a move the server can't do right now is tried again, never rebuilt as a copy. Found by the live
+  suite on Nextcloud, which answered 500 ("locked") to the `MOVE` of a renamed folder while another device was
+  writing into it; the client then built the folder again beside the old one. `storage::refused_for_good` names
+  the answers that refuse a move for what it is (400, 403, 404, 405, 409, 412, 414, 422, 501: files then sync one
+  by one, as before); every other answer, and no answer, is "not now": the folder is set aside for the pass under
+  both names (nothing uploaded, downloaded, trashed or forgotten, no mass delete asked about, the state kept), said
+  once in the activity list, and moved by one `MOVE` on a later pass. One renamed file likewise. On CraftCloud's
+  own server too. Tests: the scripted servers answer a `MOVE` or a `PUT` with a status once
+  (`Flags::answers_once`), over both drivers, and a new golden log; the two live tests that failed sync until
+  nothing changes (`settle`) instead of counting passes, since two computers are at the server at once there.
 - 2026-11-18: Sync (M9, pull request 6 of [WEBDAV-STORAGE.md](WEBDAV-STORAGE.md) § 14): Nextcloud. A profile hook
   on the generic driver (`storage::profile::ServerProfile`: the server's version string, the probe's known-server
   checks of steps 16 and 17, "verify writes by checksum", the server's own trash, versions and quota endpoint) and

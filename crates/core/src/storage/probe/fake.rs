@@ -55,6 +55,11 @@ pub struct Flags {
     /// The server's clock, as an RFC 1123 time: the `Date` header on every answer, and the
     /// `getlastmodified` of every folder made from now on.
     pub date: Option<String>,
+    /// A server that can't right now: the next request with this method answers this status
+    /// instead of being done, once each, in order (`("MOVE", 500)`: Nextcloud's answer to a move
+    /// of a folder another request holds a lock in; 423 where it says "locked"). Nothing changes
+    /// on the server, and the same request after it is done as usual.
+    pub answers_once: Vec<(String, u16)>,
     /// `quota-available-bytes` listed on the base (none without it; Nextcloud says `-3`).
     pub quota_available: Option<i64>,
     /// A file overwritten within the same second as the write before it keeps its ETag (Nextcloud
@@ -316,6 +321,10 @@ impl FakeDav {
             .filter_map(|n| header(n).map(|v| ((*n).to_owned(), v)))
             .collect();
         self.log.push((method.to_owned(), path.clone(), guards));
+        if let Some(i) = self.flags.answers_once.iter().position(|(m, _)| m == method) {
+            let (_, status) = self.flags.answers_once.remove(i);
+            return self.done(status, "not now");
+        }
         if self.flags.folders_need_slash && !path.is_empty() && self.folders.contains_key(&self.key(&path)) {
             let target = url_path.split('?').next().unwrap_or(url_path);
             if !target.ends_with('/') {
