@@ -38,7 +38,7 @@ backup of anything you sync with it.
 | `craftcloud://` deep links | done on Linux and Windows; macOS needs an Apple Event handler | [CRAFT-INTEGRATION.md § 2](CRAFT-INTEGRATION.md#2-deep-links-craftcloud) |
 | Integration contract (`craftcloud apps`, `files`, `save`) | done; desktop-only apps (`web = false`) listed too | [CRAFT-INTEGRATION.md § 3](CRAFT-INTEGRATION.md#3-the-integration-contract-the-craftcloud-command) |
 | Craft web apps in the browser | in part: the `-apps` image serves and gates them, and the web header's Apps menu opens the ones switched on in a new tab (0.3.0); opening a cloud file in one and saving it back is not built | [CRAFT-INTEGRATION.md § 6](CRAFT-INTEGRATION.md#6-the-craft-web-apps-in-the-browser) |
-| "Open from / Save to CraftCloud" in the launcher and the apps | proposal, upstream | [CRAFT-INTEGRATION.md § 4–5](CRAFT-INTEGRATION.md#4-the-artcraft-launcher-proposal-upstream) |
+| "Open from / Save to CraftCloud" in the launcher and the apps | proposal, upstream: for the apps, a craft-libs `CloudBackend` that runs `craftcloud` (UPSTREAM.md F1); the command-line half (an ETag in `files`, `save --if-match`, a read to stdout) is next | [CRAFT-INTEGRATION.md § 4–5](CRAFT-INTEGRATION.md#4-the-artcraft-launcher-proposal-upstream) |
 | Files on demand | design only | [FILES-ON-DEMAND.md](FILES-ON-DEMAND.md) |
 | Releases (published image, desktop release, signing) | desktop packaging done, not yet run in CI: the Craft apps' release file set (AppImage, deb, rpm, Flatpak, Arch, tar.gz; MSI and portable zip; universal DMG) from `release.yml` as a draft release, GPG-signed when a key is set, and only after every Linux package passed its install test (`package-test`); no published image, no code signing | [README](../README.md#downloads) |
 | Upstream gaps and proposals | drafted, not filed | [UPSTREAM.md](UPSTREAM.md) |
@@ -116,6 +116,12 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: Docs: how the Craft apps would reach CraftCloud through craft-libs. CRAFT-INTEGRATION.md § 5 now
+  builds on `craft-cloud-ui`'s `CloudBackend` (the `craft-cloud` name is taken by the vendor-neutral contract): a
+  backend in craft-libs that runs `craftcloud --json`, with each job mapped to a command, what stays unsupported
+  and the gaps (no rename-stable id over WebDAV, no permission on a link). The command-line half it needs (an ETag
+  in `files --json`, `save --if-match`, a read to stdout) is its own change. § 5.1 says why CraftCloud's sign-in
+  stays out of `craft-suite-account` for now. UPSTREAM.md gets a craft-libs section (F1, F2), drafts, not filed.
 - 2026-11-26: Deps: craft-libs (`craft-dav`, `craft-xml`, `craft-settings`) on `de994d8` and the egui fork on
   `b977090`, the revisions craft-launcher builds with (from `8ebdc49` and `6d518fc`). `craft-settings` now brings
   `craft-host` and `craft-i18n` (and with them the ICU 2.3 crates and `chrono`) into the desktop build; the web

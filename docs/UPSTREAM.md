@@ -410,3 +410,47 @@ profile is `crates/native/src/storage/profile/nextcloud.rs`. Nothing below is fi
 > in RFC 7232 § 2.3 expects, and key versions finer than the second (or keep a same-second version under a
 > distinct name); or, failing that, verify `OC-Checksum` against the bytes received on a plain `PUT`, as the
 > chunked upload does, so a stored checksum is trustworthy.
+
+## F. craft-libs (github.com/storytold/craft-libs)
+
+The Craft apps' shared libraries. CraftCloud pins some of them (`craft-dav`, `craft-xml`, `craft-settings`) and
+proposes the two below. Both are drafts; nothing here is filed.
+
+### F1. A `CloudBackend` that runs `craftcloud`
+
+> **A `craft-cloud-ui` backend for CraftCloud, through its command line**
+>
+> The apps' Open, Save and Share pages (`craft-cloud-ui`) reach a cloud only through a `CloudBackend`.
+> `craft-cloud-local` is the reference backend; no WebDAV or Nextcloud backend exists yet (step 2 of RFC-0024 in
+> storytold/craft-contrib, which #2179 notes has not started). #2452, Google Drive as a `CloudBackend` of its own,
+> is the precedent for one provider's backend.
+>
+> Proposal: a backend that runs the `craftcloud` program with `--json`, the contract in CraftCloud's
+> docs/CRAFT-INTEGRATION.md § 3, and maps each `Job` onto one command (§ 5 there has the table: `List` to
+> `files --json`, `Read` to the bytes on stdout, `Write` to `save --if-match <etag>`, `Create` to a `save` that never
+> replaces, `Account` and `SignIn` to `status --json` and `login`). It holds no token and speaks no HTTP, so the
+> sign-in, the kept versions and the write guards stay in the client. A refused `--if-match` becomes
+> `Fault::Conflict`. It reports no conversation, contacts or notifications.
+>
+> Two things it can't give the pages: a rename-stable `room` (WebDAV has no file id, so it is the path), and a
+> view or edit `Permission` on a link (CraftCloud's links have none).
+>
+> CraftCloud provides the command-line half (an ETag in `files --json`, `save --if-match`, a read to stdout); the
+> backend itself belongs in craft-libs, next to the others.
+
+### F2. craft-suite-account: what a provider like CraftCloud would need
+
+> **`craft-suite-account`: a provider kind on an account, a sign-in that doesn't switch accounts, and an account
+> without its token**
+>
+> CraftCloud could list its sign-in in the suite's accounts, so the launcher and the apps know it is there. Three
+> things stand in the way (CraftCloud's docs/CRAFT-INTEGRATION.md § 5.1):
+>
+> - An `Account` has `service`, `user`, `display` and `email`, but nothing says what kind of deployment it is. A
+>   reader expecting one kind would take a row of another kind for its own. Ask: a `kind` (or `provider`) field,
+>   and readers that skip a kind they don't know.
+> - `Store::sign_in` always makes the account the active one. A second kind of account, added by its own program,
+>   would change the account every app uses. Ask: a way to record an account without making it active.
+> - Every row has a token in the keychain. CraftCloud refreshes its tokens under its own lock, and its server ends
+>   a sign-in when a spent refresh token is used again, so a second refresher would end it. Ask: a way to record
+>   an account with no token, for a provider whose apps reach it through its own program.
