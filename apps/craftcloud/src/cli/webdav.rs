@@ -15,8 +15,8 @@ use craftcloud_native::storage::{Entry, MoveGuard, Moved, OwnPath, RemoteStorage
 use serde_json::json;
 
 use super::TrashCmd;
-use super::files::{confirm, print_items};
-use super::output::{CliError, Item, Result, print_json};
+use super::files::{Overwrite, Plan, Saved, confirm, plan_write, print_items};
+use super::output::{CliError, Item, Result, http_etag, print_json};
 use super::remote::{Ctx, clean, join, split};
 
 /// A storage error as a command-line error: not found is 4, no room and a refusal 1 with the
@@ -47,6 +47,7 @@ fn item(e: &Entry) -> Item {
         trashed_at: None,
         expires_at: None,
         score: None,
+        etag: if e.is_folder { None } else { e.etag.as_deref().and_then(http_etag) },
     }
 }
 
@@ -144,21 +145,18 @@ pub fn put(ctx: &Ctx, local: &str, remote_path: Option<&str>, force: bool) -> Re
         path = join(&path, &name);
         existing = stat(&mut storage, &path)?;
     }
-    let replaced = upload_to(&mut storage, file, &path, existing, force)?;
-    let verb = if replaced { "Replaced" } else { "Uploaded" };
-    done(ctx, json!({"path": path, "size": meta.len(), "replaced": replaced}), &format!("{verb} {path}"))
+    let saved = upload_to(&mut storage, file, &path, existing, &Overwrite::from_force(force))?;
+    let verb = if saved.replaced { "Replaced" } else { "Uploaded" };
+    done(ctx, json!({"path": path, "size": meta.len(), "replaced": saved.replaced, "etag": saved.etag}), &format!("{verb} {path}"))
 }
 
-/// Uploads `file` to `path` (`existing` is what is there now): refuses to replace a file without
-/// `force`, and keeps the old version first when it does. Whether it replaced one.
-pub fn upload_to(storage: &mut dyn RemoteStorage, file: &Path, path: &str, existing: Option<Entry>, force: bool) -> Result<bool> {
-    let replacing = existing.is_some();
-    let written = match existing {
-        None => storage.create(path, file),
-        Some(e) if e.is_folder => return Err(CliError::conflict(format!("{path} is a folder"))),
-        Some(_) if !force => return Err(CliError::conflict(format!("{path} is already there (--force replaces it; the old version is kept)"))),
-        Some(e) => {
-            let etag = e.etag.ok_or_else(|| {
+/// Uploads `file` to `path` (`existing` is what is there now): refuses to replace a file unless
+/// `overwrite` allows it, and keeps the old version first when it does.
+pub fn upload_to(storage: &mut dyn RemoteStorage, file: &Path, path: &str, existing: Option<Entry>, overwrite: &Overwrite) -> Result<Saved> {
+    let written = match plan_write(path, existing.as_ref().map(|e| (e.is_folder, e.etag.as_deref())), overwrite)? {
+        Plan::Create => storage.create(path, file),
+        Plan::Replace(etag) => {
+            let etag = etag.ok_or_else(|| {
                 CliError::conflict(format!("{path} is listed without a version tag, so it can't be shown unchanged; nothing was written"))
             })?;
             storage.keep_version(path).map_err(cli)?;
@@ -171,7 +169,7 @@ pub fn upload_to(storage: &mut dyn RemoteStorage, file: &Path, path: &str, exist
         }
         Err(e) => Err(cli(e).context(path)),
         Ok(Written::Conflict) => Err(CliError::conflict(format!("{path} changed on the server meanwhile; nothing was written"))),
-        Ok(Written::Saved { .. }) => Ok(replacing),
+        Ok(Written::Saved { etag }) => Ok(Saved { replaced: existing.is_some(), etag: http_etag(&etag) }),
     }
 }
 
@@ -312,16 +310,17 @@ pub fn walk(ctx: &Ctx, within: &str, app: Option<&craftcloud_core::catalog::Craf
     Ok(out)
 }
 
-/// `save` straight to the server (no client, or a folder this computer doesn't sync): the folder
-/// made first, the old version kept on `force`. Whether it replaced a file.
-pub fn save_direct(ctx: &Ctx, local: &Path, path: &str, force: bool) -> Result<bool> {
+/// `save` straight to the server (no client, a folder this computer doesn't sync, or
+/// `--if-match`): the folder made first (not for `--if-match`: the file must be there), the old
+/// version kept before an overwrite.
+pub fn save_direct(ctx: &Ctx, local: &Path, path: &str, overwrite: &Overwrite) -> Result<Saved> {
     let (mut storage, _) = ctx.webdav_for_writes()?;
     let (folder, _) = split(path);
-    if !folder.is_empty() {
+    if !folder.is_empty() && !matches!(overwrite, Overwrite::IfMatch(_)) {
         make_folder(&mut storage, folder, true)?;
     }
     let existing = stat(&mut storage, path)?;
-    upload_to(&mut storage, local, path, existing, force)
+    upload_to(&mut storage, local, path, existing, overwrite)
 }
 
 /// A trashed item as an output item: its original cloud path and when it was trashed.
@@ -341,6 +340,7 @@ fn trash_item(i: &TrashItem) -> Item {
         trashed_at: Some(i.trashed_at.clone()),
         expires_at: None,
         score: None,
+        etag: None,
     }
 }
 

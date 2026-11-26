@@ -70,8 +70,16 @@ fn craft_app_commands() {
     assert!(matches!(parse(&["files"]).command, Some(Cmd::Files { app: None, within: None })));
     assert!(matches!(
         parse(&["save", "notes.md", "--to", "Documents", "--wait", "-f"]).command,
-        Some(Cmd::Save { local, to: Some(t), app: None, force: true, wait: true }) if local == "notes.md" && t == "Documents"
+        Some(Cmd::Save { local, to: Some(t), app: None, force: true, if_match: None, wait: true }) if local == "notes.md" && t == "Documents"
     ));
+    // `--if-match`: replace only that version of the cloud file; it can't be combined with --force.
+    assert!(matches!(
+        parse(&["save", "notes.md", "--to", "Documents", "--if-match", "\"9ff164e6f5312e5a-1794606820\"", "--json"]).command,
+        Some(Cmd::Save { force: false, if_match: Some(e), .. }) if e == "\"9ff164e6f5312e5a-1794606820\""
+    ));
+    assert_eq!(fails(&["save", "notes.md", "--if-match", "\"v1\"", "--force"]), clap::error::ErrorKind::ArgumentConflict);
+    // The file's bytes to stdout, for a script or a Craft app reading it.
+    assert!(matches!(parse(&["get", "Documents/notes.md", "-", "--json"]).command, Some(Cmd::Get { local: Some(l), force: false, .. }) if l == "-"));
     assert!(matches!(parse(&["ls", "--app", "gridcraft"]).command, Some(Cmd::Ls { app: Some(_), .. })));
     assert!(matches!(parse(&["recent", "--app", "wordcraft"]).command, Some(Cmd::Recent { app: Some(_), clear: false, .. })));
     assert!(matches!(parse(&["starred", "--app", "pdfcraft"]).command, Some(Cmd::Starred { app: Some(_), .. })));

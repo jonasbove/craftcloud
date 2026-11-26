@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Saving over only the version you read.** `craftcloud files --json` and `ls --json` give each file's `etag`
+  (its version on the server), `craftcloud save FILE --to FOLDER --if-match ETAG` replaces the cloud file only
+  while it is still that version (else exit 5, `conflict`, and nothing is written), and `save`/`put` answer with
+  the new `etag`. `craftcloud get PATH -` writes a file's bytes, and only them, to stdout. Existing fields and exit
+  codes are unchanged.
 - **A download a virus scanner holds for a moment is no longer thrown away** (mostly Windows): putting it in
   place is tried again for a moment, and a file you save meanwhile is never overwritten. The client's own state
   and settings files are now flushed to disk before they replace the old ones, so a crash or power cut can't

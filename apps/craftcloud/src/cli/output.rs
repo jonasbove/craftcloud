@@ -202,6 +202,11 @@ pub struct Item {
     pub expires_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<i64>,
+    /// A file's version tag on the server, in its HTTP form (`"9ff164e6f5312e5a-1794606820"`,
+    /// quotes included): what `save --if-match` takes. Left out for folders (their tags aren't
+    /// reliable, docs/UPSTREAM.md C8), for files listed from the local folder, and in the trash.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
 }
 
 impl Item {
@@ -222,6 +227,10 @@ impl Item {
             trashed_at: None,
             expires_at: None,
             score: None,
+            etag: match r {
+                Resource::File(f) => http_etag(&f.etag),
+                Resource::Folder(_) => None,
+            },
         }
     }
 
@@ -247,8 +256,29 @@ impl Item {
             trashed_at: None,
             expires_at: None,
             score: None,
+            etag: None,
         }
     }
+}
+
+/// A version tag as HTTP and WebDAV give it: in quotes (OxiCloud's REST listings send the same
+/// tag without them). `None` when there is none.
+pub fn http_etag(tag: &str) -> Option<String> {
+    let tag = tag.trim();
+    if tag.is_empty() {
+        None
+    } else if tag.starts_with('"') || tag.starts_with("W/") {
+        Some(tag.to_owned())
+    } else {
+        Some(format!("\"{tag}\""))
+    }
+}
+
+/// Whether two version tags name the same version, with or without their quotes.
+pub fn same_etag(a: &str, b: &str) -> bool {
+    let bare = |t: &str| t.trim().trim_start_matches("W/").trim_matches('"').to_owned();
+    let (a, b) = (bare(a), bare(b));
+    !a.is_empty() && a == b
 }
 
 /// Prints a value as one line of JSON.
@@ -289,7 +319,7 @@ pub fn line(item: &Item, show: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{CliError, Fail, Item, line, size};
+    use super::{CliError, Fail, Item, http_etag, line, same_etag, size};
     use craftcloud_core::api::ApiError;
 
     #[test]
@@ -362,6 +392,7 @@ mod tests {
             trashed_at: None,
             expires_at: None,
             score: None,
+            etag: None,
         };
         assert_eq!(line(&item, "Documents"), "       -  not a time  Documents/ *");
         let json = serde_json::to_value(&item).unwrap();
@@ -396,5 +427,39 @@ mod tests {
         let json = serde_json::to_value(&remote).unwrap();
         assert!(json["local_path"].is_null() && json.as_object().unwrap().contains_key("local_path"));
         assert_eq!((json["id"].as_str(), json["sync"].as_str()), (Some("f1"), Some("excluded")));
+    }
+
+    /// `ls`/`files --json` carry a file's version tag in its HTTP form, the one `save --if-match`
+    /// takes and WebDAV sends; folders and empty tags have none.
+    #[test]
+    fn files_carry_their_version_tag() {
+        use craftcloud_core::api::resources::{File, Resource};
+        let file = File {
+            id: "f1".into(),
+            name: "notes.md".into(),
+            path: String::new(),
+            size: 11,
+            mime_type: String::new(),
+            folder_id: None,
+            created_at: String::new(),
+            modified_at: "2026-11-13T21:53:39Z".into(),
+            category: String::new(),
+            content_hash: String::new(),
+            etag: "9ff164e6f5312e5a-1794606820".into(),
+            is_favorite: false,
+            is_shared: false,
+        };
+        let item = Item::new(&Resource::File(file.clone()), "Documents/notes.md".into());
+        let json = serde_json::to_value(&item).unwrap();
+        assert_eq!(json["etag"], "\"9ff164e6f5312e5a-1794606820\"", "{json}");
+        let untagged = Item::new(&Resource::File(File { etag: String::new(), ..file }), "Documents/notes.md".into());
+        assert!(serde_json::to_value(&untagged).unwrap().get("etag").is_none(), "no tag: left out");
+
+        assert_eq!(http_etag("\"v1\"").as_deref(), Some("\"v1\""));
+        assert_eq!(http_etag("v1").as_deref(), Some("\"v1\""));
+        assert_eq!(http_etag("W/\"v1\"").as_deref(), Some("W/\"v1\""));
+        assert_eq!(http_etag("  "), None);
+        assert!(same_etag("\"v1\"", "v1") && same_etag("v1", "\"v1\"") && same_etag("\"v1\"", "\"v1\""));
+        assert!(!same_etag("\"v1\"", "\"v2\"") && !same_etag("", "\"\""), "an empty tag never matches");
     }
 }

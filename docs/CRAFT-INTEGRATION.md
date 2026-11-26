@@ -74,7 +74,8 @@ The launcher and the apps never speak OxiCloud's API and never see the user's si
 program (the desktop client's own command line, installed with it) with `--json` and read one JSON value from
 stdout. Everything below is stable: fields may be added, existing ones keep their meaning. Errors go to stderr as
 `{"error": {"kind", "message", "exit_code"}}` with the exit code ([CLI.md](CLI.md), "Exit codes"); the ones an
-integrator meets are 2 (a bad `--app` or path), 3 (not signed in), 4 (not found), 5 (already there: pass `--force`),
+integrator meets are 2 (a bad `--app` or path), 3 (not signed in), 4 (not found), 5 (already there: pass `--force`;
+with `save --if-match`, changed elsewhere),
 6 (the client stopped mid-`--wait`) and 8 (server unreachable).
 
 **Is CraftCloud there?** Look for `craftcloud` on `PATH` (Windows: `craftcloud.exe`) or for the `craftcloud://` URL
@@ -119,7 +120,9 @@ to one cloud folder.
   only happens in the server listing).
 - `sync`: `synced`, `pending` (new or changed; the next sync moves it), `syncing`, `error`, `conflict` (these three
   only from a running client), `excluded` (a folder this computer doesn't sync).
-- The server listing also carries the server's `id`; the client's doesn't.
+- The server listing also carries the server's `id` and, for each file, its version tag `etag` in its HTTP form
+  (`"\"9ff164e6f5312e5a-1794606820\""`), the one `save --if-match` takes (section 3.4); the client's listing has
+  neither.
 
 **Recent, starred and search** are the server's, filtered the same way, with the same `local_path` and `sync`:
 
@@ -139,7 +142,7 @@ first: `craftcloud open "Documents/Q3 report.docx" --json` (prints `{"opened": l
 `craftcloud://open?path=/Documents/Q3%20report.docx` (section 2). A file whose `local_path` is `null` isn't here:
 `open` exits 4 and says why.
 
-### 3.4 Save to CraftCloud: `craftcloud save <file> [--to FOLDER] [--wait] [--force] --json`
+### 3.4 Save to CraftCloud: `craftcloud save <file> [--to FOLDER] [--wait] [--force | --if-match ETAG] --json`
 
 Saves a local file (one the app just wrote, e.g. in a temporary folder) into CraftCloud:
 
@@ -152,17 +155,38 @@ Saves a local file (one the app just wrote, e.g. in a temporary folder) into Cra
 - **Overwrites:** an existing file is kept (exit 5) unless `--force`; a forced overwrite keeps the old version in
   `.craftcloud/versions/`, as every overwrite does. Through the client the check is on this computer: a file that is
   only in the cloud so far (not downloaded yet) isn't refused, and the sync keeps both versions as a conflict copy.
+  Uploaded directly, a save without `--force` is written with `If-None-Match: *`: it creates the file and never
+  replaces one, even one that appears meanwhile (exit 5).
+- **Only over the version you read:** `--if-match ETAG` replaces the cloud file only while the server still has
+  that version (`ETAG` from `files`/`ls --json`). It always goes straight to the server, even with a client
+  running, makes no folder, keeps the old version first, and writes with `If-Match`. When the file changed, moved
+  or went elsewhere meanwhile, nothing is written and it exits 5 (`conflict`): reload, or save under another name.
+  It can't be combined with `--force`.
 
 ```json
 {"path": "WordCraft/notes.md", "local_path": "/home/john/CraftCloud/WordCraft/notes.md",
- "via": "client", "state": "synced", "replaced": false, "size": 812}
+ "via": "client", "state": "synced", "replaced": false, "size": 812, "etag": null}
 ```
 
-`via` is `client` (`state` `queued`, or `synced` with `--wait`) or `server` (`state` `uploaded`, `local_path`
-`null`). After a save through the client, the app can keep working on `local_path`: every later save there is
+`via` is `client` (`state` `queued`, or `synced` with `--wait`; `etag` `null`) or `server` (`state` `uploaded`,
+`local_path` `null`, `etag` the new version's tag, for the next `--if-match`). After a save through the client, the app can keep working on `local_path`: every later save there is
 synced like any other file.
 
-### 3.5 The control channel underneath
+### 3.5 A cloud file without the sync folder: read, then save over what you read
+
+An app that works on a cloud file without the sync folder (a cloud backend that runs `craftcloud … --json`) uses
+three calls:
+
+1. **The version:** `craftcloud ls "Documents/notes.md" --json` (or `files --in FOLDER --json` without a client
+   running) gives the file's `etag`.
+2. **The bytes:** `craftcloud get "Documents/notes.md" -` writes them to stdout and nothing else (errors to stderr,
+   as JSON with `--json`; a non-zero exit means the bytes are not the whole file). Take the `etag` *before* reading:
+   the other order can pair older bytes with a newer tag and let the guard pass over a change.
+3. **Saving back:** `craftcloud save notes.md --to Documents --if-match ETAG --json` writes only over that version
+   and answers with the new `etag` for the next save; exit 5 means it changed elsewhere and nothing was written. A
+   new file is `save` without `--force` or `--if-match`, which never replaces one.
+
+### 3.6 The control channel underneath
 
 `files` talks to the running client over its control channel: one JSON line to a loopback port, with the secret
 from `control.json` in the client's settings folder (readable only by the user; [CLI.md](CLI.md), "The desktop
@@ -174,7 +198,8 @@ command is the stable interface and handles the fallbacks; the channel may chang
 **Tests.** The extension filter and the built-in table (checked against `apps.toml`) in `crates/core/src/catalog.rs`;
 the local view (excluded folders, `.craftcloud`, temporary files, sync states) in `crates/native/src/local_files.rs`;
 the `files` request and its fallbacks in `control.rs`; `--app` filtering, the JSON shapes, where `save` puts a file
-and its overwrite rules in `apps/craftcloud/src/cli/craft.rs` and `output.rs`.
+and its overwrite rules in `apps/craftcloud/src/cli/craft.rs` and `output.rs`; what a write may replace (`--force`,
+`--if-match`) in `files.rs`; `ls`/`save --if-match`/`get -` against a real server in `apps/craftcloud/tests/cli_live.rs`.
 
 ## 4. The ArtCraft Launcher (proposal, upstream)
 
@@ -217,15 +242,16 @@ promises. Without
 | `Account` | `status --json` (and `server info --json`) | Who is signed in and where. Not signed in (exit 3) is `Fault::NotLinked`; the capabilities are conditional writes and links |
 | `SignIn` | `login --no-browser --json` | The client's browser sign-in: the first line's `verification_uri` becomes `Event::Browser`, the second line the account |
 | `LinkStart`, `LinkPoll` | the same sign-in | CraftCloud's storage is the account itself, so there is nothing separate to link: signed in is linked |
-| `List` | `files --json` (`--in FOLDER`) | Each file with the ETag the client last saw, so a later write can be guarded |
-| `Read` | the file's bytes on stdout | `get PATH -` writes a file to stdout today; the backend also needs the ETag of the bytes it read |
-| `Write` | `save --if-match <etag>` | Refused, with a distinct conflict, when the file changed since that ETag: `Fault::Conflict`. The old bytes are kept as a version first, as for every overwrite |
+| `List` | `files --json` (`--in FOLDER`) | Each file with the server's current `etag`, so a later write can be guarded (§ 3.2) |
+| `Read` | `get PATH -`: the file's bytes on stdout | The `etag` comes from the listing read just before; a write over it is refused if the file changed in between (§ 3.5) |
+| `Write` | `save --if-match <etag>` | Refused when the file changed, moved or went since that `etag` (exit 5, JSON error kind `conflict`): `Fault::Conflict`. The old bytes are kept as a version first, as for every overwrite |
 | `Create` | `save` without `--force` | Never replaces: a name already taken is refused (exit 5), and the page asks for another |
 | `SignOut` | `logout --json` | This signs the whole computer out of CraftCloud, the desktop client too, so the page should say so |
 
-**What CraftCloud adds for this** (the contract, in its own pull request, not shipped yet): an `etag` field in
-`craftcloud files --json`, `craftcloud save --if-match <etag>` that answers a conflict of its own (not exit 5) when
-the ETag is stale, and a read of one file's bytes to stdout with its ETag. Section 3 lists them once they ship.
+**What CraftCloud provides for this** (§ 3.2, § 3.4 and § 3.5): an `etag` on each file in `craftcloud files --json`
+and the other listings, `craftcloud save --if-match <etag>`, which writes only over that version and otherwise
+answers exit 5 with the JSON error kind `conflict`, and `craftcloud get PATH -`, which writes only the file's bytes
+to stdout.
 
 **Left unsupported:** `Conversation` (CraftCloud has no calls or chat rooms), contacts and sharing with a person
 (OxiCloud's user shares aren't in the CLI), and notifications. The backend reports none of these capabilities, so

@@ -153,6 +153,55 @@ fn a_new_file_starts_clean(env: &Env, docs: &str) {
     env.ok(&["rm", &x]);
 }
 
+/// What a cloud backend runs (docs/CRAFT-INTEGRATION.md § 3.5): the file's version tag from
+/// `ls`/`files --json`, its bytes from `get -`, and a save that writes only over that version.
+fn save_over_the_version_read(env: &Env, docs: &str) {
+    let n = format!("{docs}/n.md");
+    std::fs::write(env.work.path().join("n.md"), "first").unwrap();
+    let created = env.ok(&["save", "n.md", "--to", docs]);
+    assert_eq!((created["via"].as_str(), created["replaced"].as_bool()), (Some("server"), Some(false)), "{created}");
+    env.fails(5, &["save", "n.md", "--to", docs]);
+
+    // The tag the listings give (REST) is the one WebDAV answered the write with.
+    let listed = env.ok(&["ls", &n]);
+    let etag = listed[0]["etag"].as_str().unwrap_or_else(|| panic!("no etag: {listed}")).to_owned();
+    assert!(etag.starts_with('"') && etag.ends_with('"'), "{etag}");
+    assert_eq!(created["etag"].as_str(), Some(etag.as_str()), "the save's tag is the listing's");
+    let files = env.ok(&["files", "--in", docs]);
+    let entry = files.as_array().unwrap().iter().find(|f| f["path"] == n.as_str()).unwrap_or_else(|| panic!("{files}"));
+    assert_eq!(entry["etag"].as_str(), Some(etag.as_str()), "{files}");
+    assert!(env.ok(&["ls", docs]).as_array().unwrap().iter().filter(|i| i["type"] == "folder").all(|i| i.get("etag").is_none()));
+
+    // The bytes, and nothing else, on stdout (with --json too).
+    for args in [vec!["get", n.as_str(), "-"], vec!["get", n.as_str(), "-", "--json"]] {
+        let out = env.run(&args);
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(out.stdout, b"first", "{args:?}");
+    }
+    let missing = env.run(&["get", &format!("{docs}/no-such.md"), "-", "--json"]);
+    assert_eq!((missing.status.code(), missing.stdout.is_empty()), (Some(4), true));
+
+    // Over the version read: written, the old one kept, a new tag.
+    std::fs::write(env.work.path().join("n.md"), "second").unwrap();
+    let saved = env.ok(&["save", "n.md", "--to", docs, "--if-match", &etag]);
+    assert_eq!((saved["via"].as_str(), saved["replaced"].as_bool()), (Some("server"), Some(true)), "{saved}");
+    let newer = saved["etag"].as_str().unwrap_or_else(|| panic!("{saved}")).to_owned();
+    assert_ne!(newer, etag);
+    // Over a version that is gone: exit 5, nothing written, nothing kept.
+    std::fs::write(env.work.path().join("n.md"), "third").unwrap();
+    let err = env.fails(5, &["save", "n.md", "--to", docs, "--if-match", &etag]);
+    assert_eq!(err["error"]["kind"], "conflict", "{err}");
+    assert_eq!(env.run(&["get", &n, "-"]).stdout, b"second");
+    assert_eq!(env.ok(&["versions", &n]).as_array().unwrap().len(), 1, "only the replaced version is kept");
+    // The tag without its quotes works too; a file that isn't there is a conflict, not a create.
+    env.ok(&["save", "n.md", "--to", docs, "--if-match", newer.trim_matches('"')]);
+    assert_eq!(env.run(&["get", &n, "-"]).stdout, b"third");
+    env.fails(5, &["save", "n.md", "--to", &format!("{docs}/nowhere"), "--if-match", &newer]);
+    env.fails(4, &["ls", &format!("{docs}/nowhere")]);
+    env.fails(2, &["save", "n.md", "--to", docs, "--if-match", &newer, "--force"]);
+    env.ok(&["rm", &n]);
+}
+
 /// `server check` on CraftCloud's own server: the capabilities are known, and no probe runs
 /// (docs/WEBDAV-STORAGE.md, Q3), so nothing lands in `.craftcloud/probe/`.
 fn server_check_reports_known_capabilities(env: &Env) {
@@ -256,6 +305,7 @@ fn the_command_line_end_to_end() {
     assert!(paths(&env.ok(&["ls", &docs])).contains(&c));
     restore_onto_a_taken_place(&env, &docs, &a, &c);
     a_new_file_starts_clean(&env, &docs);
+    save_over_the_version_read(&env, &docs);
 
     // Folder download as a zip.
     env.ok(&["get", &docs]);

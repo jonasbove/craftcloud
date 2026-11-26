@@ -105,7 +105,7 @@ each request. This works the same on Linux, macOS and Windows.
 | Command | What it does |
 |---|---|
 | `ls [PATH] [--app APP]` | Lists a folder (default: the top). Size, last change, name; folders end in `/`, starred items have `*` |
-| `get REMOTE [LOCAL] [-f]` | Downloads a file into the current folder, into `LOCAL` when it is a folder (or ends in `/`), or as `LOCAL`. `-` writes to stdout. A folder downloads as `NAME.zip`. An existing local file is kept unless `-f` |
+| `get REMOTE [LOCAL] [-f]` | Downloads a file into the current folder, into `LOCAL` when it is a folder (or ends in `/`), or as `LOCAL`. `-` writes the file's bytes to stdout and nothing else (no JSON there, even with `--json`; errors go to stderr as usual, and a failure exits non-zero, so a partial stream is never taken for the file). A folder downloads as `NAME.zip`. An existing local file is kept unless `-f` |
 | `put LOCAL [REMOTE] [-f]` | Uploads a file to the top, into `REMOTE` when it is a folder (or ends in `/`), or as `REMOTE`. An existing file is kept unless `-f`; with `-f` the old one is kept as a version first (see `versions`). If the file changed on the server meanwhile, nothing is written (code 5) |
 | `mkdir [-p] PATH` | Makes a folder; `-p` makes missing parents and doesn't mind if it exists |
 | `mv FROM TO` | Moves or renames; into `TO` when it is a folder (or ends in `/`). Never overwrites. Its kept versions go along |
@@ -132,7 +132,7 @@ What the ArtCraft Launcher and the Craft apps call to list and save CraftCloud f
 | `apps` | The Craft apps: id, name, and the extensions each opens. Built into the program (from `apps.toml`), so it works offline and needs no sign-in |
 | `--app APP` on `ls`, `recent`, `search`, `starred` | Keeps only the files `APP` opens (by extension, any case; folders are left out). `APP` is an id from `apps`, in any case. `.md` and `.txt` are WordCraft's. `search --app` asks the server for up to 200 matches, then keeps up to `--limit` of the app's files |
 | `files [--app APP] [--in FOLDER]` | The synced files on this computer. With a desktop client (or daemon) running, it answers from its local view of the sync folder: no network, works offline, fast. With none running (or one that isn't signed in), it lists the cloud instead, folder by folder (slower: one request per folder) |
-| `save FILE [--to FOLDER] [--app APP] [-f] [--wait]` | Saves a local file into CraftCloud, into `FOLDER`, or else into a folder named after the app (`--app`, or the app that opens the file by default): `notes.md` goes to `WordCraft/notes.md`. A file with no default app needs `--to`. With a client running and the folder synced, the file is copied into the sync folder (whole, through a temporary name the sync ignores) and the client uploads it; `--wait` waits until it has (up to 30 minutes). With no client, or a folder this computer doesn't sync, it is uploaded directly, making the folder first. An existing file is kept unless `-f`; with `-f` the old one is kept as a version first, as for every overwrite. Through the client, "existing" means on this computer: a file that is only in the cloud so far (not downloaded yet) isn't refused, and the sync then keeps both as a conflict copy |
+| `save FILE [--to FOLDER] [--app APP] [-f \| --if-match ETAG] [--wait]` | Saves a local file into CraftCloud, into `FOLDER`, or else into a folder named after the app (`--app`, or the app that opens the file by default): `notes.md` goes to `WordCraft/notes.md`. A file with no default app needs `--to`. With a client running and the folder synced, the file is copied into the sync folder (whole, through a temporary name the sync ignores) and the client uploads it; `--wait` waits until it has (up to 30 minutes). With no client, or a folder this computer doesn't sync, it is uploaded directly, making the folder first. An existing file is kept unless `-f`; with `-f` the old one is kept as a version first, as for every overwrite. Through the client, "existing" means on this computer: a file that is only in the cloud so far (not downloaded yet) isn't refused, and the sync then keeps both as a conflict copy. Straight to the server, a save without `-f` never replaces a file: it is written with `If-None-Match: *`, so one that appears meanwhile is a conflict (code 5) too. `--if-match ETAG` replaces the cloud file only while it is still that version (`ETAG` is its `etag` from `files --json` or `ls --json`, with or without its quotes): it always goes straight to the server, even with a client running (`--wait` then changes nothing), makes no folder, keeps the old version first, and writes with `If-Match`; when the file changed, moved or went meanwhile, nothing is written or kept and it exits with code 5 (`conflict`). It can't be combined with `-f` |
 
 ### Share links
 
@@ -254,7 +254,7 @@ Linux (`notify-send`, when installed); on macOS and Windows it only reaches the 
 | 2 | The command line is wrong (unknown command or option, a bad value) |
 | 3 | Not signed in, or the sign-in ran out: run `craftcloud login` |
 | 4 | Not found: no such file, folder, version, link or person |
-| 5 | Conflict: something is already there, it changed meanwhile, or another sync engine has the folder |
+| 5 | Conflict: something is already there, it changed meanwhile (for `save --if-match`: the cloud file isn't that version any more, or isn't there), or another sync engine has the folder |
 | 6 | No desktop client (or daemon) is running |
 | 7 | Not allowed: the server refused (e.g. an admin command without admin rights) |
 | 8 | The server can't be reached |
@@ -277,7 +277,12 @@ added later; existing ones keep their meaning. Times are RFC 3339 (UTC; `version
  "local_path": "/home/john/CraftCloud/Documents/notes.md", "sync": "synced"}
 ```
 
-`type` is `file` or `folder`; `size` is `null` for folders. Extra fields: `starred_at` (`starred`), `opened_at`
+`type` is `file` or `folder`; `size` is `null` for folders. Files listed from the server (`ls`, `files` with no
+client running, `starred`, `recent`, `search`) also have `etag`: the file's version tag on the server in its HTTP
+form, quotes included (`"\"9ff164e6f5312e5a-1794606820\""`), from the same listing (no extra request); it changes on
+every write, and it is what `save --if-match` takes. It is left out for folders (their tags aren't reliable),
+in `trash ls`, for files `files` got from a running client (its local view, which may hold changes not uploaded
+yet), and when the server sent none. Extra fields: `starred_at` (`starred`), `opened_at`
 (`recent`), `trashed_at` and `expires_at` (`trash ls`), `score` (`search`, higher is better).
 
 For files (not in `trash ls`), `local_path` is the synced copy on this computer, or `null` when it isn't here
@@ -329,9 +334,9 @@ exits 0 when the run ended up to date (with or without `waiting`), 3 when signed
 | `logout` | `{"signed_out": true, "server", "was_signed_in", "server_session_ended"}` (`server_session_ended`: the server ended the sign-in, or had already; `false` when it wasn't signed in here or the server couldn't end it, with exit code 8 or 1 in that last case) |
 | `usage` | `{"username", "used_bytes", "quota_bytes", "versions_bytes"}` (`quota_bytes` 0 = no limit; `versions_bytes`: what kept versions take, part of `used_bytes`) |
 | `get` | `{"path", "saved_to", "size"}` |
-| `put` | `{"path", "size", "replaced"}` |
+| `put` | `{"path", "size", "replaced", "etag"}` (`etag`: the new version's tag, `null` when the server didn't say) |
 | `apps` | `[{"id", "name", "opens", "default", "experimental"}]` (`default`: the extensions this app opens when a file is opened by its type; each extension has one) |
-| `save` | `{"path", "local_path", "via", "state", "replaced", "size"}`: `via` is `client` (copied into the sync folder; `state` `queued`, or `synced` with `--wait`) or `server` (uploaded directly; `state` `uploaded`, `local_path` `null`) |
+| `save` | `{"path", "local_path", "via", "state", "replaced", "size", "etag"}`: `via` is `client` (copied into the sync folder; `state` `queued`, or `synced` with `--wait`; `etag` `null`) or `server` (uploaded directly; `state` `uploaded`, `local_path` `null`, `etag` the new version's tag for the next `--if-match`, `null` when the server didn't say) |
 | `mkdir` | `{"path", "created"}` |
 | `mv`, `cp` | `{"from", "to"}` |
 | `rm` | `{"trashed": [paths]}` |
