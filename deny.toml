@@ -22,6 +22,10 @@ ignore = [
     # Only on tray-icon's GTK path (libappindicator), which no CraftCloud build uses: Linux and the
     # BSDs take its ksni backend (apps/craftcloud/Cargo.toml). cargo-deny sees it through all-features.
     { id = "RUSTSEC-2024-0370", reason = "proc-macro-error: only on tray-icon's GTK path, which no build uses" },
+    # chrono has no maintained version (2026-11) and no safe upgrade. CraftCloud's own code uses jiff; chrono
+    # comes only through craft-libs (craft-settings -> craft-host -> craft-i18n), desktop only. Not a
+    # vulnerability; it goes when craft-libs moves off chrono.
+    { id = "RUSTSEC-2026-0543", reason = "chrono: unmaintained, no upgrade; only via craft-libs (craft-i18n), desktop only" },
 ]
 
 [licenses]

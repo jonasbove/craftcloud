@@ -116,6 +116,12 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: Deps: craft-libs (`craft-dav`, `craft-xml`, `craft-settings`) on `de994d8` and the egui fork on
+  `b977090`, the revisions craft-launcher builds with (from `8ebdc49` and `6d518fc`). `craft-settings` now brings
+  `craft-host` and `craft-i18n` (and with them the ICU 2.3 crates and `chrono`) into the desktop build; the web
+  build is unchanged. `chrono`'s "unmaintained" advisory (RUSTSEC-2026-0543) is ignored in `deny.toml` with its
+  reason, like the D-Bus ones. First of the craft-libs moves (craft-xtask, craft-atomic, craft-update, the
+  craft-cloud backend, a craft-ui spike).
 - 2026-11-23: Craft apps: LoveCraft's web build (0.2.0, native bridge) in the `-apps` image. Its release names it
   `lovecraft-web-<version>.zip` while its id stays `prosecraft-rs`, so `apps.toml` takes a `release_name`, which
   `bump-apps` looks for and the manifest check holds `asset` to; the pins were set by `bump-apps`.
