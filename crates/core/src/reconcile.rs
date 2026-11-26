@@ -366,7 +366,13 @@ fn pair_moves(state: &State, local: &Tree<LocalFile>, remote: &Tree<RemoteFile>,
     // own place (`a` → `a/b`), can't be one move on the other side: the folder (or file) in the way
     // goes only once the file is out of it. It stays a delete plus a new file.
     let nested = |from: &str, to: &str| from.starts_with(&format!("{to}/")) || to.starts_with(&format!("{from}/"));
+    // Each new name goes to one move at most, and never one nested with where it came from.
+    let claim = |taken: &mut BTreeSet<String>, from: &str, to: &str| !nested(from, to) && taken.insert(to.to_owned());
     let unique = |mut v: Vec<String>| if v.len() == 1 { v.pop() } else { None };
+    // The ETags of synced files gone from the cloud (under another name now, or deleted): made once
+    // here, not once per download looked at below.
+    let vanished: BTreeSet<&str> =
+        state.files.iter().filter(|(p, _)| !remote.files.contains_key(*p)).map(|(_, k)| k.etag.trim_matches('"')).collect();
     let mut moves: BTreeMap<String, Action> = BTreeMap::new();
     let mut taken: BTreeSet<String> = BTreeSet::new();
     // Moves here first, so that their new names are known before a cloud rename claims one.
@@ -377,7 +383,7 @@ fn pair_moves(state: &State, local: &Tree<LocalFile>, remote: &Tree<RemoteFile>,
                 let same =
                     |a: &Action| matches!(a, Action::UploadNew(p) if local.files.get(p).is_some_and(|l| l.size == k.size && l.mtime == k.mtime));
                 let Some(to) = unique(files.iter().filter(|a| same(a)).map(|a| action_path(a).to_owned()).collect()) else { continue };
-                if !nested(from, &to) && taken.insert(to.clone()) {
+                if claim(&mut taken, from, &to) {
                     moves.insert(from.clone(), Action::MoveRemote { from: from.clone(), to, etag: etag.clone() });
                 }
             }
@@ -386,13 +392,14 @@ fn pair_moves(state: &State, local: &Tree<LocalFile>, remote: &Tree<RemoteFile>,
             // file there is another synced file moved onto it (its ETag, gone from its own place).
             Action::Download(from) if !local.files.contains_key(from) => {
                 let (Some(k), Some(r)) = (state.files.get(from), remote.files.get(from)) else { continue };
-                if state.files.iter().any(|(p, other)| p != from && same_etag(&other.etag, &r.etag) && !remote.files.contains_key(p)) {
+                // (`from` itself is in the cloud, so it is never among the vanished.)
+                if vanished.contains(r.etag.trim_matches('"')) {
                     continue;
                 }
                 let same =
                     |a: &Action| matches!(a, Action::UploadNew(p) if local.files.get(p).is_some_and(|l| l.size == k.size && l.mtime == k.mtime));
                 let Some(to) = unique(files.iter().filter(|a| same(a)).map(|a| action_path(a).to_owned()).collect()) else { continue };
-                if !nested(from, &to) && taken.insert(to.clone()) {
+                if claim(&mut taken, from, &to) {
                     moves.insert(from.clone(), Action::MoveRemote { from: from.clone(), to, etag: r.etag.clone() });
                 }
             }
@@ -408,7 +415,7 @@ fn pair_moves(state: &State, local: &Tree<LocalFile>, remote: &Tree<RemoteFile>,
                 let Some(k) = state.files.get(from) else { continue };
                 let same = |a: &Action| matches!(a, Action::Download(p) if !state.files.contains_key(p) && remote.files.get(p).is_some_and(|r| same_etag(&r.etag, &k.etag)));
                 let Some(to) = unique(files.iter().filter(|a| same(a)).map(|a| action_path(a).to_owned()).collect()) else { continue };
-                if !nested(from, &to) && taken.insert(to.clone()) {
+                if claim(&mut taken, from, &to) {
                     moves.insert(from.clone(), Action::MoveLocal { from: from.clone(), to });
                 }
             }

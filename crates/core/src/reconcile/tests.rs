@@ -467,6 +467,9 @@ fn a_file_moved_onto_in_the_cloud_is_not_followed_to_a_rename_here() {
     let s = state(&[("a.txt", known("e0", 5, 100)), ("B/a.txt", known("e3", 7, 200))], &["B"]);
     let l = local(&[("a.txt", 5, 100), ("b.md", 7, 200)], &["B"]);
     let r = remote(&[("B/a.txt", "e0", 5)], &["B"]);
+    // The delete of `a.txt` here loses nothing: it is unchanged since the last sync (its size and
+    // time are as synced), and those same bytes come down as `B/a.txt` (the cloud file has its
+    // ETag) and stay in the cloud.
     assert_eq!(plan(&s, &l, &r), [Action::Download("B/a.txt".into()), Action::DeleteLocal("a.txt".into()), Action::UploadNew("b.md".into())]);
 }
 

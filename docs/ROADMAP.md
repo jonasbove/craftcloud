@@ -112,6 +112,10 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: Sync: `pair_moves` tidied, no change in what it decides (review #72, #73). The ETags of synced
+  files gone from the cloud are gathered once instead of once per download looked at, one helper claims a new
+  name for a move (not nested with the old one, not taken yet) in all three places, and the test of a file moved
+  onto another in the cloud says why the delete it plans here is safe.
 - 2026-11-26: Docs: M10 part 1 is done and marked so: `scripts/create-owner`, `add-user`, `app-password` and
   `smoke-test` need only sh and curl, and the packaging icons come from `cargo xtask icons`; nothing in `.github/`,
   `docker/`, the Dockerfile, `compose.yaml` or `nix/` runs Python. The design build in `design/tools/` is the one
