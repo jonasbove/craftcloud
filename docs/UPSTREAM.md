@@ -414,7 +414,7 @@ profile is `crates/native/src/storage/profile/nextcloud.rs`. Nothing below is fi
 ## F. craft-libs (github.com/storytold/craft-libs)
 
 The Craft apps' shared libraries. CraftCloud pins some of them (`craft-dav`, `craft-xml`, `craft-settings`) and
-proposes the two below. Both are drafts; nothing here is filed.
+proposes the drafts below; nothing here is filed.
 
 ### F1. A `CloudBackend` that runs `craftcloud`
 
@@ -454,3 +454,25 @@ proposes the two below. Both are drafts; nothing here is filed.
 > - Every row has a token in the keychain. CraftCloud refreshes its tokens under its own lock, and its server ends
 >   a sign-in when a spent refresh token is used again, so a second refresher would end it. Ask: a way to record
 >   an account with no token, for a provider whose apps reach it through its own program.
+
+### F3. `craft-update` for an app outside the storytold organisation
+
+> **`craft-update`: app identity and signing details that a non-suite app can set**
+>
+> Read on 2026-11-26 at `de994d8`. CraftCloud's desktop client uses only the release check (default features:
+> `Http::get_api`, `parse_github_release_list`, `version::offers_update`) and never installs, because:
+>
+> - The macOS team id the installer checks a downloaded app's signature against is fixed in the crate (ArtCraft's),
+>   so an app signed by anyone else can't be installed or self-updated on macOS.
+> - `App::new` defaults `developer` to "ArtCraft" and the bundle id to `ai.storyteller.<id>`; an app outside the
+>   suite must remember to override both (`developer`, `bundle_id_override`), and the Linux package detection
+>   (`pacman -Q <bundle id>`) follows the bundle id too.
+> - Releases are trusted on their SHA-256 sums only: the GPG `.asc` signatures and the build-provenance
+>   attestations that CraftCloud's releases carry are not checked.
+> - `check_for_update` reads `ARTCRAFT_LAUNCHER_PRETEND_VERSION` and only ever asks api.github.com, so the
+>   offering logic can't be tested against a recorded answer from outside the crate (`check_releases_at` and
+>   `offered_release` are private); CraftCloud repeats their few lines over the public functions.
+>
+> Ask: a `macos_team_id: Option<&str>` on `App` (none: no macOS install), a constructor without the suite's
+> defaults (or a `const fn` that takes them), optional signature or attestation checks, and a public
+> `offered_release(json, repo, running)`.

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The desktop client says when a new version is out.** Settings › About shows "CraftCloud <version> is out."
+  with a link to its release notes; a copy from a package manager (deb, rpm, Arch, Flatpak, Homebrew, Nix) is told
+  to update there. The client only tells: it never downloads or installs anything. To know, it asks
+  `api.github.com` for the project's release list at most once a day, while its window has been opened, sending
+  only `CraftCloud/<version>` as its user agent (no account, no device name). Turn it off with **Settings › Check
+  for updates**; it is on by default, also for settings saved by an older version. Nothing needs care when
+  updating.
 - **Saving over only the version you read.** `craftcloud files --json` and `ls --json` give each file's `etag`
   (its version on the server), `craftcloud save FILE --to FOLDER --if-match ETAG` replaces the cloud file only
   while it is still that version (else exit 5, `conflict`, and nothing is written), and `save`/`put` answer with

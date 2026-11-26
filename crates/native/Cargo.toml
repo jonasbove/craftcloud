@@ -16,6 +16,8 @@ craftcloud-core = { workspace = true }
 craft-settings = { workspace = true }
 # Crash-safe writes of the client's own files, and renames that wait out a brief lock (Windows).
 craft-atomic = { workspace = true }
+# Says when a newer CraftCloud release is out (check and notify only: never downloads or installs).
+craft-update = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }

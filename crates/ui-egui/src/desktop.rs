@@ -12,6 +12,7 @@ use craftcloud_core::api::auth::{self, DevicePoll, DeviceStart, Me, Tokens};
 use craftcloud_core::api::dav::{self, Entry};
 use craftcloud_core::http::{HttpRequest, Method};
 use craftcloud_core::sync::{Appearance, ClientSettings, ConflictCopy, Keep, SyncPlan, SyncProgress, SyncState};
+use craftcloud_core::update::NewVersion;
 use egui::{Color32, Ui};
 
 use crate::backend::{Backend, Net, NetResult};
@@ -86,6 +87,10 @@ pub trait DesktopHost: Backend {
     fn sign_out(&mut self);
     /// Ends the client (the window and the tray).
     fn quit(&mut self);
+    /// A newer CraftCloud release, when the update check (Settings › Check for updates) found one.
+    fn new_version(&self) -> Option<NewVersion> {
+        None
+    }
 }
 
 /// How often the window looks for answers while a request is in flight.
@@ -760,12 +765,7 @@ impl<H: DesktopHost> DesktopApp<H> {
         self.me_asked_afresh();
         self.overlay = None;
         self.editing = None;
-        self.settings = ClientSettings {
-            server: self.settings.server.clone(),
-            device_name: self.settings.device_name.clone(),
-            appearance: self.settings.appearance,
-            ..ClientSettings::default()
-        };
+        self.settings = self.settings.after_sign_out();
         self.screen = Screen::Connect(ConnectScreen::new(self.settings.server.clone()));
     }
 

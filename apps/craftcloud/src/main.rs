@@ -20,12 +20,14 @@ use craftcloud_core::ServerUrl;
 use craftcloud_core::api::auth::Tokens;
 use craftcloud_core::http::HttpRequest;
 use craftcloud_core::sync::{ClientSettings, ConflictCopy, Keep, SyncPlan, SyncProgress, SyncState};
+use craftcloud_core::update::NewVersion;
 use craftcloud_native::control;
 use craftcloud_native::http::{ThreadBackend, Waker};
 use craftcloud_native::secrets::TokenStore;
 use craftcloud_native::session::Session;
 use craftcloud_native::settings::{self, Prefs, Store};
 use craftcloud_native::sync::{self as transfers, Command, Handle};
+use craftcloud_native::update_check::UpdateChecks;
 use craftcloud_ui_egui::backend::{Backend, NetResult};
 use craftcloud_ui_egui::desktop::{DesktopApp, DesktopHost, FileFacts, WallClock, status_text};
 
@@ -47,6 +49,8 @@ struct NativeHost {
     folder: Option<control::FolderLock>,
     /// Why syncing couldn't start (another engine has the folder), shown as the sync state.
     blocked: Option<String>,
+    /// Looks for a newer release once a day (Settings › Check for updates), from the first frame on.
+    updates: UpdateChecks,
 }
 
 impl NativeHost {
@@ -209,6 +213,7 @@ impl DesktopHost for NativeHost {
         let before = self.store.get().0.device_name.clone();
         self.store.set(Prefs(settings.clone()));
         self.store.flush().map_err(|e| e.to_string())?;
+        self.updates.set_on(settings.check_for_updates);
         if before != settings.device_name {
             let device = Some(settings.device_name.trim().to_owned()).filter(|d| !d.is_empty()).unwrap_or_else(craftcloud_native::device_name);
             self.command(Command::Rename(device));
@@ -232,6 +237,10 @@ impl DesktopHost for NativeHost {
 
     fn quit(&mut self) {
         self.quit = true;
+    }
+
+    fn new_version(&self) -> Option<NewVersion> {
+        self.updates.found()
     }
 
     fn resolve(&mut self, conflict: &ConflictCopy, keep: Keep) {
@@ -273,8 +282,8 @@ impl DesktopHost for NativeHost {
     fn sign_out(&mut self) {
         let server = self.store.get().0.server.clone();
         self.tokens(&server).delete();
-        let old = self.store.get().0.clone();
-        self.store.set(Prefs(ClientSettings { server, device_name: old.device_name, appearance: old.appearance, ..ClientSettings::default() }));
+        let kept = self.store.get().0.after_sign_out();
+        self.store.set(Prefs(kept));
         if let Err(e) = self.store.flush() {
             log::warn!("couldn't save the settings: {e}");
         }
@@ -599,6 +608,9 @@ impl eframe::App for Window<'_> {
         // busy. The frame that shows the window comes with Show, in the same pass as its commands.
         if self.shown {
             self.client.desktop.ui(ui);
+            // The update check starts once the window draws: never before the first frame, never
+            // for a command, and a start in the tray (`--hidden`) asks nothing until it is shown.
+            self.client.desktop.host.updates.start();
         }
         if self.client.desktop.host.quit {
             // Quit was picked: `logic` closes the window on the next pass.
@@ -759,7 +771,9 @@ fn main() -> ExitCode {
         .dir()
         .filter(|dir| !control::is_running(dir))
         .and_then(|dir| control::serve_window(dir, Arc::clone(&control), Arc::clone(&show)).map_err(|e| log::warn!("no control channel: {e}")).ok());
+    let updates = UpdateChecks::new(store.dir().map(Into::into), env!("CARGO_PKG_VERSION"), saved.check_for_updates, Arc::clone(&waker));
     let host = NativeHost {
+        updates,
         net: ThreadBackend::new(Arc::clone(&waker)),
         store,
         waker,
@@ -882,6 +896,8 @@ mod tests {
     /// A client without a tray, keychain or notifications, its settings in `dir`.
     fn client(dir: &std::path::Path) -> (Client, Sender<ToWindow>) {
         let waker: Waker = Arc::new(|| {});
+        // Off: a test never asks GitHub.
+        let updates = craftcloud_native::update_check::UpdateChecks::new(Some(dir.to_path_buf()), "0.0.0", false, Arc::clone(&waker));
         let host = NativeHost {
             net: ThreadBackend::new(Arc::clone(&waker)),
             store: settings::open_in(dir),
@@ -893,6 +909,7 @@ mod tests {
             control: Arc::default(),
             folder: None,
             blocked: None,
+            updates,
         };
         let saved = host.store.get().0.clone();
         let desktop = DesktopApp::waiting_for_keychain(&egui::Context::default(), host, saved);
@@ -959,11 +976,14 @@ mod tests {
         assert_eq!(commands, [egui::ViewportCommand::Visible(false)], "hidden again, after eframe's own show");
         assert_eq!(shapes, 0, "a hidden window draws nothing");
         assert_eq!(windows_pass(&mut window).0, [egui::ViewportCommand::Visible(false)], "and stays so");
+        assert!(!window.client.desktop.host.updates.started(), "a start in the tray doesn't look for updates");
         // The tray's Show (or a second start): shown and drawn in the same pass, not hidden again.
         show.send(ToWindow::Show).unwrap();
         let (commands, shapes) = windows_pass(&mut window);
         assert_eq!(commands, SHOW);
         assert!(shapes > 0, "the frame that shows the window is a real one");
+        assert!(window.client.desktop.host.updates.started(), "the update check may start once the window draws");
+        assert!(!window.client.desktop.host.updates.looking(), "but not while the setting is off");
         let (commands, shapes) = windows_pass(&mut window);
         assert!(commands.is_empty(), "a shown window is left alone: {commands:?}");
         assert!(shapes > 0);

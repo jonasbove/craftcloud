@@ -1,6 +1,7 @@
 use craftcloud_core::api::auth::Tokens;
 use craftcloud_core::http::{HttpRequest, HttpResponse};
 use craftcloud_core::sync::{Appearance, ClientSettings, ConflictCopy, Keep, SyncPlan, SyncProgress, SyncState};
+use craftcloud_core::update::NewVersion;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
@@ -28,6 +29,8 @@ pub(super) struct FakeDesktop {
     /// The system browser doesn't open.
     pub(super) no_browser: bool,
     opened_folders: u32,
+    /// What the update check found.
+    pub(super) new_version: Option<NewVersion>,
 }
 
 impl Backend for FakeDesktop {
@@ -122,6 +125,9 @@ impl DesktopHost for FakeDesktop {
     }
     fn quit(&mut self) {
         self.quit = true;
+    }
+    fn new_version(&self) -> Option<NewVersion> {
+        self.new_version.clone()
     }
 }
 
@@ -521,6 +527,63 @@ fn settings_switch_start_at_login_pause_and_appearance() {
     h.get_by_label("DONE").click();
     h.run();
     assert_eq!(h.state().overlay, None);
+}
+
+#[test]
+fn checking_for_updates_is_switched_in_settings() {
+    let mut h = with_state(SyncState::UpToDate);
+    h.get_by_label("SETTINGS").click();
+    h.run();
+    h.get_by_label("Check for updates: OFF").click();
+    h.run();
+    assert_eq!(h.state().host.prefs.as_ref().map(|s| s.check_for_updates), Some(false));
+    h.get_by_label("Check for updates: ON").click();
+    h.run();
+    assert_eq!(h.state().host.prefs.as_ref().map(|s| s.check_for_updates), Some(true));
+}
+
+pub(super) const RELEASE_PAGE: &str = "https://github.com/jonasbove/craftcloud/releases/tag/v9.9.0";
+
+fn with_new_version(package_managed: bool) -> H {
+    let mut h = with_state(SyncState::UpToDate);
+    h.state_mut().host.new_version = Some(NewVersion { version: "9.9.0".into(), url: RELEASE_PAGE.into(), package_managed });
+    h.get_by_label("SETTINGS").click();
+    h.run();
+    h
+}
+
+#[test]
+fn about_says_when_a_new_version_is_out() {
+    let mut h = with_new_version(false);
+    h.get_by_label("CraftCloud 9.9.0 is out.");
+    h.get_by_label("Download it from the release page.");
+    h.get_by_label("WHAT'S NEW").click();
+    h.run();
+    assert_eq!(h.state().host.net.opened.last().map(String::as_str), Some(RELEASE_PAGE));
+}
+
+#[test]
+fn a_package_managers_copy_is_told_to_update_there() {
+    let h = with_new_version(true);
+    h.get_by_label("CraftCloud 9.9.0 is out.");
+    h.get_by_label("Update it with your package manager.");
+    assert!(h.query_by_label("Download it from the release page.").is_none());
+}
+
+#[test]
+fn no_new_version_is_shown_while_checking_is_off() {
+    let mut h = with_new_version(false);
+    h.get_by_label("Check for updates: OFF").click();
+    h.run();
+    assert!(h.query_by_label_contains("is out").is_none());
+}
+
+#[test]
+fn no_new_version_line_without_a_find() {
+    let mut h = with_state(SyncState::UpToDate);
+    h.get_by_label("SETTINGS").click();
+    h.run();
+    assert!(h.query_by_label_contains("is out").is_none());
 }
 
 #[test]
