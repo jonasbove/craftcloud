@@ -245,6 +245,33 @@ fn usage_counts_versions_and_no_room_is_said() {
     assert_eq!(serde_json::to_value(&full).unwrap()["no_room"], serde_json::json!(["Video/big.mov"]));
 }
 
+/// A folder move that waits for the server is in `status --json` with its try count and in the
+/// headline, without changing the state or the exit code; without one the field isn't there.
+#[test]
+fn a_waiting_folder_move_is_said_with_its_tries() {
+    use craftcloud_core::sync::{SyncProgress, SyncState, WaitingMove};
+    use craftcloud_native::control::Status;
+    let p = SyncProgress {
+        state: SyncState::UpToDate,
+        waiting_moves: vec![WaitingMove { from: "Proj".into(), to: "Proj2".into(), attempts: 4 }],
+        ..SyncProgress::default()
+    };
+    let s = Status::from_progress(&p, "https://cloud.example.org", "/home/john/CraftCloud");
+    assert_eq!(s.state, "up_to_date");
+    assert_eq!(serde_json::to_value(&s).unwrap()["waiting_moves"], serde_json::json!([{"from": "Proj", "to": "Proj2", "attempts": 4}]));
+    assert!(
+        super::account::state_words(&s).starts_with("Up to date · 1 folder move waits for the server (4 tries so far"),
+        "{}",
+        super::account::state_words(&s)
+    );
+    assert!(super::account::held(&s).is_ok() && super::account::failed(&s).is_ok());
+    let none = Status::from_progress(&SyncProgress::default(), "", "");
+    assert!(serde_json::to_value(&none).unwrap().get("waiting_moves").is_none());
+    // An answer from a client that doesn't say (an earlier version) reads as none.
+    let old: Status = serde_json::from_value(serde_json::to_value(&none).unwrap()).unwrap();
+    assert!(old.waiting_moves.is_empty());
+}
+
 /// T-042: confirming (or discarding) a held mass delete says what it does.
 #[test]
 fn held_deletes_say_what_happens() {

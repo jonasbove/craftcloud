@@ -6,9 +6,9 @@
 //! slow or missing never holds up the window or the tray; clicking one shows the window. On macOS
 //! and Windows the tray's dot and the window say it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use craftcloud_core::sync::{SyncProgress, SyncState};
+use craftcloud_core::sync::{MOVE_LAST_NOTICE_AFTER, MOVE_WARNS_AFTER, SyncProgress, SyncState};
 
 /// One notification.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,6 +42,9 @@ pub struct Watch {
     problem: Option<Problem>,
     /// The conflict copies (by their path) already told.
     conflicts: BTreeSet<String>,
+    /// The waiting folder moves (from, to) already told, and at how many failed tries: once at
+    /// [`MOVE_WARNS_AFTER`], a last time at [`MOVE_LAST_NOTICE_AFTER`], never after.
+    moves: BTreeMap<(String, String), u32>,
 }
 
 fn name_of(path: &str) -> &str {
@@ -106,6 +109,41 @@ impl Watch {
             });
         }
         self.conflicts = p.conflicts.iter().map(|c| c.copy.clone()).collect();
+        // A folder move the server keeps failing: told after the third try and, a last time,
+        // after the fifth (the first is a line in the activity list; a server busy for a moment
+        // isn't worth a notification). The tries go on either way. A move that is done, or one
+        // that is undone and comes back, starts afresh.
+        self.moves.retain(|(from, to), _| p.waiting_moves.iter().any(|m| m.from == *from && m.to == *to));
+        for m in &p.waiting_moves {
+            let step = match m.attempts {
+                n if n >= MOVE_LAST_NOTICE_AFTER => MOVE_LAST_NOTICE_AFTER,
+                n if n >= MOVE_WARNS_AFTER => MOVE_WARNS_AFTER,
+                _ => continue,
+            };
+            let key = (m.from.clone(), m.to.clone());
+            if self.moves.get(&key).is_some_and(|told| *told >= step) {
+                continue;
+            }
+            self.moves.insert(key, step);
+            let (from, to, tries) = (name_of(&m.from), name_of(&m.to), m.attempts);
+            notes.push(if step == MOVE_LAST_NOTICE_AFTER {
+                Note {
+                    kind: Kind::CantSync,
+                    summary: format!("CraftCloud still can't move {from} in the cloud"),
+                    body: format!(
+                        "The server couldn't move it to {to} in {tries} tries; something may be holding the folder there. CraftCloud goes on trying every 5 minutes, and nothing in the folder syncs until it is moved. This is the last notification about it."
+                    ),
+                }
+            } else {
+                Note {
+                    kind: Kind::CantSync,
+                    summary: format!("CraftCloud can't move {from} in the cloud yet"),
+                    body: format!(
+                        "The server couldn't move it to {to} in {tries} tries. CraftCloud keeps trying, and nothing in the folder syncs until it is moved. Nothing was deleted or copied."
+                    ),
+                }
+            });
+        }
         notes
     }
 }
@@ -307,5 +345,38 @@ mod tests {
         assert!(w.see(&p).is_empty());
         p.conflicts.push(conflict("Q3 report"));
         assert_eq!(kinds(&mut w, &p), [Kind::Conflict]);
+    }
+
+    #[test]
+    fn a_folder_move_that_keeps_failing_is_told_after_three_tries_and_a_last_time_after_five() {
+        let waiting = |attempts: u32| SyncProgress {
+            state: SyncState::UpToDate,
+            waiting_moves: vec![craftcloud_core::sync::WaitingMove { from: "Work/Proj".into(), to: "Work/Proj2".into(), attempts }],
+            ..SyncProgress::default()
+        };
+        let mut w = Watch::default();
+        // The first two tries are the activity list's to say.
+        assert_eq!(kinds(&mut w, &waiting(1)), []);
+        assert_eq!(kinds(&mut w, &waiting(2)), []);
+        let third = w.see(&waiting(3));
+        assert_eq!(third.len(), 1);
+        assert_eq!(third[0].summary, "CraftCloud can't move Proj in the cloud yet");
+        // Seen again and again while it waits, and at the fourth try: nothing new.
+        assert_eq!(kinds(&mut w, &waiting(3)), []);
+        assert_eq!(kinds(&mut w, &waiting(4)), []);
+        let fifth = w.see(&waiting(5));
+        assert_eq!(fifth.len(), 1);
+        assert!(fifth[0].summary.contains("still can't move Proj") && fifth[0].body.contains("last notification"), "{fifth:?}");
+        // Every try after it: still retried, and nothing more is sent.
+        for n in 5..40 {
+            assert_eq!(kinds(&mut w, &waiting(n)), [], "try {n}");
+        }
+        // Moved at last, and later stuck again: told again.
+        assert_eq!(kinds(&mut w, &at(SyncState::UpToDate)), []);
+        assert_eq!(kinds(&mut w, &waiting(3)), [Kind::CantSync]);
+        // A client that starts to look when the count is past five tells once.
+        let mut late = Watch::default();
+        assert_eq!(kinds(&mut late, &waiting(7)), [Kind::CantSync]);
+        assert_eq!(kinds(&mut late, &waiting(8)), []);
     }
 }

@@ -95,6 +95,7 @@ pub fn once(ctx: &Ctx, deletes: super::account::Deletes) -> Result<()> {
             "conflicts": status.conflicts,
             "not_synced": status.not_synced,
             "waiting": status.waiting,
+            "waiting_moves": status.waiting_moves,
             "activity": activity,
         }))?;
     } else {

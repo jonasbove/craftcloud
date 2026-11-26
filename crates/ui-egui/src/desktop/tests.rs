@@ -854,6 +854,30 @@ fn a_file_without_room_in_the_cloud_is_shown_and_tried_again_on_request() {
 }
 
 #[test]
+fn a_folder_move_that_keeps_failing_warns_from_the_third_try_and_is_tried_again_on_request() {
+    use craftcloud_core::sync::WaitingMove;
+    let waiting = |attempts| SyncProgress {
+        state: SyncState::UpToDate,
+        waiting_moves: vec![WaitingMove { from: "Work/Proj".into(), to: "Work/Proj2".into(), attempts }],
+        ..SyncProgress::default()
+    };
+    // Two tries: no warning yet (the activity list has said it).
+    let mut h = signed_in();
+    h.state_mut().host.progress = waiting(2);
+    h.run();
+    h.get_by_label("Up to date");
+    assert!(h.query_by_label("Proj can't be moved in the cloud yet").is_none());
+    // From the third on: the status line and a panel say so, and "Try again" asks at once.
+    h.state_mut().host.progress = waiting(3);
+    h.run();
+    h.get_by_label("A folder move is waiting");
+    h.get_by_label("Proj can't be moved in the cloud yet");
+    h.get_by_label("TRY AGAIN").click();
+    h.run();
+    assert_eq!(h.state().host.synced_now, 1);
+}
+
+#[test]
 fn an_address_without_a_scheme_tries_https_then_http_and_enter_continues() {
     let mut h = app(ClientSettings::default(), None);
     h.run();

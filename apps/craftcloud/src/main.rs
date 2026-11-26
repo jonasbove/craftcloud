@@ -383,7 +383,13 @@ impl Client {
         }
         let Some(tray) = &mut self.tray else { return requests };
         let moving = progress.state == SyncState::Downloading && progress.files_total > 0;
-        tray.show(TrayView { state: progress.state.clone(), line: status_text(&progress), recent: recent_files(&progress), moving });
+        tray.show(TrayView {
+            state: progress.state.clone(),
+            line: status_text(&progress),
+            recent: recent_files(&progress),
+            moving,
+            stuck_move: progress.stuck_move().is_some(),
+        });
         for action in tray.actions() {
             let settings = self.desktop.settings().clone();
             match action {

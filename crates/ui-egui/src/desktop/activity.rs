@@ -30,7 +30,7 @@ fn headline_for(p: &SyncProgress) -> Lines {
             [vec![plain("Syncing")], vec![accent(&format!("{done} of {}", p.files_total)), plain(" files.")]]
         }
         SyncState::Idle | SyncState::Scanning | SyncState::Downloading => [vec![plain("Checking")], vec![plain("the "), accent("cloud"), plain("…")]],
-        SyncState::UpToDate if !p.no_room.is_empty() || !p.not_synced.is_empty() => {
+        SyncState::UpToDate if !p.no_room.is_empty() || !p.not_synced.is_empty() || p.stuck_move().is_some() => {
             [vec![plain("Almost everything")], vec![plain("is "), accent("synced"), plain(".")]]
         }
         SyncState::UpToDate if conflicts > 0 => {
@@ -102,6 +102,7 @@ fn needs_panel(p: &SyncProgress) -> bool {
     !matches!(p.state, SyncState::Idle | SyncState::Scanning | SyncState::Downloading | SyncState::UpToDate)
         || !p.conflicts.is_empty()
         || !p.no_room.is_empty()
+        || p.stuck_move().is_some()
 }
 
 /// One row of the activity list.
@@ -314,6 +315,18 @@ impl<H: DesktopHost> DesktopApp<H> {
                 format!("{} It's tried again at the next cycle.", sentence(why)),
                 &[(Ask::Retry, "Try again", Kind::Primary, Some(Icon::Refresh))],
             ),
+            // A folder move the server has failed three times or more: the client goes on asking
+            // (never a copy, never given up); "Try again" asks now instead of after the wait.
+            _ if p.stuck_move().is_some() => {
+                let (from, to, tries) = p.stuck_move().map(|m| (m.from.clone(), name_of(&m.to).to_owned(), m.attempts)).unwrap_or_default();
+                (
+                    "Move waiting",
+                    t.warn,
+                    format!("{} can't be moved in the cloud yet", name_of(&from)),
+                    format!("The server couldn't move {from} to {to} in {tries} tries. Nothing was copied or deleted, and nothing in the folder syncs until it is moved. The client keeps trying, every 5 minutes after the fourth try, for as long as it takes."),
+                    &[(Ask::Retry, "Try again", Kind::Primary, Some(Icon::Refresh))],
+                )
+            }
             _ if !p.no_room.is_empty() => {
                 let n = p.no_room.len();
                 let first = name_of(&p.no_room[0]).to_owned();

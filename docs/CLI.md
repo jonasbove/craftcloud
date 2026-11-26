@@ -302,11 +302,16 @@ whose deletion waits) for `mass_delete`. `mode` is what the sync may do with the
 `refused` ([WEBDAV-STORAGE.md § 7.3](WEBDAV-STORAGE.md); CraftCloud's own server is `two_way`), once the first pass has run. `not_synced` lists places in synced folders that the last pass left out, as `{"path", "reason"}`; `reason` is `unreadable` (a folder or a file that can't be read, such as one without read permission: it, and anything under it, isn't synced or deleted until it can be), `symlink` (a symbolic link, never followed), `name` (a name the cloud can't take, or one this computer can't have: on Windows, `< > : " | ? *`, a trailing dot or space, a reserved name such as `CON.txt`, or two cloud names that differ only in upper and lower case; it syncs once renamed, and `status` says which), `temporary` (a FILE whose name looks like an app's temporary, lock or backup file: `*.tmp`, `*.part`, `*~`, `#*#`, `.#*`, `~$*`, `*.swp`; folders with such names sync normally) or `not_uploaded` (new or changed here under download only: it stays here as it is), and `activity` says more. It doesn't change `state`. A place that can't be read needs you, so `status` (and `sync` through a client, and `sync --once`) then say "Up to date · N places can't be read" and exit with code 9; symbolic links, names and temporary files are left out for good and don't change the exit code. `status` prints each as `not synced PATH  (why)`. `no_room` lists files that don't fit in the cloud (its quota is full); they are tried again once there is room, the
 headline says "Up to date · N not synced (no room …)", and the exit code doesn't change. `waiting` lists files the last pass held
 because they were written in the 2 seconds before it (an app may still be saving them); the next pass syncs them, the
-headline says "Up to date · N files are still being saved", and neither `state` nor the exit code changes. `syncing` is `false` (and
+headline says "Up to date · N files are still being saved", and neither `state` nor the exit code changes. `waiting_moves`
+lists folders renamed or moved on this computer whose move in the cloud the server couldn't do yet, as `{"from", "to",
+"attempts"}` (cloud paths; `attempts` is how often the server was asked): the client asks again at the next pass for
+the first three tries, then after 2 minutes, then every 5 minutes for as long as it takes, never copies the folder
+instead, and syncs nothing in it until it is moved (`sync` asks at once). The field is left out when nothing waits; the
+headline says "Up to date · N folder move waits for the server", and neither `state` nor the exit code changes. `syncing` is `false` (and
 `state` `signed_out`) while the client waits for a sign-in. `activity`
 holds the latest 10 events; `kind` is `up`, `down`, `deleted`, `conflict`, `error`, `moved` (renamed or moved, `detail` says from where) `skipped` (left out on purpose, e.g. a folder switched off, or a name the cloud can't take) or `warning` (synced, but e.g. a name a Windows computer can't have).
 
-**`sync --once`**: `{"state", "mode", "error", "pending_deletes", "files_done", "files_total", "conflicts", "not_synced", "waiting", "activity"}`,
+**`sync --once`**: `{"state", "mode", "error", "pending_deletes", "files_done", "files_total", "conflicts", "not_synced", "waiting", "waiting_moves", "activity"}`,
 with every event of that run. When the first pass held a file being saved, a second pass follows 2.5 seconds later and
 the result is that pass's (`files_done` and `files_total` count it alone; `activity` has both). `waiting` lists what is
 still being saved after it (empty when nothing waits): a script tells "synced" from "a file still waits" by it. It

@@ -854,6 +854,54 @@ fn golden_a_move_the_server_cant_do_right_now_is_tried_again() {
 }
 
 #[test]
+fn golden_a_folder_move_that_keeps_failing_is_asked_again_with_longer_waits() {
+    // A folder renamed here while the server answers 500 to its `MOVE` five times: asked once a
+    // pass three times (told after the first, a warning after the third), then not before 2
+    // minutes (the pass in between sends no `MOVE`), then not before 5, with a last notice after
+    // the fifth. Never a copy, never a trash. The sixth try, the server well again, moves it.
+    use super::engine_tests::time_passes;
+    let moves = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let special: Special = Box::new(move |r, _| {
+        (r.method == "MOVE" && moves.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 5).then(|| Answer::new(500, r#"{"message":"locked"}"#))
+    });
+    let mut s = Scenario::new(Cloud::new(&[("Old/1.txt", "o1", "1"), ("Old/Sub/x.txt", "o2", "x"), ("keep.txt", "k1", "keep")], &[]), Some(special));
+    let mut state = State::default();
+    s.local("New/1.txt", "1");
+    state.files.insert("Old/1.txt".into(), s.known("New/1.txt", "o1"));
+    s.local("New/Sub/x.txt", "x");
+    state.files.insert("Old/Sub/x.txt".into(), s.known("New/Sub/x.txt", "o2"));
+    s.local("keep.txt", "keep");
+    state.files.insert("keep.txt".into(), s.known("keep.txt", "k1"));
+    state.folders.extend(["Old", "Old/Sub"].map(str::to_owned));
+    s.save(state);
+    let tries = |s: &Scenario| {
+        let p = s.engine.progress.lock().unwrap_or_else(PoisonError::into_inner);
+        (p.waiting_moves.iter().map(|m| m.attempts).collect::<Vec<_>>(), p.stuck_move().is_some())
+    };
+    for n in 1..=3 {
+        s.cycle(Deletes::Hold);
+        assert_eq!(tries(&s), (vec![n], n >= 3));
+    }
+    // Within the 2 minutes: nothing is asked.
+    s.cycle(Deletes::Hold);
+    assert_eq!(tries(&s), (vec![3], true));
+    time_passes(Duration::from_secs(121));
+    s.cycle(Deletes::Hold);
+    assert_eq!(tries(&s), (vec![4], true));
+    // Within the 5 minutes: nothing is asked.
+    time_passes(Duration::from_secs(121));
+    s.cycle(Deletes::Hold);
+    assert_eq!(tries(&s), (vec![4], true));
+    time_passes(Duration::from_secs(180));
+    s.cycle(Deletes::Hold);
+    assert_eq!(tries(&s), (vec![5], true));
+    time_passes(Duration::from_secs(301));
+    s.cycle(Deletes::Hold);
+    assert_eq!(tries(&s), (vec![], false));
+    s.finish("a_folder_move_that_keeps_failing_is_asked_again_with_longer_waits");
+}
+
+#[test]
 fn golden_a_failed_listing_ends_the_cycle_with_nothing_done() {
     let special: Special = Box::new(|r, _| (r.method == "PROPFIND" && r.path.starts_with("/webdav/Docs/")).then(|| Answer::new(500, "{}")));
     let mut s = Scenario::new(Cloud::new(&[("Docs/a.txt", "e1", "abc"), ("Other/b.txt", "e2", "b")], &[]), Some(special));

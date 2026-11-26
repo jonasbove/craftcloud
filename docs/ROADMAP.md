@@ -133,6 +133,16 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   links. Design frames `v2-web-apps-menu` (and `-light`, `-phone`, `design/tools/v2_apps.py`); tests of the
   visibility rule and the keyboard paths in `crates/ui-egui/src/web/apps_menu/tests.rs`, and the web shots
   `apps-closed`, `apps-menu`, `apps-off`.
+- 2026-11-22: Sync and desktop: a folder move that keeps failing is never given up, and says so. The engine counts
+  the failed tries of each waiting folder move (`SyncProgress::waiting_moves`): an error line in the activity list
+  after the first, a warning line after the third (`MOVE_WARNS_AFTER`), a last one after the fifth
+  (`MOVE_LAST_NOTICE_AFTER`), nothing after. Tries one to three come one a pass, the fourth after 2 minutes, every
+  later one after 5 (`core::sync::move_retry_wait`; "Sync now" and `craftcloud sync` ask at once); a success, or a
+  move that is no longer planned, clears the count. From the third try the window says "A folder move is waiting"
+  with a panel and "Try again", the tray shows its waiting look, and a notification goes out; a last notification
+  after the fifth. `status --json` and `sync --once --json` list `waiting_moves` with `attempts`. Tests: the
+  thresholds, the waits (a test clock, no sleeping), the reset, over both drivers (a second golden log); the
+  notifications, the tray's look, the window and the status output.
 - 2026-11-19: Sync: a move the server can't do right now is tried again, never rebuilt as a copy. Found by the live
   suite on Nextcloud, which answered 500 ("locked") to the `MOVE` of a renamed folder while another device was
   writing into it; the client then built the folder again beside the old one. `storage::refused_for_good` names
