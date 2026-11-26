@@ -817,6 +817,53 @@ fn a_restored_version_closes_the_sheet_and_says_so() {
     h.get_by_label("Restored the version from Today 09:00");
 }
 
+/// #43: when the newest kept version already holds the current file's bytes (the same content
+/// hash in its ETag), nothing is kept twice: no folder, copy or prune, straight to the guarded
+/// write.
+#[test]
+fn a_current_file_already_kept_is_not_kept_twice() {
+    let mut h = plan_versions();
+    h.get_all_by_label("RESTORE").last().unwrap().click();
+    h.run();
+    // The current file has the newest kept version's bytes (`h2`), saved at another time.
+    h.state_mut().backend.answer("/webdav/Reports/plan.txt", Ok(HttpResponse::new(207, multistatus("Reports/", &[("plan.txt", "h2-9", 7)]))));
+    h.run();
+    let version = format!("/webdav/{HISTORY}20261112T091200.000Z");
+    h.state_mut().backend.answer(&version, ok(b"older plan".to_vec()));
+    h.run();
+    let put = h.state().backend.last_to("/webdav/Reports/plan.txt");
+    assert_eq!((put.method, put.header_value("If-Match")), (Method::Put, Some("\"h2-9\"")));
+    let sent: Vec<Method> = h.state().backend.sent.iter().map(|(_, r)| r.method).collect();
+    assert!(!sent.iter().any(|m| matches!(m, Method::Mkcol | Method::Copy)), "nothing kept twice: {sent:?}");
+}
+
+/// #43: the versions sheet closed while a restore runs: the restore goes on to its end, still
+/// guarded, and says when it is done.
+#[test]
+fn closing_the_sheet_mid_restore_lets_it_finish() {
+    let mut h = plan_versions();
+    h.get_all_by_label("RESTORE").next().unwrap().click();
+    h.run();
+    h.get_by_label("CLOSE").click();
+    h.run();
+    assert!(h.state().files.sheet.is_none());
+    h.state_mut().backend.answer("/webdav/Reports/plan.txt", Ok(HttpResponse::new(207, multistatus("Reports/", &[("plan.txt", "cur-9", 8)]))));
+    h.run();
+    h.state_mut().backend.answer(&format!("/webdav/{HISTORY}{NEWEST}"), ok(b"old plan".to_vec()));
+    h.run();
+    answer_mkcols(&mut h);
+    h.state_mut().backend.answer("/webdav/Reports/plan.txt", Ok(HttpResponse::new(201, Vec::new())));
+    h.run();
+    h.state_mut().backend.answer(&format!("/webdav/{HISTORY}"), Ok(HttpResponse::new(404, Vec::new())));
+    h.run();
+    let put = h.state().backend.last_to("/webdav/Reports/plan.txt");
+    assert_eq!((put.method, put.header_value("If-Match")), (Method::Put, Some("\"cur-9\"")));
+    h.state_mut().backend.answer("/webdav/Reports/plan.txt", Ok(HttpResponse::new(204, Vec::new())));
+    h.run();
+    assert!(h.state().files.sheet.is_none());
+    h.get_by_label("Restored the version from Today 09:00");
+}
+
 // ─── The details panel ──────────────────────────────────────────────────────────────────────────
 
 const REPORT_HISTORY: &str = ".craftcloud/versions/Reports/report.docx/";

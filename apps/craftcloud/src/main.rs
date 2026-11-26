@@ -655,6 +655,13 @@ fn on_close(can_hide: bool, macos: bool) -> OnClose {
     }
 }
 
+/// Whether a start makes a window: always, except where a tray is up and a window can't hide
+/// (Wayland), so none flashes up only to stay open. A start without a tray, or where a window can
+/// hide (X11), makes one: no tray means the window is the only way in.
+fn opens_window(tray_up: bool, can_hide: bool) -> bool {
+    !(tray_up && !can_hide)
+}
+
 /// Whether a window opened here can hide and come back: not under Wayland, where winit ignores
 /// `set_visible(false)`. winit opens a Wayland window wherever `WAYLAND_DISPLAY` or
 /// `WAYLAND_SOCKET` is set (Linux and the BSDs).
@@ -804,7 +811,7 @@ fn main() -> ExitCode {
     // is up means no window is made at all, so none flashes up. Windows and macOS make their
     // tray with the window (`TrayHandle::local`), so there is nothing to wait for here.
     let tray_up = hidden && client.tray.as_ref().is_some_and(|t| wait_until(Duration::from_secs(3), || t.is_ready()));
-    let mut window = !(tray_up && !can_hide);
+    let mut window = opens_window(tray_up, can_hide);
     // One pass per window: where a window can't hide, closing it ends the pass and the client
     // carries on in the tray until the window is asked for again.
     loop {
@@ -891,7 +898,15 @@ mod tests {
     use craftcloud_ui_egui::desktop::DesktopApp;
     use egui::{ViewportId, ViewportInfo};
 
-    use super::{Client, NativeHost, OnClose, SHOW, Window, logic_tick, notify, on_close, window_can_hide_here};
+    use super::{Client, NativeHost, OnClose, SHOW, Window, logic_tick, notify, on_close, opens_window, window_can_hide_here};
+
+    /// #90: the one start without a window is a tray that is up where a window can't hide.
+    #[test]
+    fn a_window_is_made_unless_the_tray_is_up_and_it_cant_hide() {
+        assert!(!opens_window(true, false), "Wayland with a tray: the tray only");
+        assert!(opens_window(true, true), "X11 with a tray: a window that hides itself");
+        assert!(opens_window(false, false) && opens_window(false, true), "no tray: the window is the only way in");
+    }
 
     /// A client without a tray, keychain or notifications, its settings in `dir`.
     fn client(dir: &std::path::Path) -> (Client, Sender<ToWindow>) {

@@ -24,12 +24,19 @@ fn env(key: &str, default: &str) -> String {
     std::env::var(key).ok().filter(|v| !v.is_empty()).unwrap_or_else(|| default.to_owned())
 }
 
+/// The logger `builder` makes, wrapped so the HTTP library's trace lines never pass, and the
+/// most it logs.
+fn wire_capped(mut builder: env_logger::Builder) -> (craftcloud_core::logging::WireCapped<env_logger::Logger>, log::LevelFilter) {
+    let logger = builder.build();
+    let max = logger.filter();
+    (craftcloud_core::logging::WireCapped(logger), max)
+}
+
 fn main() {
     // `RUST_LOG` as usual, except that the HTTP library's trace lines (the forwarded cookies and
     // `Authorization` headers) never pass: `craftcloud_core::logging`.
-    let logger = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).build();
-    let max = logger.filter();
-    if log::set_boxed_logger(Box::new(craftcloud_core::logging::WireCapped(logger))).is_ok() {
+    let (logger, max) = wire_capped(env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")));
+    if log::set_boxed_logger(Box::new(logger)).is_ok() {
         log::set_max_level(max);
     }
     let config = Arc::new(Config {
@@ -137,4 +144,22 @@ fn ask_oxicloud(config: &Config, cookie: Option<&str>, bearer: Option<&str>) -> 
     let status = resp.status().as_u16();
     let body = resp.body_mut().with_config().limit(1024 * 1024).read_to_vec().ok()?;
     Some(craftcloud_core::http::HttpResponse::new(status, body))
+}
+
+#[cfg(test)]
+mod logging_tests {
+    use log::{Level, Log, Metadata};
+
+    /// #77: even with `RUST_LOG=trace` the forwarded cookies and `Authorization` headers (ureq's
+    /// trace lines) never reach the log; everything else at trace does.
+    #[test]
+    fn the_admin_log_never_carries_the_wire_bytes() {
+        let mut builder = env_logger::Builder::new();
+        builder.parse_filters("trace");
+        let (logger, max) = super::wire_capped(builder);
+        assert_eq!(max, log::LevelFilter::Trace);
+        let at = |target: &str, level| logger.enabled(&Metadata::builder().target(target).level(level).build());
+        assert!(!at("ureq", Level::Trace) && !at("ureq_proto::client", Level::Trace), "the wire bytes stop");
+        assert!(at("ureq", Level::Debug) && at("craftcloud_admin", Level::Trace), "the rest passes");
+    }
 }

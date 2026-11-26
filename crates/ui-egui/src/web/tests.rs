@@ -265,3 +265,18 @@ fn too_many_sign_ins_say_how_long_to_wait() {
     h.run();
     h.get_by_label("Too many sign-in attempts. Try again in 60 s.");
 }
+
+/// #91: a server whose config can't be read (an older image, a proxy in the way) still shows a
+/// version on the home page: this build's, never an empty one.
+#[test]
+fn without_the_servers_config_home_shows_this_builds_version() {
+    let mut h = app("/", None);
+    let b = &mut h.state_mut().backend;
+    b.answer("/api/auth/status", ok(INITIALIZED));
+    b.answer("/craftcloud/config.json", Ok(HttpResponse::new(404, Vec::new())));
+    b.answer("/api/auth/me", ok(&fixture("me.json")));
+    h.run();
+    assert_eq!(h.state().page, Page::Home);
+    // The desktop client panel's Linux line (a HUD label, so upper case).
+    h.get_by_label(&format!("{} · X86_64 · ARM64", env!("CARGO_PKG_VERSION")));
+}

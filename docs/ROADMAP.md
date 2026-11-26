@@ -112,6 +112,13 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: Tests: desktop and web UI tests from the review. The Home Manager module's autostart entry is checked
+  word for word against the client's own (`login.rs`, #34); when a start makes a window is a function with its
+  test (#90); a name only Windows refuses never says "Windows" elsewhere (#85); the admin service's logger keeps
+  the HTTP library's trace lines out even at `trace` (#77); a 200 naming nobody is asked again, with no error
+  shown (#84). Web: a restore doesn't keep the current file twice when the newest version already holds it, and
+  finishes when its sheet is closed (#43); without the server's config the home page shows this build's version
+  (#91).
 - 2026-11-26: Docs: ROADMAP, STATUS and README in step: the M9 row says it is in progress (pull requests 1 to 6
   on `main` behind the opt-in), and the README no longer calls it planned or lists the share links page as missing;
   0.1.0 was the first release; the Windows command line was tried on Windows 11, Ctrl+C there unconfirmed; STATUS

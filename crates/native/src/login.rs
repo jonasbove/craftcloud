@@ -164,6 +164,18 @@ mod tests {
         assert!(text.contains("Exec=\"/home/john/Apps/Craft \\$Cloud.AppImage\" --hidden"), "{text}");
     }
 
+    /// #34: the Home Manager module writes the client's own entry, word for word, for a Nix
+    /// install (`craftcloud` from PATH, as [`stable`] makes it): the two never drift apart.
+    #[test]
+    fn the_home_manager_entry_is_the_clients_own() {
+        let module = include_str!("../../../nix/home-manager.nix");
+        let ours = contents(&stable(PathBuf::from("/nix/store/abc-craftcloud-0.2.0/bin/craftcloud")));
+        let start = module.find("[Desktop Entry]").unwrap_or_else(|| panic!("no entry in nix/home-manager.nix"));
+        let end = start + module[start..].find("'';").unwrap_or_else(|| panic!("the entry's text doesn't end"));
+        let theirs: String = module[start..end].lines().map(|l| format!("{}\n", l.trim())).filter(|l| l != "\n").collect();
+        assert_eq!(theirs, ours);
+    }
+
     fn entry() -> Result<String, String> {
         Ok(contents(Path::new("/usr/bin/craftcloud")))
     }
