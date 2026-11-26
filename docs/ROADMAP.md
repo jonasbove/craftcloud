@@ -112,6 +112,11 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: Sync: a file deleted in the cloud is no longer removed for good here when syncing both ways. Like
+  under download only, the engine first checks the file is still the version last synced (one saved here since
+  the scan stays, and the next pass uploads it), then moves it into `.craftcloud/trash/` in the local folder.
+  Before, two-way `DeleteLocal` was a plain `remove_file`: an edit saved between the scan and the delete was lost.
+  The planner still says `DeleteLocal` (the mass-delete hold and the put-back from the cloud's trash go by it).
 - 2026-11-26: Docs: ROADMAP, STATUS and README in step: the M9 row says it is in progress (pull requests 1 to 6
   on `main` behind the opt-in), and the README no longer calls it planned or lists the share links page as missing;
   0.1.0 was the first release; the Windows command line was tried on Windows 11, Ctrl+C there unconfirmed; STATUS

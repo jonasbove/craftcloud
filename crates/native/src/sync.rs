@@ -1195,15 +1195,6 @@ impl<S: RemoteStorage> Engine<S> {
                 let n = files.len();
                 Ok(Some((ActivityKind::Deleted, format!("folder with {n} file{}, to the cloud trash", if n == 1 { "" } else { "s" }))))
             }
-            Action::DeleteLocal(p) => {
-                match std::fs::remove_file(local_path(p)?) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e.to_string()),
-                }
-                state.files.remove(p);
-                Ok(Some((ActivityKind::Deleted, "deleted in the cloud".into())))
-            }
             Action::MoveRemote { from, to, etag } => self.move_remote(root, from, to, etag, state),
             Action::MoveLocal { from, to } => {
                 let (src, dest) = (local_path(from)?, local_path(to)?);
@@ -1260,10 +1251,12 @@ impl<S: RemoteStorage> Engine<S> {
                 }
                 Ok(None)
             }
-            Action::TrashLocal(p) => {
+            // Deleted in the cloud, both ways and under download only alike: never removed for
+            // good here, but moved into `.craftcloud/trash/`, and only the version last synced: a
+            // change made here since the scan stays where it is (the next pass sees it as a file
+            // of this computer's and uploads it).
+            Action::DeleteLocal(p) | Action::TrashLocal(p) => {
                 let src = local_path(p)?;
-                // Only the version last synced: a change made here meanwhile stays where it is
-                // (the next pass sees it as a file of this computer's).
                 if !replaceable(&src, state.files.get(p)) {
                     return Ok(None);
                 }

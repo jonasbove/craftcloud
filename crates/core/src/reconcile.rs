@@ -97,6 +97,10 @@ pub enum Action {
         path: String,
         etag: String,
     },
+    /// Deleted in the cloud, unchanged here. The engine moves it into `.craftcloud/trash/` in the
+    /// local folder, as [`Action::TrashLocal`] (never removed for good, and never a version
+    /// changed here since the scan). Its own kind so that a mass delete can put the cloud's
+    /// trash back first (it was deleted there, not here).
     DeleteLocal(String),
     /// A whole synced folder deleted here, everything in it unchanged in the cloud: one move to
     /// the cloud's trash (so restoring it brings it back whole), unless the cloud no longer holds

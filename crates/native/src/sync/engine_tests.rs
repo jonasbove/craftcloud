@@ -603,8 +603,9 @@ fn download_only_writes_nothing_to_the_cloud_and_trashes_a_cloud_delete_here() {
 }
 
 /// The same scene both ways (OxiCloud's capabilities): the contrast that shows the cut is what
-/// keeps the writes away. The folder renamed here is moved in the cloud first thing, and the
-/// file deleted in the cloud is removed here, not kept in a local trash.
+/// keeps the writes away. The folder renamed here is moved in the cloud first thing; the file
+/// deleted in the cloud leaves its place here and is kept in the local trash, as under download
+/// only (never removed for good here).
 #[test]
 fn the_same_scene_both_ways_writes_to_the_cloud() {
     let server = download_only_server();
@@ -617,7 +618,32 @@ fn the_same_scene_both_ways_writes_to_the_cloud() {
 
     assert!(server.seen().iter().any(|r| r.is("MOVE", "/webdav/Folder")), "the folder is moved in the cloud: {:?}", server.seen());
     assert!(!root.join("Docs/gone.txt").exists());
-    assert!(!root.join(".craftcloud/trash").exists(), "both ways, the cloud's trash keeps it");
+    let trashed = walkdir(&root.join(".craftcloud/trash"));
+    assert_eq!(trashed.len(), 1, "{trashed:?}");
+    assert!(trashed[0].ends_with("Docs/gone.txt"), "{trashed:?}");
+    assert_eq!(std::fs::read_to_string(&trashed[0]).unwrap(), "abc", "kept whole");
+}
+
+/// A file deleted in the cloud that is saved here after the scan, before its delete runs: the
+/// last look before the delete sees the change, and the file stays (the next pass uploads it as
+/// new). Nothing is removed or trashed.
+#[test]
+fn a_file_saved_here_after_the_scan_survives_its_cloud_delete() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let file = write(root, "Docs/f.txt", "abc");
+    let mut state = State::default();
+    state.files.insert("Docs/f.txt".into(), as_synced(&file));
+    // The plan was made from the scan (`DeleteLocal`); then the person saves.
+    std::fs::write(&file, "saved after the scan").unwrap();
+    let mut engine = engine(ServerUrl::parse("http://127.0.0.1:9").unwrap(), root, &[]);
+    let root_path = engine.root();
+    let mut folders = BTreeSet::new();
+    let done = engine.apply(&root_path, &Action::DeleteLocal("Docs/f.txt".into()), &mut state, &mut folders, &Tree::default());
+    assert!(done.is_ok(), "{done:?}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "saved after the scan", "never removed");
+    assert!(!root.join(".craftcloud/trash").exists(), "nor trashed");
+    assert!(state.files.contains_key("Docs/f.txt"), "the next pass sees it as this computer's");
 }
 
 /// A server whose ETags don't change with the bytes is refused: nothing is listed, nothing

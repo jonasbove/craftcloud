@@ -1792,6 +1792,29 @@ fn download_only_a_cloud_change_over_a_local_change_makes_a_local_conflict_copy(
     assert_eq!(p.activity.iter().filter(|e| e.kind == ActivityKind::Conflict).count(), 1, "{:?}", p.activity);
 }
 
+/// Both ways too, a file deleted in the cloud is never removed for good here: it leaves its
+/// place and is kept in the local folder's own trash, whatever the cloud's trash does.
+#[test]
+fn a_file_deleted_in_the_cloud_lands_in_the_local_trash_both_ways_too() {
+    let Some(live) = Live::two_way("dlt") else { return };
+    let root = live.local("A");
+    let dlt = live.p("Dlt");
+    std::fs::create_dir_all(root.join(&dlt).join("sub")).unwrap();
+    std::fs::write(root.join(&dlt).join("sub/one.txt"), "one").unwrap();
+    for n in ["keep1.txt", "keep2.txt", "keep3.txt"] {
+        std::fs::write(root.join(&dlt).join(n), n).unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(2_200));
+    let a = live.computer(&root, "Alpha");
+    sync(&a);
+    live.trash_folder(&format!("{dlt}/sub"));
+    sync(&a);
+    assert!(!root.join(&dlt).join("sub/one.txt").exists(), "gone from its place");
+    let trashed = local_trash(&root);
+    assert_eq!(trashed, [(format!("{dlt}/sub/one.txt"), "one".to_owned())], "{trashed:?}");
+    assert_eq!(names_in(&root.join(&dlt)).len(), 3, "the rest stays");
+}
+
 #[test]
 fn download_only_a_file_deleted_in_the_cloud_lands_in_the_local_trash() {
     let Some(live) = Live::download_only("rod") else { return };

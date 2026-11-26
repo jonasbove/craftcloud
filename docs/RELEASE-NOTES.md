@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A file deleted in the cloud is kept in this computer's `.craftcloud/trash/` too.** Before, a two-way sync
+  removed it from the local folder for good (the cloud's trash still had it); now it goes into `.craftcloud/trash/`
+  in your CraftCloud folder, as it already did under download only, and a file you saved after the sync looked is
+  never removed at all. Empty that folder by hand when you like. Nothing needs care when updating: what the sync
+  skips, what it plans and what it sends to the cloud are unchanged, so devices need not be upgraded together.
 - **Seven colour themes** besides CraftCloud's own look, which stays the default: Catppuccin, Dracula, Gruvbox,
   Nord, One Dark, Solarized Light and Tokyo Night. Pick one in the desktop client's Settings › Theme, or on the
   web in the account menu (under your name; the browser remembers it). Themes with a light and a dark variant
