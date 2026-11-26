@@ -25,6 +25,10 @@ pub struct ClientSettings {
     pub device_name: String,
     /// Light, dark, or as the system is.
     pub appearance: Appearance,
+    /// The colour theme's id (`craft.nord`); empty for CraftCloud's own look, which a file from
+    /// before this field reads as. An id the client doesn't know shows CraftCloud's look. Always
+    /// written, since the settings store merges into the file.
+    pub theme: String,
     /// The kind of server (docs/WEBDAV-STORAGE.md § 11): CraftCloud's own unless said otherwise.
     /// A file from before this field reads as `oxicloud`. Always written, since the settings
     /// store merges into the file.
@@ -51,6 +55,7 @@ impl Default for ClientSettings {
             storage: Storage::default(),
             dav_url: String::new(),
             check_for_updates: true,
+            theme: String::new(),
         }
     }
 }
@@ -104,12 +109,14 @@ impl Storage {
 
 impl ClientSettings {
     /// What a sign-out on the desktop keeps: the server (to sign in again), this computer's
-    /// choices (its name, the appearance, checking for updates); the sync's folder and choices go.
+    /// choices (its name, the appearance and colour theme, checking for updates); the sync's
+    /// folder and choices go.
     pub fn after_sign_out(&self) -> Self {
         Self {
             server: self.server.clone(),
             device_name: self.device_name.clone(),
             appearance: self.appearance,
+            theme: self.theme.clone(),
             check_for_updates: self.check_for_updates,
             ..Self::default()
         }
@@ -527,9 +534,11 @@ mod tests {
             device_name: "Laptop".into(),
             appearance: Appearance::Dark,
             check_for_updates: false,
+            theme: "craft.nord".into(),
             ..ClientSettings::default()
         };
         let after = before.after_sign_out();
+        assert_eq!(after.theme, "craft.nord", "the colour theme is this computer's choice");
         assert_eq!(after.server, "https://cloud.example.org");
         assert_eq!((after.device_name.as_str(), after.appearance, after.check_for_updates), ("Laptop", Appearance::Dark, false));
         assert!(after.local_folder.is_empty() && after.excluded.is_empty() && !after.sync_root_files);
@@ -623,6 +632,19 @@ mod tests {
         assert_eq!(Storage::parse("nextcloud"), Some(Storage::Nextcloud));
         assert_eq!(Storage::parse("dropbox"), None);
         assert_eq!(serde_json::to_string(&Storage::Opencloud).unwrap(), "\"opencloud\"");
+    }
+
+    /// A settings file from before colour themes reads as CraftCloud's own look; a chosen theme
+    /// is written and read back, and always written (the settings store merges into the file).
+    #[test]
+    fn the_colour_theme_defaults_to_craftclouds_look_and_round_trips() {
+        let old: ClientSettings = serde_json::from_str(r#"{"server":"https://cloud.example.org","appearance":"dark"}"#).unwrap();
+        assert_eq!(old.theme, "");
+        assert!(serde_json::to_string(&old).unwrap().contains("\"theme\":\"\""));
+        let chosen = ClientSettings { theme: "craft.nord".into(), ..old };
+        let written = serde_json::to_string(&chosen).unwrap();
+        assert!(written.contains("\"theme\":\"craft.nord\""), "{written}");
+        assert_eq!(serde_json::from_str::<ClientSettings>(&written).unwrap(), chosen);
     }
 
     #[test]

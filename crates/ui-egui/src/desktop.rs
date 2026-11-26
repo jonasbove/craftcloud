@@ -198,6 +198,8 @@ pub struct DesktopApp<H: DesktopHost> {
     themed: Option<egui::Context>,
     /// The appearance last given to the context.
     applied: Option<Appearance>,
+    /// The colour theme last given to the context (its id; empty for CraftCloud's own look).
+    applied_theme: Option<String>,
     error: Option<String>,
     /// Something to know that isn't an error (after signing out: the server couldn't be told).
     note: Option<String>,
@@ -338,6 +340,7 @@ impl<H: DesktopHost> DesktopApp<H> {
             net: Net::default(),
             themed: None,
             applied: None,
+            applied_theme: None,
             error: None,
             note: None,
             logout_refresh: None,
@@ -369,6 +372,13 @@ impl<H: DesktopHost> DesktopApp<H> {
             crate::theme::install(ui.ctx());
             self.themed = Some(ui.ctx().clone());
             self.applied = None;
+            self.applied_theme = None;
+        }
+        // Only when it changes: CraftCloud's own look reads no theme file, and a colour theme is
+        // parsed and derived once, in memory (well under a millisecond per variant).
+        if self.applied_theme.as_deref() != Some(self.settings.theme.as_str()) {
+            crate::theme::set_palette(ui.ctx(), crate::themes::Palette::for_id(&self.settings.theme));
+            self.applied_theme = Some(self.settings.theme.clone());
         }
         if self.applied != Some(self.settings.appearance) {
             ui.ctx().set_theme(match self.settings.appearance {

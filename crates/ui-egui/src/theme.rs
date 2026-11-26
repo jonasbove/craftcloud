@@ -6,6 +6,8 @@
 
 use egui::{Color32, CornerRadius, Stroke};
 
+use crate::themes::Palette;
+
 const fn ink_alpha(rgb: u32, alpha: u8) -> Color32 {
     let [_, r, g, b] = rgb.to_be_bytes();
     Color32::from_rgba_unmultiplied_const(r, g, b, alpha)
@@ -77,8 +79,11 @@ impl Tokens {
         bad: hex(0xb3261e),
     };
 
+    /// The colours in use: the chosen theme's ([`set_palette`]) for the context's appearance,
+    /// CraftCloud's own ([`Tokens::DARK`], [`Tokens::LIGHT`]) until one is chosen.
     pub fn get(ctx: &egui::Context) -> Self {
-        if ctx.theme() == egui::Theme::Dark { Self::DARK } else { Self::LIGHT }
+        let palette = active(ctx);
+        if ctx.theme() == egui::Theme::Dark { palette.dark } else { palette.light }
     }
 
     pub fn hairline(&self) -> Stroke {
@@ -138,11 +143,31 @@ pub fn add_fallback_font(ctx: &egui::Context, name: &str, data: egui::FontData) 
     install_fonts(ctx);
 }
 
-/// Installs the launcher look on both of egui's appearances.
+/// The palette in use, kept in the context's data (so a later [`install`] keeps it).
+#[derive(Clone, Copy)]
+struct Active(Palette);
+
+fn active(ctx: &egui::Context) -> Palette {
+    ctx.data(|d| d.get_temp::<Active>(egui::Id::NULL)).map_or(Palette::CRAFTCLOUD, |a| a.0)
+}
+
+/// Installs the launcher look on both of egui's appearances, in the colours of the palette in
+/// use (CraftCloud's own until [`set_palette`] picks another).
 pub fn install(ctx: &egui::Context) {
     install_fonts(ctx);
-    ctx.style_mut_of(egui::Theme::Dark, |style| apply(style, &Tokens::DARK));
-    ctx.style_mut_of(egui::Theme::Light, |style| apply(style, &Tokens::LIGHT));
+    apply_palette(ctx, active(ctx));
+}
+
+/// Draws with `palette` from now on (a colour theme, or [`Palette::CRAFTCLOUD`]). Only colours
+/// change; the shapes, fonts and spacing stay the launcher's.
+pub fn set_palette(ctx: &egui::Context, palette: Palette) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::NULL, Active(palette)));
+    apply_palette(ctx, palette);
+}
+
+fn apply_palette(ctx: &egui::Context, palette: Palette) {
+    ctx.style_mut_of(egui::Theme::Dark, |style| apply(style, &palette.dark));
+    ctx.style_mut_of(egui::Theme::Light, |style| apply(style, &palette.light));
 }
 
 fn apply(style: &mut egui::Style, t: &Tokens) {
@@ -226,6 +251,28 @@ mod tests {
         frame(&ctx);
         assert!(ctx.fonts_mut(|f| f.has_glyphs(&id, "漢字かな한글")));
         assert!(ctx.fonts_mut(|f| f.has_glyphs(&egui::FontId::monospace(11.0), "漢字")));
+    }
+
+    /// Until a theme is chosen the colours are CraftCloud's own; a chosen palette survives the
+    /// theme being installed again, and going back gives CraftCloud's own look again.
+    #[test]
+    fn the_palette_in_use_is_kept_across_installs() {
+        use crate::themes::Palette;
+        let ctx = egui::Context::default();
+        super::install(&ctx);
+        ctx.set_theme(egui::Theme::Dark);
+        assert_eq!(Tokens::get(&ctx), Tokens::DARK);
+        ctx.set_theme(egui::Theme::Light);
+        assert_eq!(Tokens::get(&ctx), Tokens::LIGHT);
+        let nord = Palette::for_id("craft.nord");
+        super::set_palette(&ctx, nord);
+        super::install(&ctx);
+        assert_eq!(Tokens::get(&ctx), nord.light);
+        assert_eq!(ctx.style_of(egui::Theme::Light).visuals.panel_fill, nord.light.bg);
+        assert!(ctx.style_of(egui::Theme::Light).visuals.dark_mode, "Nord is dark only");
+        super::set_palette(&ctx, Palette::CRAFTCLOUD);
+        assert_eq!(Tokens::get(&ctx), Tokens::LIGHT);
+        assert_eq!(ctx.style_of(egui::Theme::Light).visuals.panel_fill, Tokens::LIGHT.bg);
     }
 
     /// Text colours over the background must meet WCAG AA (4.5:1) on both appearances.

@@ -85,7 +85,8 @@ server.
   <tr>
     <td width="33%" valign="top">
       <h3>🧭 Always at hand</h3>
-      Sync now, pause, open the folder or the web page from the tray. Starts at login if you want it to.
+      Sync now, pause, open the folder or the web page from the tray. Starts at login if you want it to. In
+      CraftCloud's own look or one of seven colour themes (Nord, Gruvbox, Catppuccin …), on the web too.
     </td>
     <td width="33%" valign="top">
       <h3>🌐 Craft apps in the browser (optional)</h3>

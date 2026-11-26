@@ -29,7 +29,7 @@ backup of anything you sync with it.
 | Desktop sign-in (device flow, keychain) | done | [ARCHITECTURE.md › Sync](ARCHITECTURE.md#sync) |
 | Single sign-on (OpenID Connect) | done; tested end to end with Keycloak | [OIDC.md](OIDC.md) |
 | Two-way sync folder, versions, conflict copies | done; hardening from testers' reports | [ARCHITECTURE.md › Sync](ARCHITECTURE.md#sync) |
-| Desktop client (tray, Activity, Folders, Settings, start at login, says when a new version is out) | done | [README](../README.md#downloads) |
+| Desktop client (tray, Activity, Folders, Settings, start at login, colour themes, says when a new version is out) | done | [README](../README.md#downloads) |
 | Web file browser (upload, download, rename, move, delete, trash, versions, details, recent, starred, search) | done | [design-notes/pass-2.md](design-notes/pass-2.md) |
 | Share links | done: public share page, CLI, the web's "Share link" sheet and "Your share links" page | [CLI.md › Share links](CLI.md#share-links) |
 | Admin (users, server settings, Craft web apps on or off) | done, on the web and in the CLI | [CLI.md](CLI.md#server-administration-owners-and-admins) |
@@ -116,6 +116,18 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: UI: seven colour themes besides CraftCloud's own look, on the desktop and the web: Catppuccin,
+  Dracula, Gruvbox, Nord, One Dark, Solarized Light and Tokyo Night. They are craft-libs `craft-design-theme`
+  files, parsed and derived by craft-libs' `craft-theme` (not craft-ui) and mapped onto CraftCloud's colour
+  tokens (`crates/ui-egui/src/themes.rs`); the theme decides the accent. A theme with light and dark follows
+  Appearance; a dark-only or light-only one says so and shows its one variant. Desktop: Settings › Theme, saved
+  with the client's settings (`theme`; empty is CraftCloud's look, which an older file reads as). Web: the account
+  menu, kept by the browser (localStorage). The files are proposed as craft-libs built-ins (storytold/craft-libs
+  #3701, #3704 to #3709) and embedded only while `craft_theme::builtins()` lacks their id; once the pin has them,
+  delete `crates/ui-egui/assets/themes/` and their NOTICE lines (a test fails to say so). The web build's wasm grows by
+  197 KiB raw (9.87 to 10.07 MB, +2.0 %) and 69 KiB with gzip -9 (4.40 to 4.47 MB, +1.6 %). Tests: every file parses and
+  resolves with no contrast warning, every variant's mapping keeps text at 4.5:1, the built-in rule with a fake
+  list, the setting's default and round trip, the desktop picker and the web menu.
 - 2026-11-26: Desktop: the client says when a new version is out. Once a day (from the first frame the window
   draws, never for a command, and not while it waits hidden in the tray) it reads the project's GitHub release
   list through craft-libs' `craft-update` (default features: check only, nothing downloaded or installed) and

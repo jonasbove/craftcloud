@@ -24,6 +24,8 @@ struct Picks {
     appearance: Option<Appearance>,
     /// "Check for updates" switched.
     updates: Option<bool>,
+    /// A colour theme's id, or empty for CraftCloud's own look.
+    theme: Option<String>,
     device_done: bool,
     open: Option<String>,
 }
@@ -87,6 +89,10 @@ impl<H: DesktopHost> DesktopApp<H> {
             self.settings.check_for_updates = on;
             self.save_prefs();
         }
+        if let Some(theme) = picks.theme {
+            self.settings.theme = theme;
+            self.save_prefs();
+        }
         if picks.device_done || (picks.close && self.device_changed()) {
             self.settings.device_name = self.device.trim().to_owned();
             self.save_prefs();
@@ -142,6 +148,7 @@ impl<H: DesktopHost> DesktopApp<H> {
         let paused = p.state == SyncState::Paused;
         let appearance = self.settings.appearance;
         let updates = self.settings.check_for_updates;
+        let theme = self.settings.theme.clone();
         chrome::panel(ui, "On this computer", |ui| {
             desk::setting_row(ui, "Start at login", |ui| picks.login = desk::off_on(ui, "Start at login", login, true));
             // Named for the state it is in, not as an on/off "Pause syncing" (whose "Off" read as a double negative).
@@ -153,9 +160,22 @@ impl<H: DesktopHost> DesktopApp<H> {
                 let current = all.iter().position(|a| *a == appearance).unwrap_or(0);
                 picks.appearance = desk::cells(ui, "Appearance", &["System", "Dark", "Light"], current, true, None).map(|i| all[i]);
             });
+            // CraftCloud's own look, then the colour themes; one with a single variant says so
+            // ("Nord (dark only)") and shows it whatever Appearance says.
+            desk::setting_row(ui, "Theme", |ui| picks.theme = theme_picker(ui, &theme));
             desk::setting_row(ui, "Check for updates", |ui| picks.updates = desk::off_on(ui, "Check for updates", updates, true));
         });
     }
+}
+
+/// The colour theme picker: returns the id chosen (empty for CraftCloud's own look).
+fn theme_picker(ui: &mut Ui, current: &str) -> Option<String> {
+    let themes = crate::themes::all();
+    let labels: Vec<String> = std::iter::once(crate::themes::CRAFTCLOUD_LOOK.to_owned()).chain(themes.iter().map(|t| t.label())).collect();
+    let options: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let at = themes.iter().position(|t| t.id == current).map_or(0, |i| i + 1);
+    crate::kit::picker(ui, "theme", at, &options, 230.0)
+        .map(|i| i.checked_sub(1).and_then(|i| themes.get(i)).map_or_else(String::new, |t| t.id.to_owned()))
 }
 
 /// The About panel; `new_version` is a newer release the update check found.

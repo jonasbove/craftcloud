@@ -181,6 +181,13 @@ What each screen shows:
 `good` (#3fd6b8, hue 168°) and `accent_ink` (#a9c48e, hue 90°, much less saturated) stay distinct; `good` is unchanged.
 The accent values live in `tools/lib.py` (`THEME`) and must match the code and the logo.
 
+**Colour themes** (not in the FigCraft file): besides these values, the desktop Settings › Theme and the web
+account menu offer seven craft-libs themes (Catppuccin, Dracula, Gruvbox, Nord, One Dark, Solarized Light, Tokyo
+Night). Only the colours change; shapes, type and spacing stay. Their tokens come from craft-theme and are mapped
+in `crates/ui-egui/src/themes.rs` (`map`: `bg` is the theme's `surface.panel`, `sunken` its `surface.sunken`, the
+accent the theme's own); the shots are `activity-theme-*`, `settings-theme-catppuccin`, `web-files-theme-*` and
+`web-account-menu-theme-gruvbox`.
+
 ## App names (`Apps` string variables)
 
 Files are named by their format, never by another vendor's product: a `.pptx` is a "PPTX presentation", a `.psd` a

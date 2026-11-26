@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Seven colour themes** besides CraftCloud's own look, which stays the default: Catppuccin, Dracula, Gruvbox,
+  Nord, One Dark, Solarized Light and Tokyo Night. Pick one in the desktop client's Settings › Theme, or on the
+  web in the account menu (under your name; the browser remembers it). Themes with a light and a dark variant
+  follow Appearance; the dark-only and light-only ones say so. Nothing needs care when updating: an older
+  settings file opens in CraftCloud's own look, and an older client ignores the new setting.
 - **The desktop client says when a new version is out.** Settings › About shows "CraftCloud <version> is out."
   with a link to its release notes; a copy from a package manager (deb, rpm, Arch, Flatpak, Homebrew, Nix) is told
   to update there. The client only tells: it never downloads or installs anything. To know, it asks

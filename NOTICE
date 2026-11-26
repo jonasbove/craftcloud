@@ -30,5 +30,25 @@ This project includes or adapts work from:
   4774b049ef57eee985e71bf3dd33a30110f3cd86, unmodified, with its licence in .github/gitmojis.LICENSE;
   the pull request workflow checks the gitmoji it adds to a title against it.
 
+- The colour themes in crates/ui-egui/assets/themes/ are craft-libs' `craft-design-theme` files
+  (https://github.com/storytold/craft-libs, MIT OR Apache-2.0), proposed there as built-in themes in
+  pull requests #3701, #3704, #3705, #3706, #3707, #3708 and #3709 and embedded here, unmodified, until
+  the pinned craft-libs ships them. Each holds a palette's hex values, assigned to theme seeds and pins
+  by craft-libs contributors; no other file content was taken. The palettes, each MIT:
+  - gruvbox.json: Gruvbox by Pavel Pertsev (morhetz), https://github.com/morhetz/gruvbox at
+    ef8864bb42bf244f0295d1c5a403b27e3d139695, colors/gruvbox.vim (README "MIT/X11", package.json "MIT").
+  - catppuccin.json: Catppuccin (Mocha and Latte), Copyright (c) 2021 Catppuccin,
+    https://github.com/catppuccin/palette at 07d02aa110ef9eb7e7427afca5c73ba9cf7f8ebd, palette.json.
+  - tokyo-night.json: Tokyo Night and Tokyo Night Light, Copyright (c) 2018-present Enkia,
+    https://github.com/enkia/tokyo-night-vscode-theme at 7c0f11eaef322f293621ca7befe462214b7ea468.
+  - nord.json: Nord, Copyright (c) 2016-present Sven Greb, https://github.com/nordtheme/nord at
+    1cef71605416a222e57225b544540ce0fcec18d4, src/nord.css.
+  - one-dark.json: One Dark, Copyright (c) 2014 and 2016 GitHub Inc., https://github.com/atom/atom at
+    1c3bd35ce238dc0491def9e1780d04748d8e18af, packages/one-dark-syntax and packages/one-dark-ui.
+  - dracula.json: Dracula, Copyright (c) 2023 Dracula Theme, https://github.com/dracula/dracula-theme at
+    8d33e5492b56740c4857c5ebe7c5d5ab4040caf1, README.md.
+  - solarized-light.json: Solarized Light, Copyright (c) 2011 Ethan Schoonover,
+    https://github.com/altercation/solarized at 62f656a02f93c5190a8753159e34b385588d5ff3, README.md.
+
 - Inter, Archivo and Geist Mono, SIL Open Font License 1.1; the licences are next to the font files
   in crates/ui-egui/assets/fonts/.
