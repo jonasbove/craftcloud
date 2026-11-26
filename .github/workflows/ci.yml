@@ -7,11 +7,17 @@ name: CI
 #
 # Linux only: private-repo minutes cost 2x on Windows and 10x on macOS; release.yml builds those on
 # tags and by hand.
+#
+# The nightly run is for `other-servers` alone (the live tests against Nextcloud, ownCloud, OpenCloud
+# and two plain WebDAV servers): the other jobs say `github.event_name != 'schedule'` and run as
+# they always did, on every pull request, every push to main and by hand.
 
 on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "17 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -32,6 +38,7 @@ env:
 jobs:
   gate:
     name: gate (ubuntu-24.04)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -56,6 +63,7 @@ jobs:
 
   web:
     name: web (ubuntu-24.04)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -86,6 +94,7 @@ jobs:
   # No image layer cache, as in release.yml's server-image (about 4 minutes on these runners).
   live:
     name: live sync tests (ubuntu-24.04)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -164,12 +173,231 @@ jobs:
           POSTGRES_PASSWORD: unused
         run: docker compose -p craftcloud-live down -v || true
 
+  # Whether this run is one `other-servers` is for. A built-in `paths` filter works on the whole
+  # workflow and would stop `gate` and `live` too, so the changed files are read here: a pull
+  # request's against its base (the checked-out merge commit's first parent), a push's against the
+  # commit main was at before. Nightly and by hand it always runs; when the files can't be read it
+  # runs too, never the other way round.
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      other-servers: ${{ steps.paths.outputs.other-servers }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Does this change touch the sync, its storage drivers or their live tests?
+        id: paths
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        # The pattern's names are prefixes on purpose: `…/src/sync` is sync.rs, the sync/ folder
+        # and any file that starts so. `run` stays true unless the changed files were read: a
+        # `git fetch` or `git diff` that fails (the commit before a forced push is gone, say)
+        # runs the job.
+        run: |
+          touched='^(crates/core/src/(storage|reconcile|names|sync|http)|crates/core/src/api/dav|crates/native/src/(storage|sync|session|http|experimental)|crates/native/tests/|apps/craftcloud/tests/|tests/other-servers/|\.github/workflows/ci\.yml$)'
+          run=true
+          files=""
+          case "$EVENT" in
+            pull_request)
+              if files="$(git diff --name-only HEAD^1 HEAD)"; then run=false; fi ;;
+            push)
+              if git fetch --quiet --depth=1 origin "$BEFORE" && files="$(git diff --name-only "$BEFORE" HEAD)"; then run=false; fi ;;
+          esac
+          if [ "$run" = false ] && printf '%s\n' "$files" | grep -Eq "$touched"; then run=true; fi
+          echo "other-servers=$run" >> "$GITHUB_OUTPUT"
+          echo "other-servers: $run ($EVENT)" >> "$GITHUB_STEP_SUMMARY"
+
+  # The same live tests against the other kinds of server the sync knows (docs/WEBDAV-STORAGE.md
+  # § 13): Nextcloud, ownCloud, OpenCloud, and two plain WebDAV servers, `rclone serve webdav`
+  # (download only expected) and Apache mod_dav (two-way expected). One matrix entry per service of
+  # tests/other-servers/compose.yaml (images pinned by digest, loopback only); only that entry's
+  # server is started. The suites assert the sync mode each server must get, so a server that got
+  # better or worse fails. CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1 is set for this job only (§ 16): nothing
+  # a person runs gets it from here.
+  # Runs when `changes` says so: on pull requests and pushes that touch the sync, the storage
+  # drivers, the live tests, the test servers or this file; nightly; and by hand.
+  other-servers:
+    name: other servers (${{ matrix.server }})
+    needs: changes
+    if: needs.changes.outputs.other-servers == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # An entry with `allowed_to_fail` reports its result without failing the run: Nextcloud's, which
+    # fails on most runs from the server answering 500 to a MOVE or PUT under load (WEBDAV-STORAGE.md
+    # § 13). The client already waits and tries such a move again; the entry shows when that changes.
+    continue-on-error: ${{ matrix.allowed_to_fail == true }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `ready`: the page that says the server's first-run install is done (the others have
+          # none). `mode`: what a plain WebDAV server must get; the known kinds' is in the suite.
+          - server: nextcloud
+            kind: nextcloud
+            allowed_to_fail: true
+            user: john
+            url: http://127.0.0.1:8111
+            dav: http://127.0.0.1:8111/remote.php/dav/files/john/
+            ready: http://127.0.0.1:8111/status.php
+            mode: ""
+          - server: owncloud
+            kind: owncloud
+            user: john
+            url: http://127.0.0.1:8112
+            dav: http://127.0.0.1:8112/remote.php/dav/files/john/
+            ready: http://127.0.0.1:8112/status.php
+            mode: ""
+          - server: opencloud
+            kind: opencloud
+            user: admin
+            url: http://127.0.0.1:8113
+            dav: http://127.0.0.1:8113/remote.php/dav/files/admin/
+            ready: ""
+            mode: ""
+          - server: rclone
+            kind: webdav
+            user: john
+            url: http://127.0.0.1:8114
+            dav: http://127.0.0.1:8114/
+            ready: ""
+            mode: download_only
+          - server: apache
+            kind: webdav
+            user: john
+            url: http://127.0.0.1:8115/dav
+            dav: http://127.0.0.1:8115/dav/
+            ready: ""
+            mode: two_way
+    env:
+      COMPOSE_FILE: tests/other-servers/compose.yaml
+      COMPOSE_PROJECT_NAME: craftcloud-others
+      CRAFTCLOUD_EXPERIMENTAL_WEBDAV: "1"
+      CRAFTCLOUD_TEST_KIND: ${{ matrix.kind }}
+      CRAFTCLOUD_TEST_MODE: ${{ matrix.mode }}
+      CRAFTCLOUD_TEST_SERVER: ${{ matrix.url }}
+      CRAFTCLOUD_TEST_USER: ${{ matrix.user }}
+      # The silent-connection test needs a short idle limit and is skipped without one.
+      CRAFTCLOUD_HTTP_IDLE_SECS: "5"
+      SERVER: ${{ matrix.server }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: A password for the test account
+        # One throwaway password for this entry's throwaway server; masked before it is kept, so
+        # it stays out of the log. The compose file asks for all four, whichever service starts.
+        run: |
+          pw="live-$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
+          echo "::add-mask::$pw"
+          {
+            echo "NC_PASS=$pw"
+            echo "OC_PASS=$pw"
+            echo "OPC_PASS=$pw"
+            echo "DAV_PASS=$pw"
+            echo "CRAFTCLOUD_TEST_PASSWORD=$pw"
+          } >> "$GITHUB_ENV"
+      - name: Start the server
+        # Before the build, so its first-run install runs while the tests compile.
+        run: docker compose up -d --quiet-pull "$SERVER"
+      - name: Linux build packages (egui/winit/wgpu headers, as craft-launcher)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # installs the toolchain named below
+        with:
+          toolchain: 1.100.0  # = rust-toolchain.toml
+      # The gate's cache (main's test builds); this job only reads it.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: gate
+          save-if: false
+      - name: Build the live tests
+        run: |
+          cargo test -p craftcloud --test cli_live --no-run
+          cargo test -p craftcloud-native --test live --no-run
+      - name: Wait for the server
+        # First the install (Nextcloud, ownCloud), asked without signing in, so no sign-in is
+        # tried against an account that isn't there yet; then the test account's own WebDAV
+        # folder must list (207). The password goes to curl in a file, never on a command line.
+        # A server that doesn't come up fails here, with its logs below: nothing is tried again.
+        env:
+          READY: ${{ matrix.ready }}
+          DAV: ${{ matrix.dav }}
+        run: |
+          if [ -n "$READY" ]; then
+            end=$(( $(date +%s) + 600 ))
+            until status="$(curl -s --max-time 10 "$READY")" &&
+              printf '%s' "$status" | grep -q '"installed":true' &&
+              printf '%s' "$status" | grep -q '"maintenance":false'; do
+              if [ "$(date +%s)" -ge "$end" ]; then
+                echo "::error::$SERVER didn't finish its install in 10 minutes"
+                exit 1
+              fi
+              sleep 3
+            done
+          fi
+          auth="$RUNNER_TEMP/dav-auth"
+          ( umask 077; printf 'user = "%s:%s"\n' "$CRAFTCLOUD_TEST_USER" "$CRAFTCLOUD_TEST_PASSWORD" > "$auth" )
+          end=$(( $(date +%s) + 300 ))
+          until code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 -K "$auth" -X PROPFIND -H 'Depth: 0' "$DAV")" && [ "$code" = 207 ]; do
+            if [ "$(date +%s)" -ge "$end" ]; then
+              rm -f "$auth"
+              echo "::error::$SERVER didn't list $DAV in 5 minutes (last answer: ${code:-none})"
+              exit 1
+            fi
+            sleep 3
+          done
+          rm -f "$auth"
+      # Both run, whatever the first one's result, as in `live`.
+      - name: Live tests of the command line (cli_live.rs)
+        id: cli
+        run: cargo test -p craftcloud --test cli_live -- --test-threads 1
+      - name: Live tests of the sync engine (live.rs)
+        if: ${{ !cancelled() && (steps.cli.outcome == 'success' || steps.cli.outcome == 'failure') }}
+        run: cargo test -p craftcloud-native --test live -- --test-threads 1
+      - name: Server logs
+        if: failure()
+        run: |
+          mkdir -p "$RUNNER_TEMP/server-logs"
+          docker compose logs --no-color "$SERVER" > "$RUNNER_TEMP/server-logs/$SERVER.log" 2>&1 || true
+          # Nextcloud's and ownCloud's own log says why a request answered 500; the container's
+          # output has only the web server's access log.
+          case "$SERVER" in
+            nextcloud) app_log=/var/www/html/data/nextcloud.log ;;
+            owncloud) app_log=/mnt/data/files/owncloud.log ;;
+            *) app_log="" ;;
+          esac
+          if [ -n "$app_log" ]; then
+            docker compose exec -T "$SERVER" cat "$app_log" > "$RUNNER_TEMP/server-logs/$SERVER-app.log" 2>/dev/null || true
+          fi
+          echo "::group::$SERVER"
+          tail -n 200 "$RUNNER_TEMP/server-logs/$SERVER.log"
+          echo "::endgroup::"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: other-servers-logs-${{ matrix.server }}
+          path: ${{ runner.temp }}/server-logs
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Stop the server
+        if: always()
+        # The compose file asks for the passwords even to stop; any value does when the step that
+        # makes them never ran.
+        run: |
+          export NC_PASS="${NC_PASS:-unused}" OC_PASS="${OC_PASS:-unused}" OPC_PASS="${OPC_PASS:-unused}" DAV_PASS="${DAV_PASS:-unused}"
+          docker compose down -v || true
+
   # Licences, RustSec advisories, bans and sources (deny.toml), as the Craft apps check them. The
   # sources check also stands in for their git-sources job: git dependencies only from storytold.
   # A new advisory can turn this red on an unrelated change: update the crate, or add an `ignore`
   # with its reason to deny.toml.
   deny:
     name: cargo deny
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
