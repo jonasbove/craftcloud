@@ -8,7 +8,7 @@
 > login stays in the tray on Windows and X11, and opens the window where there is no tray; an offline desktop window waits before asking who is signed in again; the
 > release checklist and the Release workflow check the Craft web app pins; an idle window uses next to no CPU; trace
 > logs leave out HTTP bodies and headers; a cloud file listed without an ETag is never trashed; the server scripts
-> need only sh and curl, no Python)
+> need only sh and curl, no Python; start at login from the Flatpak, through the Background portal)
 
 CraftCloud is a self-hosted cloud for the Craft apps: the unmodified OxiCloud server in a Docker image, CraftCloud's
 own web frontend (Rust, egui, WebAssembly), a desktop sync client with a command line, and a small admin service.
@@ -29,7 +29,7 @@ backup of anything you sync with it.
 | Desktop sign-in (device flow, keychain) | done | [ARCHITECTURE.md › Sync](ARCHITECTURE.md#sync) |
 | Single sign-on (OpenID Connect) | done; tested end to end with Keycloak | [OIDC.md](OIDC.md) |
 | Two-way sync folder, versions, conflict copies | done; hardening from testers' reports | [ARCHITECTURE.md › Sync](ARCHITECTURE.md#sync) |
-| Desktop client (tray, Activity, Folders, Settings, start at login, colour themes, says when a new version is out) | done | [README](../README.md#downloads) |
+| Desktop client (tray, Activity, Folders, Settings, start at login, colour themes, says when a new version is out) | done; start at login from the Flatpak through the Background portal, not yet tried on GNOME or KDE | [README](../README.md#downloads) |
 | Web file browser (upload, download, rename, move, delete, trash, versions, details, recent, starred, search) | done | [design-notes/pass-2.md](design-notes/pass-2.md) |
 | Share links | done: public share page, CLI, the web's "Share link" sheet and "Your share links" page | [CLI.md › Share links](CLI.md#share-links) |
 | Admin (users, server settings, Craft web apps on or off) | done, on the web and in the CLI | [CLI.md](CLI.md#server-administration-owners-and-admins) |
@@ -174,6 +174,16 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
   the first desktop-only app: `web = false` means no pins and no bridge, `fetch-apps` leaves it out of the `-apps`
   image and `bump-apps` passes it by. LoveCraft uses `files --app prosecraft-rs` and `save` for its Open from
   and Save to CraftCloud.
+- 2026-11-22: Desktop (Flatpak): **Settings › Start at login** works from the Flatpak. Inside the sandbox
+  (`/.flatpak-info` or `FLATPAK_ID`) the client asks the desktop through the XDG Background portal
+  (`RequestBackground`, `autostart`, the command line `craftcloud --hidden`) on a thread of its own, instead of
+  writing an entry into the sandbox's own config folder, which the session never read; the switch reads the
+  entry the portal writes in the host's `~/.config/autostart`, and a refusal, or a desktop whose portal has no
+  Background (Hyprland, Sway), is told in Settings with the `flatpak run … --hidden` line to add by hand. The
+  start-at-login program's choice (the `.AppImage` file, not its mount) is now unit-tested. The manifest's
+  finish-args are unchanged, with why each is needed (the tray registers without owning a bus name in a
+  sandbox; the sync folder stays `--filesystem=home`). Checked: unit and UI tests; the portal call against a
+  desktop without Background. Not yet on GNOME or KDE.
 - 2026-11-22: Web (M5, for 0.3.0): an **Apps** menu in the web header. When the server has the Craft web apps on
   and at least one switched on (`/craftcloud/config.json`'s `web_apps` and `enabled_apps`, now read by
   `core::RuntimeConfig`), a signed-in person gets APPS between FILES and ADMIN (the app-grid glyph alone on a
@@ -696,3 +706,4 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 | 2026-11-18 | minor | M9 pull request 4a: the generic WebDAV driver, `Credential`, `login --kind webdav`, exit code 10, behind the `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1` opt-in; OxiCloud syncs as before. |
 | 2026-11-18 | minor | M9 pull request 5: the live suite against Nextcloud, ownCloud, OpenCloud, `rclone serve webdav` and Apache `mod_dav` (`CRAFTCLOUD_TEST_KIND`, `tests/other-servers/`); the OxiCloud suite unchanged. |
 | 2026-11-18 | minor | M9 pull request 6: the Nextcloud profile (Login Flow v2, its trash and versions after the check's round trips, the checksum check on every write, Q13), behind the opt-in; OxiCloud syncs as before. |
+| 2026-11-22 | minor | Start at login from the Flatpak, through the Background portal. |

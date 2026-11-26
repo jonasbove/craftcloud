@@ -73,6 +73,11 @@ pub trait DesktopHost: Backend {
     fn local_file(&self, path: &str) -> Option<FileFacts>;
     fn starts_at_login(&self) -> bool;
     fn set_start_at_login(&mut self, on: bool) -> Result<(), String>;
+    /// What went wrong with a change of start at login that finished later (the Flatpak asks the
+    /// desktop, which may ask the person first), once.
+    fn start_at_login_problem(&mut self) -> Option<String> {
+        None
+    }
     fn open_folder(&mut self, path: &str);
     /// Opens `url` in the system browser, as [`Backend::open_url`], and says whether that
     /// worked, so the sign-in can tell the person to open the address themselves.

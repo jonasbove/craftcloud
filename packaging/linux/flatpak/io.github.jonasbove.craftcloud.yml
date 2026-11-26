@@ -25,17 +25,19 @@ finish-args:
   # The CraftCloud server, and the loopback control channel `craftcloud status|sync|…` talk to.
   - --share=network
   # The sync folder (~/CraftCloud by default, or any folder the person picks) lives in the home
-  # folder, and the Craft apps on the host open and save the files in it.
+  # folder, and the Craft apps on the host open and save the files in it. The sync needs a real
+  # path it can watch and walk on every cycle, which the document portal's per-file /run/user/…/doc
+  # paths are not, so the folder chooser's portal alone isn't enough. A sync folder outside the
+  # home folder needs `flatpak override --user --filesystem=<path> io.github.jonasbove.craftcloud`.
+  # It also lets Settings › Start at login read the host's ~/.config/autostart entry, which the
+  # Background portal writes (crates/native/src/login/flatpak.rs; the portal needs no finish-arg).
   - --filesystem=home
   # Sign-in tokens go to the keychain (Secret Service: GNOME Keyring, KWallet, KeePassXC).
   - --talk-name=org.freedesktop.secrets
-  # Tray icon (StatusNotifierItem) and desktop notifications, both over the session bus.
+  # Tray icon (StatusNotifierItem; tray-icon's ksni backend registers its unique bus name in a
+  # sandbox, so no --own-name) and desktop notifications, both over the session bus.
   - --talk-name=org.kde.StatusNotifierWatcher
   - --talk-name=org.freedesktop.Notifications
-  # Not yet: Settings › Start at login (crates/native/src/login.rs) writes its autostart entry into
-  # the sandbox's own config folder with the sandbox's path to the binary, which the host session
-  # never runs. Doing it from a Flatpak needs the Background portal (or `flatpak run` in Exec and
-  # --filesystem=xdg-config/autostart:create); until then, use the AppImage, deb or rpm for that.
 modules:
   - name: craftcloud
     buildsystem: simple

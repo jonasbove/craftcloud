@@ -2,6 +2,10 @@
 //! (MIT OR Apache-2.0, Copyright (c) 2026 ArtCraft Team):
 //!
 //! - Linux and the BSDs: an XDG autostart entry, `~/.config/autostart/io.github.jonasbove.craftcloud.desktop`.
+//!   From the Flatpak the sandbox's own config folder is not one the session reads, so there the
+//!   desktop is asked through the XDG Background portal (`RequestBackground` with `autostart`),
+//!   which writes an entry of that name in the host's autostart folder, with `flatpak run` in its
+//!   `Exec` ([`flatpak`]).
 //! - macOS: a LaunchAgent, `~/Library/LaunchAgents/io.github.jonasbove.craftcloud.plist`.
 //! - Windows: a value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 //!
@@ -10,6 +14,9 @@
 //! Versions before the app id was `io.github.jonasbove.craftcloud` wrote `craftcloud.desktop` and
 //! `com.craftcloud.client.plist`. Such an entry still counts as on, and turning the setting on or
 //! off removes it, so a start at login moves to the new name by itself and never starts twice.
+
+#[cfg(not(any(target_os = "macos", windows)))]
+mod flatpak;
 
 #[cfg(not(windows))]
 use std::path::Path;
@@ -25,11 +32,17 @@ const NAME: &str = "craftcloud";
 /// run), `craftcloud` from PATH when installed with Nix (a store path changes on every update and
 /// is garbage-collected later), else this executable.
 fn program() -> Result<PathBuf, String> {
-    if let Some(appimage) = std::env::var_os("APPIMAGE").filter(|v| !v.is_empty()) {
-        return Ok(PathBuf::from(appimage));
-    }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    Ok(stable(exe))
+    Ok(program_from(std::env::var_os("APPIMAGE"), exe))
+}
+
+/// [`program`], given `$APPIMAGE` and this executable. The AppImage runtime sets `$APPIMAGE` to the
+/// `.AppImage` file itself; `exe` is then inside its mount (`/tmp/.mount_…`), gone after the run.
+fn program_from(appimage: Option<std::ffi::OsString>, exe: PathBuf) -> PathBuf {
+    match appimage.filter(|v| !v.is_empty()) {
+        Some(appimage) => PathBuf::from(appimage),
+        None => stable(exe),
+    }
 }
 
 fn stable(exe: PathBuf) -> PathBuf {
@@ -68,6 +81,10 @@ fn entry_dir() -> Option<PathBuf> {
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
 pub fn is_enabled() -> bool {
+    #[cfg(not(any(target_os = "macos", windows)))]
+    if flatpak::inside() {
+        return flatpak::is_enabled();
+    }
     #[cfg(windows)]
     {
         winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER).open_subkey(RUN_KEY).and_then(|k| k.get_value::<String, _>("CraftCloud")).is_ok()
@@ -78,7 +95,14 @@ pub fn is_enabled() -> bool {
     }
 }
 
+/// Turns the start at login on or off. From the Flatpak this only asks the desktop, on a thread of
+/// its own (it may show the person a dialog first): [`is_enabled`] gives the wanted state until the
+/// answer is in, and [`take_problem`] what went wrong, if anything did.
 pub fn set_enabled(on: bool) -> Result<(), String> {
+    #[cfg(not(any(target_os = "macos", windows)))]
+    if flatpak::inside() {
+        return flatpak::set_enabled(on);
+    }
     #[cfg(windows)]
     {
         let (key, _) = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER).create_subkey(RUN_KEY).map_err(|e| e.to_string())?;
@@ -96,6 +120,19 @@ pub fn set_enabled(on: bool) -> Result<(), String> {
     {
         let dir = entry_dir().ok_or("no home folder")?;
         set_enabled_in(&dir, on, || program().map(|p| contents(&p)))
+    }
+}
+
+/// What went wrong with a change of the setting that finished in the background (the Flatpak's
+/// portal request), told once; `None` when nothing did, and always outside the Flatpak.
+pub fn take_problem() -> Option<String> {
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        flatpak::take_problem()
+    }
+    #[cfg(any(target_os = "macos", windows))]
+    {
+        None
     }
 }
 
@@ -149,8 +186,21 @@ fn contents(program: &Path) -> String {
 
 #[cfg(all(test, not(any(target_os = "macos", windows))))]
 mod tests {
-    use super::{ENTRY, OLD_ENTRY, contents, is_enabled_in, set_enabled_in, stable};
+    use super::{ENTRY, OLD_ENTRY, contents, is_enabled_in, program_from, set_enabled_in, stable};
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn an_appimage_starts_from_its_file_not_its_mount() {
+        let mounted = PathBuf::from("/tmp/.mount_CraftCabc123/usr/bin/craftcloud");
+        assert_eq!(
+            program_from(Some("/home/john/Apps/CraftCloud.AppImage".into()), mounted.clone()),
+            PathBuf::from("/home/john/Apps/CraftCloud.AppImage")
+        );
+        // An empty $APPIMAGE is no AppImage.
+        assert_eq!(program_from(Some("".into()), mounted.clone()), mounted);
+        assert_eq!(program_from(None, PathBuf::from("/usr/bin/craftcloud")), PathBuf::from("/usr/bin/craftcloud"));
+        assert_eq!(program_from(None, PathBuf::from("/nix/store/abc-craftcloud/bin/craftcloud")), PathBuf::from("craftcloud"));
+    }
 
     #[test]
     fn nix_installs_start_from_path() {

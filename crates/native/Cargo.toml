@@ -42,6 +42,11 @@ skrifa = "0.44"
 # Start at login (HKCU Run key), as craft-launcher.
 winreg = "0.55"
 
+[target.'cfg(not(any(target_os = "macos", windows)))'.dependencies]
+# Start at login from the Flatpak (the XDG Background portal): the zbus the desktop client's tray
+# and notifications already use.
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+
 [dev-dependencies]
 tempfile = "3"
 # The scripted WebDAV server the probe tests put behind `fake_server`.

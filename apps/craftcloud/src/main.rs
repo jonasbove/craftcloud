@@ -255,6 +255,10 @@ impl DesktopHost for NativeHost {
         craftcloud_native::login::set_enabled(on)
     }
 
+    fn start_at_login_problem(&mut self) -> Option<String> {
+        craftcloud_native::login::take_problem()
+    }
+
     fn open_browser(&mut self, url: &str) -> bool {
         craftcloud_native::open_url(url).map_err(|e| log::warn!("couldn't open the browser: {e}")).is_ok()
     }
