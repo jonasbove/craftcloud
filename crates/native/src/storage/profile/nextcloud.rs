@@ -181,6 +181,22 @@ impl ServerProfile for Nextcloud {
         }
     }
 
+    /// `DELETE /remote.php/dav/trashbin/<user>/trash/<name>`, only for a name a fresh listing of
+    /// the trash bin gives: the person's own `trash rm` or `trash empty`, never anything else.
+    fn trash_purge(&self, transport: &mut dyn Transport, item: &TrashItem) -> Result<(), StorageError> {
+        let root = Base::parse(&self.trashbin())?;
+        let listed = nc::parse_trashbin(&transport.call(&nc::trashbin_list(root.url()))?, &root)?;
+        let Some(t) = listed.iter().find(|t| t.name == item.id) else {
+            return Err(StorageError::NotFound(format!("{} isn't in the trash", item.path)));
+        };
+        let resp = transport.call(&nc::trashbin_delete(root.url(), &t.name, t.is_folder))?;
+        match resp.status {
+            404 => Err(StorageError::NotFound(format!("{} isn't in the trash", item.path))),
+            _ if resp.is_success() => Ok(()),
+            s => Err(StorageError::Failed(format!("deleting {} from the trash: the server answered {s}", item.path))),
+        }
+    }
+
     fn list_versions(&self, transport: &mut dyn Transport, base: &Base, path: &str) -> Result<Vec<Version>, StorageError> {
         let (id, modified) = match self.file_id(transport, base, path) {
             // A file that isn't there has no versions to list (the server keeps them by id).
@@ -445,7 +461,7 @@ mod tests {
         assert!(seen.iter().all(|r| !(r.method == "DELETE" && !r.path.starts_with(BASE_PATH))), "a DELETE outside the files base: {seen:?}");
         assert!(seen.iter().any(|r| r.method == "PROPFIND" && r.path.contains("/versions/john/versions/")));
         let dav = dav.lock().unwrap();
-        assert_eq!(dav.trash_purged, 0, "the person's trash is never purged");
+        assert_eq!(dav.trash_purged, 0, "the check never purges the person's trash");
         assert!(
             dav.trashed().iter().any(|(_, from)| from.starts_with(".craftcloud/probe/")),
             "the probe folder is in the server's trash: {:?}",
@@ -580,7 +596,7 @@ mod tests {
         s.sweep_trash().unwrap();
         assert_eq!(server.seen().len(), before, "the server keeps its own trash: nothing swept");
         let on_trashbin = server.seen().iter().filter(|r| r.path.contains("/trashbin/")).map(|r| r.method.clone()).collect::<Vec<_>>();
-        assert_eq!(on_trashbin, ["PROPFIND", "MOVE", "MOVE"], "never a DELETE on the trash bin");
+        assert_eq!(on_trashbin, ["PROPFIND", "MOVE", "MOVE"], "the sync never sends a DELETE to the trash bin");
     }
 
     /// With the server's versions confirmed, `keep_version` and `move_versions` send nothing; the
@@ -668,6 +684,57 @@ mod tests {
         assert!(seen.iter().all(|r| !(r.method == "MOVE" && r.path.contains("/versions/"))), "never the server's restore MOVE: {seen:?}");
         let last_put = seen.iter().rev().find(|r| r.method == "PUT").unwrap();
         assert!(last_put.header("if-match").is_some(), "the restore's PUT carried its guard: {last_put:?}");
+    }
+
+    /// `trash rm` and `trash empty` on the server's own trash (§ 16): on the person's command an
+    /// item goes for good by a `DELETE` on the trash bin, only for a name a fresh listing gives,
+    /// and nothing under the files base is ever deleted by it. The check on connect still can't
+    /// (its runner refuses a `DELETE` there).
+    #[test]
+    fn the_persons_trash_rm_and_empty_delete_only_in_the_trash_bin() {
+        let (server, dav) = nextcloud(Flags::default());
+        {
+            let mut dav = dav.lock().unwrap();
+            dav.add_folder("Docs/Sub", None);
+            for name in ["a.txt", "b.txt", "keep.txt", "Sub/c.txt"] {
+                dav.add_file(&format!("Docs/{name}"), b"abc");
+            }
+        }
+        let mut s = driver(&server);
+        for name in ["a.txt", "b.txt"] {
+            let etag = s.list("Docs").unwrap().into_iter().find(|e| e.path == format!("Docs/{name}")).unwrap().etag.unwrap();
+            assert_eq!(s.trash(&format!("Docs/{name}"), TrashGuard::File { etag }).unwrap(), Trashed::Done);
+        }
+        let c = s.list("Docs/Sub").unwrap().into_iter().next().unwrap().etag.unwrap();
+        assert_eq!(s.trash("Docs/Sub", TrashGuard::Folder { files: vec![("Docs/Sub/c.txt".into(), c)] }).unwrap(), Trashed::Done);
+        let items = s.trash_list().unwrap();
+        assert_eq!(items.len(), 3);
+        let before = server.seen().len();
+        s.purge_server_trash_item(&items[0]).unwrap();
+        assert_eq!(dav.lock().unwrap().trashed().iter().map(|(_, from)| from.as_str()).collect::<Vec<_>>(), ["Docs/b.txt", "Docs/Sub"]);
+        // Gone already, a made-up name, or a path under the files base: nothing is sent for it.
+        assert!(matches!(s.purge_server_trash_item(&items[0]).unwrap_err(), StorageError::NotFound(_)));
+        let made_up = TrashItem { id: "../../files/john/Docs/keep.txt".into(), path: "Docs/keep.txt".into(), trashed_at: String::new() };
+        assert!(matches!(s.purge_server_trash_item(&made_up).unwrap_err(), StorageError::NotFound(_)));
+        let own = TrashItem { id: ".craftcloud/trash/20261122T100000Z-Laptop/Docs/keep.txt".into(), ..made_up.clone() };
+        assert!(s.purge_server_trash_item(&own).is_err(), "CraftCloud's own trash goes through purge_own");
+        s.empty_server_trash().unwrap();
+        {
+            let dav = dav.lock().unwrap();
+            assert!(dav.trashed().is_empty());
+            assert_eq!(dav.trash_purged, 3);
+            assert_eq!(dav.body("Docs/keep.txt"), Some(b"abc".as_slice()), "nothing under the files base was touched");
+        }
+        let seen = server.seen();
+        let deletes: Vec<&str> = seen[before..].iter().filter(|r| r.method == "DELETE").map(|r| r.path.as_str()).collect();
+        assert_eq!(deletes.len(), 3, "{deletes:?}");
+        assert!(deletes.iter().all(|p| p.starts_with("/remote.php/dav/trashbin/john/trash/")), "only the trash bin's own items: {deletes:?}");
+        assert!(seen[before..].iter().all(|r| matches!(r.method.as_str(), "PROPFIND" | "DELETE")), "{:?}", &seen[before..]);
+        // Without the server's trash confirmed, neither call sends anything.
+        let mut unconfirmed = WebDav::new(session(&server), two_way(), "Laptop").with_profile(profile(&server));
+        let n = server.seen().len();
+        assert!(unconfirmed.empty_server_trash().is_err() && unconfirmed.purge_server_trash_item(&items[1]).is_err());
+        assert_eq!(server.seen().len(), n);
     }
 
     /// Free space comes from the OCS user endpoint: a count, or no limit (`-3`).

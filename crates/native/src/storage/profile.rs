@@ -6,10 +6,11 @@
 //! versions only where that check confirmed them (`Trash::Server`, `Versions::Server`).
 //!
 //! [`ServerProfile`] is the hook the generic driver calls; [`Generic`] is the profile of a server
-//! nobody knows (every method its default), [`nextcloud::Nextcloud`] the first known one. The
-//! ownCloud and OpenCloud profiles plug in the same way.
+//! nobody knows (every method its default), [`nextcloud::Nextcloud`] the first known one,
+//! [`owncloud::Owncloud`] the second. The OpenCloud profile plugs in the same way.
 
 pub mod nextcloud;
+pub mod owncloud;
 
 use craftcloud_core::api::versions::Version;
 use craftcloud_core::http::HttpRequest;
@@ -58,6 +59,27 @@ pub trait ServerProfile: Send {
         Err(StorageError::Failed(format!("restoring {} from this server's trash isn't known", item.path)))
     }
 
+    /// Deletes one item of the server's own trash **for good**: only ever on the person's own
+    /// command (`craftcloud trash rm`, § 16), never by the engine, the check on connect or any
+    /// retention. A profile sends the `DELETE` only for an item a fresh listing of the trash
+    /// names, on the trash's own address, never under the files base.
+    fn trash_purge(&self, _transport: &mut dyn Transport, item: &TrashItem) -> Result<(), StorageError> {
+        Err(StorageError::Failed(format!("deleting {} from this server's trash isn't known", item.path)))
+    }
+
+    /// Empties the server's own trash for good, on the person's own command (`craftcloud trash
+    /// empty`): every item a fresh listing names, one [`Self::trash_purge`] each.
+    fn trash_empty(&self, transport: &mut dyn Transport) -> Result<(), StorageError> {
+        for item in self.trash_list(transport)? {
+            match self.trash_purge(transport, &item) {
+                // Gone meanwhile (inside a folder purged just before, or by someone else).
+                Ok(()) | Err(StorageError::NotFound(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
     /// The server's own earlier versions of `path` (only asked where the check on connect
     /// confirmed `Versions::Server`), newest first.
     fn list_versions(&self, _transport: &mut dyn Transport, _base: &Base, path: &str) -> Result<Vec<Version>, StorageError> {
@@ -92,11 +114,12 @@ impl ServerProfile for Generic {
 
 /// The profile for a kind of server on `base` (the WebDAV base the settings hold): a known server
 /// gets its profile, any other the generic one. `None` when the base isn't one that kind of server
-/// has (a Nextcloud base must be `…/remote.php/dav/files/<user id>/`).
+/// has (a Nextcloud or ownCloud base must be `…/remote.php/dav/files/<user id>/`).
 pub fn for_kind(kind: Storage, base: &Base) -> Option<Box<dyn ServerProfile>> {
     match kind {
         Storage::Nextcloud => nextcloud::Nextcloud::from_base(base).map(|p| Box::new(p) as Box<dyn ServerProfile>),
-        Storage::Oxicloud | Storage::Owncloud | Storage::Opencloud | Storage::Webdav => Some(Box::new(Generic)),
+        Storage::Owncloud => owncloud::Owncloud::from_base(base).map(|p| Box::new(p) as Box<dyn ServerProfile>),
+        Storage::Oxicloud | Storage::Opencloud | Storage::Webdav => Some(Box::new(Generic)),
     }
 }
 
@@ -108,8 +131,10 @@ mod tests {
     fn a_known_kind_gets_its_profile_and_the_rest_the_generic_one() {
         let nc = Base::parse("https://cloud.example.org/remote.php/dav/files/john/").unwrap();
         assert_eq!(for_kind(Storage::Nextcloud, &nc).map(|p| p.kind()), Some(Storage::Nextcloud));
+        assert_eq!(for_kind(Storage::Owncloud, &nc).map(|p| p.kind()), Some(Storage::Owncloud), "the same base shape");
         assert_eq!(for_kind(Storage::Webdav, &nc).map(|p| p.kind()), Some(Storage::Webdav));
         assert!(for_kind(Storage::Nextcloud, &Base::parse("https://nas.example.org/dav/").unwrap()).is_none(), "not a Nextcloud base");
+        assert!(for_kind(Storage::Owncloud, &Base::parse("https://nas.example.org/dav/").unwrap()).is_none(), "not an ownCloud base");
         let generic = Generic;
         assert!(generic.probe_checks().is_none() && generic.verify_writes().is_none());
     }

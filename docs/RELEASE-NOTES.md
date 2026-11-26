@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **ownCloud, experimental and off.** With `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, `craftcloud login cloud.example.org
+  --kind owncloud --user NAME` signs in to an ownCloud 10 with an app password you make in its Settings › Security ›
+  "App passwords / tokens" (your account password never reaches CraftCloud; ownCloud has no browser sign-in a client
+  can use without an admin), and the sync uses ownCloud's own trash bin and versions once the check on connect has
+  confirmed them: a delete lands in the trash bin, `trash ls|restore` and `versions` work on them, and `trash
+  rm|empty` delete from it for good on your command (the sync and the check on connect never do). ownCloud reuses a
+  file's version tag when it is overwritten within the same second as the write before it (and keeps only one
+  version for two such writes), so every upload carries its checksum, which ownCloud checks, and is read back; a
+  write by someone else in that second is kept as a conflict copy, never overwritten. `logout` forgets the app
+  password and says where to revoke it. **A new kind of server: upgrade all devices together.** Every device that
+  syncs an account on an ownCloud must run this version or later: no earlier CraftCloud can sync with one (a generic
+  WebDAV sign-in to an ownCloud, made with an earlier build of this opt-in, keeps its client trash in
+  `.craftcloud/trash/`; sign in again with `--kind owncloud`).
 - **Seven colour themes** besides CraftCloud's own look, which stays the default: Catppuccin, Dracula, Gruvbox,
   Nord, One Dark, Solarized Light and Tokyo Night. Pick one in the desktop client's Settings › Theme, or on the
   web in the account menu (under your name; the browser remembers it). Themes with a light and a dark variant
@@ -57,7 +70,7 @@
   for this computer; your account password never reaches CraftCloud; `--user NAME` takes an app password you made
   in Settings › Security instead), and the sync uses Nextcloud's own trash and versions once the check on connect
   has confirmed them: a delete lands in Nextcloud's trash bin, `trash ls|restore` and `versions` work on them, and
-  `trash rm|empty` answer "not available on this server" (CraftCloud never purges a person's trash). Nextcloud
+  `trash rm|empty` delete from it for good on your command (the sync and the check on connect never do). Nextcloud
   reuses a file's version tag when it is overwritten within the same second as the write before it, so every
   upload carries its checksum and is read back; a write by someone else in that second is kept as a conflict copy,
   never overwritten. `logout` deletes the app password on the server. **A new kind of server: upgrade all devices

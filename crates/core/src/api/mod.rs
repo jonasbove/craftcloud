@@ -23,6 +23,7 @@ pub mod files;
 pub mod folders;
 pub mod nextcloud;
 pub mod oidc;
+pub mod owncloud;
 pub mod resources;
 pub mod search;
 pub mod shares;

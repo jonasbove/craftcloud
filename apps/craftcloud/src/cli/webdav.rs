@@ -371,16 +371,12 @@ fn entry_folder(id: &str) -> Option<OwnPath> {
     OwnPath::new(&format!("{}/{entry}", dav::TRASH_DIR))
 }
 
-/// What `trash rm` and `trash empty` say on a server with a trash of its own (Nextcloud): purging
-/// the person's trash is a permanent delete outside `.craftcloud/`, which CraftCloud never sends
-/// (docs/WEBDAV-STORAGE.md § 16, Q8).
-const SERVER_TRASH_KEPT: &str = "deleting from this server's own trash for good (empty it on the server's web page)";
-
 /// `trash ls|restore|rm|empty` on another WebDAV server, through the storage trait
 /// (docs/WEBDAV-STORAGE.md § 11): the server's own trash where the check on connect confirmed it
 /// (Nextcloud), else CraftCloud's own in `.craftcloud/trash/` on the server. `ls` reads; the rest
-/// write, so they need two-way sync (`webdav_for_writes`). `rm` and `empty` purge CraftCloud's
-/// trash only, never a server's own.
+/// write, so they need two-way sync (`webdav_for_writes`). `rm` and `empty` delete for good, on the
+/// person's own command: CraftCloud's trash through `purge_own`, a server's own through its
+/// profile (§ 16; never by the engine, the check on connect or retention).
 pub fn trash(ctx: &Ctx, cmd: TrashCmd) -> Result<()> {
     match cmd {
         TrashCmd::Ls { all } => {
@@ -418,11 +414,14 @@ pub fn trash(ctx: &Ctx, cmd: TrashCmd) -> Result<()> {
         }
         TrashCmd::Rm { item } => {
             let (mut storage, _) = ctx.webdav_for_writes()?;
-            if storage.capabilities().trash == Trash::Server {
-                return Err(CliError::unsupported(SERVER_TRASH_KEPT));
-            }
             let all = storage.trash_list().map_err(cli)?;
             let found = pick(&all, &item)?.clone();
+            // The server's own trash: the person asked, so the item goes from there for good
+            // (docs/WEBDAV-STORAGE.md § 16), as `trash rm` does on CraftCloud's server.
+            if storage.capabilities().trash == Trash::Server {
+                storage.purge_server_trash_item(&found).map_err(cli)?;
+                return done(ctx, json!({"deleted": found.path, "id": found.id}), &format!("Deleted {} for good", found.path));
+            }
             let entry = entry_folder(&found.id).ok_or_else(|| CliError::error(format!("{}: not a trash item", found.id)))?;
             storage.purge_own(&entry).map_err(cli)?;
             done(ctx, json!({"deleted": found.path, "id": found.id}), &format!("Deleted {} for good", found.path))
@@ -430,11 +429,13 @@ pub fn trash(ctx: &Ctx, cmd: TrashCmd) -> Result<()> {
         TrashCmd::Empty { yes } => {
             // The mode first: on a download-only server the answer is exit 10, not a question.
             let (mut storage, _) = ctx.webdav_for_writes()?;
-            if storage.capabilities().trash == Trash::Server {
-                return Err(CliError::unsupported(SERVER_TRASH_KEPT));
-            }
             if !yes {
                 confirm("Delete everything in the trash for good?")?;
+            }
+            // The server's own trash: emptied there, on the person's word (§ 16).
+            if storage.capabilities().trash == Trash::Server {
+                storage.empty_server_trash().map_err(cli)?;
+                return done(ctx, json!({"emptied": true}), "The trash is empty.");
             }
             let entries = match storage.list(dav::TRASH_DIR) {
                 Ok(entries) => entries,

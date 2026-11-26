@@ -305,11 +305,11 @@ A profile is small: it knows where things are, never what they guarantee.
 
 | | OxiCloud | Nextcloud | ownCloud | OpenCloud | Other WebDAV |
 |---|---|---|---|---|---|
-| Detected by | `GET /api/auth/status` | `GET /status.php` (`productname`) | `GET /status.php` | its well-known config | the person chooses it |
+| Detected by | `GET /api/auth/status` | `GET /status.php` (`productname`) | `GET /status.php` (`productname` "ownCloud") | its well-known config | the person chooses it |
 | WebDAV base | `/webdav/` | `/remote.php/dav/files/<user id>/` | `/remote.php/dav/files/<user id>/` | to verify (personal space URL) | the URL the person gives |
 | User id | from the token | `current-user-principal` (the login name can differ) | `current-user-principal` | to verify | from the URL |
-| Trash | REST (today) | WebDAV trashbin | WebDAV trashbin | spaces trash | client |
-| Versions | client | server, by file id | server, by file id | server, by file id | client |
+| Trash | REST (today) | WebDAV trashbin (`trashbin/<user id>/trash/`, restore to `restore/<name>`) | WebDAV trash bin (`trash-bin/<user id>/`, items by file id, restore by `MOVE` to the original path) | spaces trash | client |
+| Versions | client | server, by file id (`versions/<user id>/versions/<file id>/`) | server, by file id (`meta/<file id>/v/`; a restore reads the version and writes it with a guarded `PUT`) | server, by file id | client |
 | Quota | REST | OCS user endpoint | WebDAV props | WebDAV props | WebDAV props, else unknown |
 | Sign-in | device flow | Login Flow v2 | app password | OIDC (to verify) | app password |
 
@@ -681,8 +681,8 @@ and `profile/nextcloud.rs`, `crates/native/src/storage/{webdav,probe}.rs`, `apps
   server until row 10.
 - **The command line** on Nextcloud: the same commands as on another WebDAV server, through the trait; `trash ls`
   and `trash restore` show and restore the server's own trash, `versions` and `versions … restore` the server's own
-  versions; `trash rm` and `trash empty` answer "not available on this server" (code 10): purging a person's trash is
-  a permanent delete outside `.craftcloud/`, which CraftCloud never sends (Q8). `server check` says the kind and the
+  versions; `trash rm` and `trash empty` answered "not available on this server" (code 10) as first built; since pull
+  request 7 they delete from the server's own trash on the person's command (Q14). `server check` says the kind and the
   server's version, and runs the profile's steps 16 and 17.
 - **The scripted server** answers like Nextcloud with `Flags::nextcloud` (`status.php`, OCS, the Login Flow, the
   principal, a trash bin that every `DELETE` lands in, versions kept on every overwrite, 404 for a missing parent),
@@ -701,6 +701,67 @@ and `profile/nextcloud.rs`, `crates/native/src/storage/{webdav,probe}.rs`, `apps
   so renames pair by ETag as before, and the live test checks the folder's id stays); the desktop's sign-in (row
   10); the client-trash entries a run of the generic driver may have left in a Nextcloud drive, which the profile's
   `trash ls` doesn't list (`trash restore` still takes them by id).
+
+As built (pull request 7, § 14's row 7; `crates/core/src/api/owncloud.rs`, `crates/native/src/storage/profile/owncloud.rs`,
+`crates/core/src/storage/probe.rs` and `probe/fake.rs`, `crates/native/src/storage/probe.rs`, `apps/craftcloud/src/cli/{account,remote}.rs`;
+measured against ownCloud 10.15.3 on 2026-11-18, the answers recorded in `crates/core/tests/fixtures/owncloud-10.15/`):
+
+- **ownCloud's profile** plugs into pull request 6's hook, the same shape as Nextcloud's, and knows: the files base
+  `/remote.php/dav/files/<user id>/` (the user id from `current-user-principal`, the same request as Nextcloud's);
+  `status.php` for detection and the version string (`productname` "ownCloud"; one more product for the parser);
+  the trash bin at `/remote.php/dav/trash-bin/<user id>/` (Nextcloud's `trashbin/…/trash/` path answers 404), its
+  items named by the **file id** they had (a folder with a trailing slash) with `oc:trashbin-original-filename`,
+  `oc:trashbin-original-location` and `oc:trashbin-delete-timestamp`, a `GET` of an item answering 403 (only
+  listings go there); a restore as a **`MOVE` of the item to its original path under the files base** with
+  `Overwrite: F` (honoured: 412 onto a taken name and the file untouched, so a taken name gets
+  `names::restored_name`; without the header the server overwrites; a missing parent answers 409, so the parents are
+  made first; Nextcloud's `restore/` shape answers 409); versions at `/remote.php/dav/meta/<file id>/v/<seconds>`,
+  the current file **not** among them (so step 17 lists before and after the overwrite and needs one more); a
+  version restored as on Nextcloud, by the generic driver's guarded path (the file's current ETag, a `GET` of the
+  version's bytes at `meta/<file id>/v/<seconds>`, a `PUT` with `If-Match` and the checksum check; a 412 is
+  "changed meanwhile, nothing restored", exit code 5; the server keeps the replaced file as a version itself) and
+  only for a stamp a fresh listing names. ownCloud's own restore, a `COPY` of the version over the file with
+  `Overwrite: T`, is never sent: it has no precondition on the file it replaces, and since two writes within one
+  second keep only one version (UPSTREAM.md G1), a write landing just before it could be lost for good; the quota from WebDAV's `quota-available-bytes` on the
+  base, `-3` read as no limit. `oc:checksums` (SHA1, MD5, ADLER32) are computed by the server and listed for every
+  file, and an `OC-Checksum` sent with a `PUT` is checked against the bytes received (400 and nothing written on a
+  mismatch); `Depth: infinity` answers 412 and a `PUT` into a missing folder 409, both recorded by the probe as
+  before. **The probe on the trash root** gained one general hook for this: a known-server check's `Request` may
+  say its destination is under the files base (`destination_under_base`), and the runner's `guarded` then allows a
+  `MOVE` only of an item right under the root to exactly the cloud path the server said it came from, inside the
+  probe's own folder, with `Overwrite: F` (measured: ownCloud moves a trashed item to **any** path under the files
+  base, so the guard matters); a `DELETE` there stays refused (Q8).
+- **Sign-in** is an app password the person makes in Settings › Security › "App passwords / tokens" and pastes in:
+  `craftcloud login <server> --kind owncloud --user NAME` (the password from `CRAFTCLOUD_APP_PASSWORD` or a prompt,
+  never an argument; without `--user` the command says where to make one). ownCloud 10 has no browser sign-in a
+  third-party client can use without an admin (§ 10: OAuth2 is an admin's app, a bonus for later). Without
+  `--kind`, and with the opt-in, a server whose `status.php` says ownCloud is signed in to as one. `logout` forgets
+  the password and says where to revoke it (ownCloud 10 has no call to end an app password from the client).
+- **The checksum check (Q13)** is pull request 6's, behind the profile's "verify writes by checksum": every `PUT`
+  carries `OC-Checksum: SHA1`, which ownCloud verifies, and the read-back must list it. Measured on 10.15.3: three
+  writes right behind each other shared one ETag for the two within the same second (as pull request 3 saw), and
+  **the version slot named by that second kept only the later bytes**: the earlier bytes' version is lost
+  (UPSTREAM.md G1; Nextcloud leaves no version at all, E1). The scripted server's ownCloud flavour (`Flags::owncloud`)
+  lists a checksum for every file, so the driver and engine tests show the other client's write landing silently
+  without the check and as a conflict copy with it, and the engine's request log of a cycle over the profile (every
+  `PUT` with its checksum and one read-back, no `COPY`, the delete a `DELETE` with `If-Match` into the server's
+  trash, nothing of CraftCloud's own on the server). Nothing in the engine changed: OxiCloud's golden logs stand.
+- **The command line** on ownCloud: the same commands as on Nextcloud, through the trait; `trash ls` lists the
+  server's trash by original path (the id is the file id), `trash restore` puts an item back by `MOVE` (`--as PATH`
+  restores elsewhere, which ownCloud allows); `versions` and `versions … restore` are the server's by file id;
+  `trash rm` and `trash empty` delete from the trash bin for good (below); `server check` says "ownCloud 10.15.3.0" and runs steps 16 and 17.
+  The live suite's cleanup on ownCloud now reads the trash bin through the profile (pull request 5's cleanup used
+  Nextcloud's path, which 404s there, so a run on ownCloud left its folders in the server's trash).
+- **`trash rm` and `trash empty` on a server's own trash (Q14, Jonas, 2026-11-22), for Nextcloud too.** The
+  person asked, so the item goes for good, as on CraftCloud's server: `ServerProfile::trash_purge` sends one
+  `DELETE` on the trash's own address (Nextcloud: `trashbin/<user>/trash/<name>`; ownCloud: `trash-bin/<user>/<id>`),
+  only for an item a fresh listing of the trash names, and `trash_empty` does that for every listed item. Only the
+  command line's two commands reach them (`WebDav::purge_server_trash_item`, `empty_server_trash`, which refuse
+  unless the check confirmed the server's trash); `trash empty` asks first unless `--yes`. The engine, the retention
+  sweep and the check on connect never do: the probe's runner still refuses any `DELETE` on a trash root (Q8).
+- **Left as is:** the generic driver's `upload` reads a 400 as "refused for what it is", so on ownCloud a file whose
+  bytes change while it is being read (the checksum then mismatches) waits until it changes again, which it has;
+  the desktop's sign-in (row 10); `--kind owncloud` has no `--no-browser` since there is no browser flow.
 
 ## 8. How each non-negotiable is met
 
@@ -947,12 +1008,13 @@ decision is pending.
 | Q5 | **How long the client trash keeps things** | **30 days, flat.** Only the person empties it sooner (`craftcloud trash empty`, "Empty trash") | Deliberately **not** Nextcloud's and ownCloud's default of deleting sooner when the quota runs low: that is an automatic permanent delete of the person's files |
 | Q6 | **Plain WebDAV servers with no app passwords** | **Accepted, for "Other WebDAV" only**, asked for as "an app or WebDAV password"; HTTPS required (loopback excepted) | Hosted WebDAV services make these separate passwords themselves: Koofr and Fastmail require an app password for WebDAV; Seafile has a separate WebDAV password, which its admin switches on. Synology has none (a dedicated WebDAV user is the way; sources disagree, unverified). Nextcloud, ownCloud and OpenCloud never take this path |
 | Q7 | **Nextcloud's speed** (about 4 uploads a second) | **Accepted for 0.3.0** | The faster upload paths, bulk upload (`/remote.php/dav/bulk`) and chunked upload v2, carry no preconditions, so the trait rules them out for good. The only safe speed-up is guarded `PUT`s in parallel (Nextcloud's own desktop client runs 6, `OWNCLOUD_MAX_PARALLEL`): a later change with its own tests |
-| Q8 | **Probe leftovers in the server trash** | **Accepted**: one folder per probe, never purged | Purging a person's trash is a permanent delete outside `.craftcloud/`. The leftovers expire from Nextcloud's and ownCloud's trash with their 30-day default |
+| Q8 | **Probe leftovers in the server trash** | **Accepted**: one folder per probe, never purged by the check on connect (its runner refuses any `DELETE` on a trash root) | The check, the engine and retention never purge a person's trash: that is a permanent delete outside `.craftcloud/`. Only the person's own `trash rm` or `trash empty` does (Q14). The leftovers expire from Nextcloud's and ownCloud's trash with their 30-day default |
 | Q9 | **SHA1 besides SHA-256** in the sync state | **Not now** | Not needed without the OpenCloud workaround (Q1). For later: ocdav accepts an `OC-Checksum` header on upload, a check by the server that the bytes arrived whole |
 | Q10 | **Where the work lands** | **On `main`**, one shippable pull request at a time, the new server kinds hidden and refused without an explicit opt-in until the 0.3.0 release pull request turns them on (below) | Pull requests 1 to 3 rewrite `crates/native/src/sync.rs`; on a long-lived branch every 0.2.x sync fix landing meanwhile would have to be merged by hand into moved code. The opt-in keeps a 0.2.x hotfix tagged from `main` from shipping `--kind webdav` early |
 | Q11 | **AGENTS.md said the client never sees a password** | **Amended in this change** to: "The client never asks for or stores your account password: it signs in through the server's browser sign-in, or with an app password you make on the server." (modelled on Nextcloud's public Login Flow docs) | It is already true of today's client (device flow only), and it binds the pull requests that follow |
 | Q12 | **AGENTS.md's "WebDAV `DELETE` is permanent" rule** was written for OxiCloud only | **Amended in this change** to: "A delete never removes a file for good: it goes to the server's own trash (OxiCloud: over REST; Nextcloud and ownCloud: their WebDAV `DELETE`, which the check on connect confirms lands in the trash), or to `.craftcloud/trash/` where the server has none. A folder goes as one item, so a restore brings it back whole." | It changes a non-negotiable, so it was decided on its own, not folded into Q11. The rule's meaning stays (never a permanent delete of the person's files; a folder as one item); the wording now says how each server meets it |
 | Q13 | **Nextcloud and ownCloud reuse a file's ETag within one second** (Jonas, 2026-11-18): two writes to one file within the same second can't be told apart by `If-Match`, so a second client's write could land under the first client's tag and be overwritten by its next edit. Two-way sync or not? | **Two-way stays on, and the window is closed by a checksum check.** On these profiles every `PUT` (create and overwrite) carries `OC-Checksum: SHA1:<hex>`; afterwards the server's `oc:checksums` of the file must be that checksum, else the server holds someone else's write under our tag and the engine makes a **conflict copy** of the local bytes, never a silent overwrite, and says so. That closes the window after our write; the other direction (someone else's write lands within the same second as a write this client already synced, so the ETag this client saved still matches and its next `If-Match` would pass) is closed in the listing: on these profiles a file's **version tag is its ETag plus the SHA1 the server lists**, and a tag that differs from the saved one is a cloud change like any other (downloaded, or a conflict copy when the local file changed too). The driver does the check behind the profile's "verify writes by checksum" switch, so ownCloud (row 7) shares the code | Pull request 3 measured it with `curl`: Nextcloud 31 and ownCloud 10.15 keep the tag while the file's modified time in whole seconds is unchanged (3 of 3 rounds each; the file-cache scanner derives the tag from the storage mtime). The probe already waits a second between its own overwrites; the engine can't wait for other clients. Nextcloud lists `oc:checksums` only for a file whose last `PUT` carried `OC-Checksum`, and stores what it is sent without checking it (measured on 31.0.14), so the header goes on every `PUT` and a mismatch, or no checksum at all, means another write; any write without the header (the web page, another client) clears the listed checksum, also when the ETag stays (5 of 5 same-second rounds on 2026-11-18), and a `GET` answers the stored checksum in `OC-Checksum`, so the tag of downloaded bytes comes from the same answer. What stays open: two writes within one second that both carry no checksum and that this client synced in between, which a one-second window makes all but impossible for a sync that lists first. A test against the scripted server reusing the tag shows the write landing silently without the check and a conflict copy with it. UPSTREAM.md E1 proposes a fresh ETag on every write; nothing is filed |
+| Q14 | **`trash rm` and `trash empty` on a server's own trash** (Jonas, 2026-11-22): refuse them, as first built, or delete there? | **Allowed, as on OxiCloud**: on the person's command the item, or everything, is deleted from Nextcloud's or ownCloud's trash bin for good (`trash empty` asks first unless `--yes`). Never by the engine, the check on connect or retention | The person asked for exactly that, and on CraftCloud's own server the same commands already do it; sending them to the server's web page for it helps nobody. The `DELETE` goes only to the trash's own address, for an item a fresh listing names; Q8 still holds for the check |
 
 ### The opt-in until 0.3.0 (Q10)
 

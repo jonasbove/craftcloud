@@ -476,3 +476,37 @@ proposes the drafts below; nothing here is filed.
 > Ask: a `macos_team_id: Option<&str>` on `App` (none: no macOS install), a constructor without the suite's
 > defaults (or a `const fn` that takes them), optional signature or attestation checks, and a public
 > `offered_release(json, repo, running)`.
+
+## G. ownCloud (github.com/owncloud/core)
+
+CraftCloud syncs with ownCloud 10 through its WebDAV, trash bin (`trash-bin/`) and versions (`meta/…/v/`) endpoints,
+unmodified; the ownCloud profile is `crates/native/src/storage/profile/owncloud.rs`. Nothing below is filed.
+
+### G1. A file overwritten within the same second keeps its ETag, and the version of the earlier bytes is lost
+
+> **Two `PUT`s to one file within one second answer the same ETag, and only one version is kept for them**
+>
+> Seen on 2026-11-17 and 2026-11-18 with ownCloud 10.15.3, with `curl`: a `PUT` that overwrites a file within the
+> same second as the write before it answers, and lists, the ETag the earlier write had (3 of 3 rounds on
+> 2026-11-17; on 2026-11-18 three writes right behind each other, the two in the same second sharing the tag). As
+> on Nextcloud (E1) the file cache derives the tag from the storage's modified time in whole seconds, so two writes
+> in one second look like one version, and a second client's write right behind the first gets the first client's
+> tag; the first client's next `PUT` with `If-Match` on that tag then overwrites the second client's bytes, which a
+> precondition is there to prevent.
+>
+> The versions have the same grain: a version is named by the modified time, in seconds, of the file it was
+> (`/remote.php/dav/meta/<file id>/v/<seconds>`), so when a file is overwritten twice within one second the second
+> overwrite's version lands under the same name as the first's and replaces it: of three writes "xxxx", "yyyyy",
+> "zzzzzz" in a row (the first two in one second), the versions kept were the bytes before "xxxx" and "yyyyy"; the
+> version holding "xxxx" was gone. So on ownCloud "the old bytes are kept before an overwrite" holds only for writes
+> a second apart. CraftCloud's sync never writes a file twice within a second (a cycle lists first); `craftcloud put
+> --force` right after `put` would, and the version it loses is the bytes the person just uploaded.
+>
+> CraftCloud works around the ETag part (docs/WEBDAV-STORAGE.md § 16, Q13): every `PUT` carries
+> `OC-Checksum: SHA1:…`, which ownCloud checks against the bytes received (a mismatch answers 400, measured), the
+> file is read back afterwards, and a listed checksum that isn't ours is taken as someone else's write and kept as a
+> conflict copy. That costs one `PROPFIND` per write.
+>
+> Ask: give a file a fresh ETag on every write (a counter or a hash besides the mtime), as the ETag's contract in
+> RFC 7232 § 2.3 expects, and name versions finer than the second (or keep a same-second version under a distinct
+> name instead of replacing it).

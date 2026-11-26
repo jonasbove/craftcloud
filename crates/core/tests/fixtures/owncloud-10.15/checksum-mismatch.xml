@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<d:error xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns">
+  <s:exception>Sabre\DAV\Exception\BadRequest</s:exception>
+  <s:message>The computed checksum does not match the one received from the client.</s:message>
+</d:error>

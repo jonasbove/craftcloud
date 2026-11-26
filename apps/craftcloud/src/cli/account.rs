@@ -18,6 +18,7 @@ use craftcloud_native::session::{AppPasswordSession, Session};
 use craftcloud_native::settings::Prefs;
 use craftcloud_native::storage::probe::Limits;
 use craftcloud_native::storage::profile::nextcloud::{self, Nextcloud};
+use craftcloud_native::storage::profile::owncloud::{self, Owncloud};
 use craftcloud_native::storage::webdav::WebDav;
 use serde_json::json;
 
@@ -34,25 +35,26 @@ pub const APP_PASSWORD_VAR: &str = "CRAFTCLOUD_APP_PASSWORD";
 
 /// `login [server] [--kind KIND] [--user NAME]`: the device flow for CraftCloud's own server, as
 /// in the desktop client; with `--kind nextcloud`, Nextcloud's own browser sign-in (Login Flow v2,
-/// or an app password with `--user`); with `--kind webdav`, another WebDAV server with an app
-/// password. Without `--kind`, and with the opt-in, a server that says it is Nextcloud
-/// (`status.php`) is signed in to as one; detection only suggests the kind, the check on connect
-/// measures what it allows (docs/WEBDAV-STORAGE.md § 2, § 11).
+/// or an app password with `--user`); with `--kind owncloud`, an app password made on the server
+/// (`--user`); with `--kind webdav`, another WebDAV server with an app password. Without `--kind`,
+/// and with the opt-in, a server that says it is Nextcloud or ownCloud (`status.php`) is signed in
+/// to as one; detection only suggests the kind, the check on connect measures what it allows
+/// (docs/WEBDAV-STORAGE.md § 2, § 11).
 pub fn login(ctx: &mut Ctx, server: Option<&str>, no_browser: bool, kind: Option<&str>, user: Option<&str>) -> Result<()> {
     let mut kind = match kind {
         None => Storage::Oxicloud,
-        Some(word) => Storage::parse(word).ok_or_else(|| CliError::usage(format!("--kind {word}: use oxicloud, nextcloud or webdav")))?,
+        Some(word) => Storage::parse(word).ok_or_else(|| CliError::usage(format!("--kind {word}: use oxicloud, nextcloud, owncloud or webdav")))?,
     };
     if kind == Storage::Oxicloud
         && experimental::experimental_webdav()
         && let Some(given) = server
         && let Ok(origin) = ServerUrl::parse(given)
-        && let Some(found) = nextcloud::detect(&origin.to_string())
+        && let Some((found, detected)) = detect_kind(&origin.to_string())
     {
         if !ctx.json {
-            eprintln!("{} at {origin}: signing in the way Nextcloud does.", found.words());
+            eprintln!("{} at {origin}: signing in the way {} does.", detected.words(), found.words());
         }
-        kind = Storage::Nextcloud;
+        kind = found;
     }
     match kind {
         Storage::Oxicloud => {}
@@ -60,10 +62,11 @@ pub fn login(ctx: &mut Ctx, server: Option<&str>, no_browser: bool, kind: Option
         _ if !experimental::experimental_webdav() => return Err(CliError::usage(experimental::REFUSED)),
         Storage::Webdav => return login_webdav(ctx, server, user),
         Storage::Nextcloud => return login_nextcloud(ctx, server, user, no_browser),
-        Storage::Owncloud | Storage::Opencloud => return Err(CliError::usage(experimental::NOT_YET)),
+        Storage::Owncloud => return login_owncloud(ctx, server, user),
+        Storage::Opencloud => return Err(CliError::usage(experimental::NOT_YET)),
     }
     if user.is_some() {
-        return Err(CliError::usage("--user goes with --kind webdav or nextcloud; a CraftCloud server signs you in through the browser"));
+        return Err(CliError::usage("--user goes with --kind webdav, nextcloud or owncloud; a CraftCloud server signs you in through the browser"));
     }
     let server = match server {
         Some(s) => ServerUrl::parse(s).map_err(|e| CliError::usage(format!("{s}: {e}")))?,
@@ -120,6 +123,21 @@ pub fn login(ctx: &mut Ctx, server: Option<&str>, no_browser: bool, kind: Option
         }
         Ok(())
     }
+}
+
+/// Which known kind of server answers at `origin`, by its `status.php` (Nextcloud and ownCloud
+/// share it); `None` for CraftCloud's own server or any other. Only a suggestion: the check on
+/// connect measures what the server allows.
+fn detect_kind(origin: &str) -> Option<(Storage, craftcloud_core::api::nextcloud::Detected)> {
+    let detected = nextcloud::detect(origin).or_else(|| owncloud::detect(origin))?;
+    let kind = if detected.is_nextcloud() {
+        Storage::Nextcloud
+    } else if detected.is_owncloud() {
+        Storage::Owncloud
+    } else {
+        return None;
+    };
+    Some((kind, detected))
 }
 
 /// `login <webdav address> --kind webdav --user NAME`: another WebDAV server, with an app or
@@ -294,16 +312,100 @@ fn login_nextcloud(ctx: &mut Ctx, server: Option<&str>, user: Option<&str>, no_b
     Ok(())
 }
 
+/// `login <server> --kind owncloud --user NAME`: an ownCloud, with an app password the person made
+/// in Settings › Security › "App passwords / tokens" (from [`APP_PASSWORD_VAR`] or a prompt, never
+/// an argument; never the account password). ownCloud 10 has no browser sign-in a third-party
+/// client can use without an admin, so `--user` is required and the client says where to make
+/// the password. The WebDAV base uses the user id (`current-user-principal`), since the login name
+/// can differ; the sign-in is saved in the keychain, the settings set to ownCloud, and the check
+/// on connect run with the ownCloud profile and saved (docs/WEBDAV-STORAGE.md § 10, § 11).
+fn login_owncloud(ctx: &mut Ctx, server: Option<&str>, user: Option<&str>) -> Result<()> {
+    let given =
+        server.ok_or_else(|| CliError::usage("Which server? Give its address: `craftcloud login cloud.example.org --kind owncloud --user NAME`."))?;
+    let origin = ServerUrl::parse(given).map_err(|e| CliError::usage(format!("{given}: {e}")))?;
+    let origin_base = Base::parse(&format!("{origin}/")).map_err(CliError::usage)?;
+    if origin_base.is_plain_http() && !origin_base.is_loopback() {
+        return Err(CliError::usage(format!("{origin} isn't https: a password is never sent over plain http to another computer")));
+    }
+    let Some(login_name) = user.map(str::trim).filter(|u| !u.is_empty()) else {
+        return Err(CliError::usage(format!(
+            "--kind owncloud needs --user NAME and an app password, which you make in {} (never your account password); \
+             `craftcloud login {origin} --kind owncloud --user NAME`",
+            owncloud::APP_PASSWORD_WHERE
+        )));
+    };
+    let secret = match std::env::var(APP_PASSWORD_VAR) {
+        Ok(s) if !s.is_empty() => s,
+        _ => super::read_secret(&format!("App password for {login_name} (made in {}, not your account password)", owncloud::APP_PASSWORD_WHERE))?,
+    };
+    // The user id the WebDAV paths use; this also shows the password works before anything is saved.
+    let mut probe = AppPasswordSession::new(origin_base, login_name, &secret).map_err(CliError::usage)?;
+    let user_id = match owncloud::user_id(&mut probe, &origin.to_string()) {
+        Ok(id) => id,
+        Err(_) if probe.signed_out => return Err(CliError::new(Fail::SignedOut, format!("{origin} refused the user name or password (401)."))),
+        // No answer at all: the server can't be reached (exit code 8), not a wrong kind of server.
+        Err(e) if probe.offline.is_some() => return Err(CliError::transport(e)),
+        Err(e) => return Err(CliError::error(format!("{origin} doesn't answer like an ownCloud server: {e}"))),
+    };
+    let profile = Owncloud::new(&origin.to_string(), &user_id);
+    let base = Base::parse(&profile.files_base()).map_err(CliError::error)?;
+    let session = AppPasswordSession::new(base.clone(), login_name, &secret).map_err(CliError::usage)?;
+    ctx.tokens(&origin)
+        .save_credential(&Credential::AppPassword { user: login_name.to_owned(), secret })
+        .map_err(|e| CliError::error(format!("couldn't keep the sign-in: {e}")))?;
+    // The desktop client's server, when it has none yet (or this one); a different one stays.
+    let mut settings = ctx.settings();
+    let default = settings.server.is_empty() || settings.server == origin.to_string();
+    if default {
+        settings.server = origin.to_string();
+        settings.storage = Storage::Owncloud;
+        settings.dav_url = base.url().to_owned();
+        ctx.store.set(Prefs(settings));
+        ctx.store.flush().map_err(|e| CliError::error(format!("couldn't save the settings: {e}")))?;
+    }
+    // The check on connect, with the ownCloud profile's trash and versions checks.
+    let dir = ctx.dir();
+    let (_, check) = WebDav::connect_with(session, Box::new(profile), &ctx.device(), dir.as_deref(), Limits::default());
+    if default && let Some(dir) = dir {
+        control::signed_in(&dir);
+    }
+    if ctx.json {
+        return print_json(&json!({
+            "signed_in": true,
+            "server": origin.to_string(),
+            "dav_url": base.url(),
+            "kind": "owncloud",
+            "username": login_name,
+            "user_id": user_id,
+            "server_version": check.server_version,
+            "mode": check.mode.as_str(),
+            "refused_because": check.refused_because,
+            "default": default,
+        }));
+    }
+    println!("Signed in to {origin} as {login_name} (ownCloud {}).", check.server_version);
+    match &check.refused_because {
+        Some(why) => println!("Sync mode: {}: {why}. `craftcloud server check` says what was checked.", check.mode.words()),
+        None => println!("Sync mode: {} (`craftcloud server check` says what was checked).", check.mode.words()),
+    }
+    if !default {
+        println!("The desktop client uses another server; sign out of it first to use this one.");
+    }
+    Ok(())
+}
+
 /// `logout`: ends the sign-in on the server and forgets it here. It is forgotten here even when
 /// the server can't be told; then the output says so (`server_session_ended: false`) and the exit
 /// code is 8 (the server can't be reached) or 1 (it refused). On Nextcloud the app password is
-/// deleted on the server (`DELETE /ocs/v2.php/core/apppassword`); on another WebDAV server it isn't
-/// ended there (the person removes it), only forgotten here.
+/// deleted on the server (`DELETE /ocs/v2.php/core/apppassword`); on ownCloud and on another
+/// WebDAV server it isn't ended there (the person removes it, and the output says where), only
+/// forgotten here.
 pub fn logout(ctx: &mut Ctx) -> Result<()> {
     let server = ctx.server()?;
     let store = ctx.tokens(&server);
     let had = store.load_credential();
-    let nextcloud = ctx.settings().storage == Storage::Nextcloud;
+    let storage = ctx.settings().storage;
+    let nextcloud = storage == Storage::Nextcloud;
     let ended = had.as_ref().map(|credential| match credential {
         Credential::Bearer(tokens) => {
             // Shared with the desktop client: a refresh on the way is done under its lock.
@@ -346,6 +448,12 @@ pub fn logout(ctx: &mut Ctx) -> Result<()> {
             "{}",
             match &ended {
                 None => format!("Wasn't signed in to {server}."),
+                Some(Ok(())) if app_password && storage == Storage::Owncloud => {
+                    format!(
+                        "Signed out of {server} on this computer. The app password stays valid until you revoke it in {}.",
+                        owncloud::APP_PASSWORD_WHERE
+                    )
+                }
                 Some(Ok(())) if app_password => {
                     format!("Signed out of {server} on this computer. The app password stays valid on the server until you remove it there.")
                 }

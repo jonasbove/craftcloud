@@ -117,21 +117,33 @@ fn inside_probe_dir(path: &str) -> bool {
 }
 
 /// A known-server check's request on another DAV root: read freely; move only the probe's own
-/// trashed file back (`trash/<name>` → `restore/<name>`, `Overwrite: F`, and the server said it
-/// came from inside the probe's folder); nothing else.
+/// trashed file back, in one of two shapes (the server said it came from inside the probe's
+/// folder either way): Nextcloud's, `trash/<name>` → `restore/<name>` on the trash bin itself;
+/// or ownCloud's, an item right under the root → exactly the cloud path it came from, under the
+/// files base, with `Overwrite: F` (there the destination is a name in the person's tree, and
+/// the server would take any other). Nothing else.
 fn guarded_on_root(req: &Request, root: &str, probe_folder: &str) -> Result<(), String> {
     match req.method {
         Method::Propfind | Method::Get => Ok(()),
         Method::Move => {
-            let name = req.path.strip_prefix("trash/").filter(|n| !n.is_empty() && !n.contains('/'));
-            let restored = req.destination.as_ref().and_then(|(to, _)| to.strip_prefix("restore/"));
             let own = req.restores.as_deref().is_some_and(|from| {
                 !probe_folder.is_empty() && from.strip_prefix(probe_folder).is_some_and(|rest| rest.starts_with('/') && rest.len() > 1)
             });
-            // No `Overwrite` rule here: the restore address is the server's endpoint, not a name in
-            // the person's tree (Nextcloud answers 412 to `Overwrite: F` there); what guards the
-            // move is that it is a restore, of the probe's own file, to where it was.
-            if name.is_none() || restored != name {
+            let is_restore = if req.destination_under_base {
+                // ownCloud's shape: the item itself (one segment), to where it was, never onto a name.
+                let item = !req.path.is_empty() && !req.path.contains('/');
+                let to_origin = req.destination.as_ref().is_some_and(|(to, _)| Some(to.as_str()) == req.restores.as_deref());
+                item && to_origin && req.header_value("Overwrite") == Some("F")
+            } else {
+                // Nextcloud's shape. No `Overwrite` rule here: the restore address is the server's
+                // endpoint, not a name in the person's tree (Nextcloud answers 412 to `Overwrite: F`
+                // there); what guards the move is that it is a restore, of the probe's own file,
+                // to where it was.
+                let name = req.path.strip_prefix("trash/").filter(|n| !n.is_empty() && !n.contains('/'));
+                let restored = req.destination.as_ref().and_then(|(to, _)| to.strip_prefix("restore/"));
+                name.is_some() && restored == name
+            };
+            if !is_restore {
                 Err(format!("refused to send a MOVE on {root} that isn't the restore of a trashed item to where it was"))
             } else if !own {
                 Err(format!("refused to restore {} from {root}: not the probe's own file", req.path))
@@ -471,6 +483,51 @@ mod tests {
                 .unwrap_err()
                 .contains("never purged")
         );
+    }
+
+    /// ownCloud's trash bin restores by a `MOVE` to a path under the files base, and takes any
+    /// path there (measured on 10.15), so the runner allows only the probe's own item back to
+    /// exactly where it came from, with `Overwrite: F`: not elsewhere, not another item's place,
+    /// not without the header, and never a `DELETE`.
+    #[test]
+    fn on_an_owncloud_trash_root_only_the_restore_to_where_it_was_may_go() {
+        use craftcloud_core::storage::probe::Step;
+        let root = "https://cloud.example.org/remote.php/dav/trash-bin/john/";
+        let folder = ".craftcloud/probe/Laptop-1";
+        let own = ".craftcloud/probe/Laptop-1/d.txt";
+        let restore = |id: &str, to: &str, from: Option<&str>, overwrite: Option<&str>| {
+            let mut req = Request::under_root(Step::ServerTrash, Method::Move, root, id, false);
+            if let Some(o) = overwrite {
+                req = req.with_header("Overwrite", o);
+            }
+            req.destination = Some((to.to_owned(), false));
+            req.restores = from.map(str::to_owned);
+            req.destination_under_base = true;
+            req
+        };
+        assert!(guarded(&restore("1668", own, Some(own), Some("F")), folder).is_ok(), "the allowed restore");
+        let http = restore("1668", own, Some(own), Some("F")).to_http(&Base::parse("https://cloud.example.org/remote.php/dav/files/john/").unwrap());
+        assert_eq!(http.url, "https://cloud.example.org/remote.php/dav/trash-bin/john/1668");
+        assert_eq!(http.header_value("Destination"), Some("https://cloud.example.org/remote.php/dav/files/john/.craftcloud/probe/Laptop-1/d.txt"));
+        for (id, to, from, overwrite, why) in [
+            ("1668", ".craftcloud/probe/Laptop-1/elsewhere.txt", Some(own), Some("F"), "elsewhere"),
+            ("1668", "Documents/d.txt", Some("Documents/d.txt"), Some("F"), "not the probe's file"),
+            ("1668", own, Some(".craftcloud/probe/Studio-2/d.txt"), Some("F"), "another probe's file"),
+            ("1668", own, None, Some("F"), "no origin given"),
+            ("1668", own, Some(own), None, "no Overwrite: F"),
+            ("1668", own, Some(own), Some("T"), "Overwrite: T"),
+            ("1668/sub", own, Some(own), Some("F"), "not an item of the root"),
+            ("", own, Some(own), Some("F"), "the root itself"),
+        ] {
+            assert!(guarded(&restore(id, to, from, overwrite), folder).is_err(), "{why}");
+        }
+        // Reading is fine; a DELETE never.
+        assert!(guarded(&Request::under_root(Step::ServerTrash, Method::Propfind, root, "", true), folder).is_ok());
+        assert!(guarded(&Request::under_root(Step::ServerTrash, Method::Delete, root, "1668", false), folder).unwrap_err().contains("never purged"));
+        // The same request without the hook is read as Nextcloud's shape, which it isn't.
+        let mut nc_shaped = restore("1668", own, Some(own), Some("F"));
+        nc_shaped.destination_under_base = false;
+        assert!(guarded(&nc_shaped, folder).is_err());
     }
 
     #[test]
