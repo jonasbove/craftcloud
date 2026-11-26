@@ -187,6 +187,9 @@ fn read_request(conn: &TcpStream) -> Option<Seen> {
 }
 
 /// A chunked body, up to and including its last (empty) chunk and the trailer's end.
+/// The largest chunk a test request may send (16 MiB).
+const MAX_CHUNK: usize = 16 << 20;
+
 fn read_chunked(reader: &mut impl BufRead) -> Option<Vec<u8>> {
     let mut body = Vec::new();
     loop {
@@ -200,6 +203,11 @@ fn read_chunked(reader: &mut impl BufRead) -> Option<Vec<u8>> {
                     return Some(body);
                 }
             }
+        }
+        // A test server: a chunk bigger than any test sends is a broken request, not an
+        // allocation to try (and `size + 2` can't overflow below the cap).
+        if size > MAX_CHUNK {
+            return None;
         }
         let mut chunk = vec![0; size + 2];
         reader.read_exact(&mut chunk).ok()?;
@@ -238,7 +246,19 @@ pub fn listing(folder: &str, files: &[(&str, Option<&str>)], subfolders: &[&str]
 mod tests {
     use craftcloud_core::http::{HttpRequest, Method};
 
-    use super::FakeServer;
+    use super::{FakeServer, read_chunked};
+
+    /// #97: a chunk size no test sends (up to `usize::MAX`, where `size + 2` overflowed) is a
+    /// broken request, read as none, never a panic or a huge allocation.
+    #[test]
+    fn an_absurd_chunk_size_is_refused() {
+        for size in ["ffffffffffffffff", "fffffffffffffffe", "7fffffffffffffff", "1000001"] {
+            let mut body = std::io::Cursor::new(format!("{size}\r\nabc\r\n0\r\n\r\n").into_bytes());
+            assert_eq!(read_chunked(&mut body), None, "{size}");
+        }
+        let mut body = std::io::Cursor::new(b"3\r\nabc\r\n0\r\n\r\n".to_vec());
+        assert_eq!(read_chunked(&mut body), Some(b"abc".to_vec()));
+    }
 
     #[test]
     fn a_post_without_a_body_is_always_answered() {

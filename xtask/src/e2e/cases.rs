@@ -458,8 +458,12 @@ fn leftovers(run: &mut Run) -> Result<String, String> {
     let cloud = run.cloud.clone();
     let listed = run.cli_json(LAPTOP, &["ls", &cloud, "--all"])?;
     let names: Vec<&str> = listed.as_array().map(Vec::as_slice).unwrap_or_default().iter().filter_map(|i| i["name"].as_str()).collect();
+    // What was planted, by its top-level name (`.craftcloud` for the stray state), and any part or
+    // staging file at all.
+    let planted: Vec<String> =
+        [LAPTOP, STUDIO].into_iter().flat_map(leftover_names).filter_map(|rel| rel.split('/').next().map(str::to_owned)).collect();
     let leaked: Vec<&&str> =
-        names.iter().filter(|n| n.starts_with(".left-") || n.starts_with(".ccpart-") || n.ends_with(".craft_tmp") || **n == ".craftcloud").collect();
+        names.iter().filter(|n| planted.iter().any(|p| p == **n) || n.ends_with(".craftcloud-part") || n.ends_with(".craft_tmp")).collect();
     if !leaked.is_empty() {
         return Err(format!("in the cloud's run folder: {leaked:?}"));
     }

@@ -112,6 +112,13 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: Tests: the live suite and the e2e harness, from the review. The live check for lasting errors on
+  other servers takes an error as cleared only when the path's last line says it synced (#108); a sign-in waiting
+  out a 429 says so (#68); a test password with a line break stays one curl config value (#104); `save --if-match`
+  runs in the other-servers CLI suite too (#123). The scripted test server refuses an absurd chunk size instead of
+  overflowing (#97). e2e-sync: a success that isn't JSON is an error, not `null` (#38); unit tests for the query
+  encoding, the run's own trash and the `--settle` limits (#38); the leftovers check compares with the names it
+  planted (#67).
 - 2026-11-26: Docs: M10 part 1 is done and marked so: `scripts/create-owner`, `add-user`, `app-password` and
   `smoke-test` need only sh and curl, and the packaging icons come from `cargo xtask icons`; nothing in `.github/`,
   `docker/`, the Dockerfile, `compose.yaml` or `nix/` runs Python. The design build in `design/tools/` is the one

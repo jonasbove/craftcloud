@@ -47,8 +47,27 @@ fn agent() -> ureq::Agent {
 fn answer(resp: Result<ureq::http::Response<ureq::Body>, ureq::Error>, what: &str) -> Result<(u16, Value), String> {
     let mut resp = resp.map_err(|e| format!("{what}: {e}"))?;
     let status = resp.status().as_u16();
-    let text = resp.body_mut().read_to_string().unwrap_or_default();
-    Ok((status, serde_json::from_str(&text).unwrap_or(Value::Null)))
+    read_answer(status, resp.body_mut().read_to_string().map_err(|e| e.to_string()), what)
+}
+
+/// The status and JSON of an answer. A success whose body can't be read, or isn't JSON, is an
+/// error that says so (else a test would go on with `null` and fail somewhere unrelated); an
+/// error's body is often a page, not JSON, and reads as `null`.
+fn read_answer(status: u16, text: Result<String, String>, what: &str) -> Result<(u16, Value), String> {
+    let ok = (200..300).contains(&status);
+    let text = match text {
+        Ok(t) => t,
+        Err(e) if ok => return Err(format!("{what}: the server answered {status}, but the answer couldn't be read: {e}")),
+        Err(_) => String::new(),
+    };
+    if text.trim().is_empty() {
+        return Ok((status, Value::Null));
+    }
+    match serde_json::from_str(&text) {
+        Ok(v) => Ok((status, v)),
+        Err(e) if ok => Err(format!("{what}: the server answered {status}, but not with JSON ({e})")),
+        Err(_) => Ok((status, Value::Null)),
+    }
 }
 
 fn post(agent: &ureq::Agent, url: &str, bearer: Option<&str>, body: &Value, what: &str) -> Result<(u16, Value), String> {
@@ -179,4 +198,28 @@ impl Api {
 /// Percent-encodes a query value.
 fn encode(value: &str) -> String {
     value.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+
+    use super::{encode, read_answer};
+
+    #[test]
+    fn query_values_are_percent_encoded() {
+        assert_eq!(encode("abc-1._~"), "abc-1._~");
+        assert_eq!(encode("a b&c=d/é"), "a%20b%26c%3Dd%2F%C3%A9");
+        assert_eq!(encode(""), "");
+    }
+
+    /// #38: a success that isn't JSON says so instead of reading as `null`.
+    #[test]
+    fn a_success_must_be_json_an_error_need_not_be() {
+        assert_eq!(read_answer(200, Ok(r#"{"a":1}"#.into()), "x"), Ok((200, json!({"a": 1}))));
+        assert_eq!(read_answer(204, Ok(String::new()), "x"), Ok((204, Value::Null)));
+        assert!(read_answer(200, Ok("<html>proxy</html>".into()), "listing").unwrap_err().contains("not with JSON"));
+        assert!(read_answer(200, Err("cut off".into()), "listing").unwrap_err().contains("couldn't be read"));
+        assert_eq!(read_answer(502, Ok("<html>bad gateway</html>".into()), "x"), Ok((502, Value::Null)));
+    }
 }

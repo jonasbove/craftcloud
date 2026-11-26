@@ -49,6 +49,13 @@ struct Options {
     allow_other_devices: bool,
 }
 
+/// Whether a trashed item's path (`<owner>/<path>`) is the run's cloud folder `cloud`, inside it, or
+/// among CraftCloud's kept versions of its files: what the run may clean up, nothing else.
+fn of_run(cloud: &str, trashed: &str) -> bool {
+    let rel = trashed.split_once('/').map_or(trashed, |(_, rest)| rest);
+    [cloud.to_owned(), format!(".craftcloud/versions/{cloud}")].iter().any(|top| rel == top || rel.starts_with(&format!("{top}/")))
+}
+
 fn options(args: &[String]) -> Result<Option<Options>, String> {
     let mut o =
         Options { bin: None, bin_laptop: None, bin_studio: None, keep: false, settle: Duration::from_secs(3), dir: None, allow_other_devices: false };
@@ -372,11 +379,7 @@ impl Run {
 
     /// Trashed items of this run (its folder, or CraftCloud's kept versions of its files).
     pub fn trashed(&self) -> Result<Vec<api::Trashed>, String> {
-        let mine = |p: &str| {
-            let rel = p.split_once('/').map_or(p, |(_, rest)| rest);
-            [self.cloud.clone(), format!(".craftcloud/versions/{}", self.cloud)].iter().any(|top| rel == top || rel.starts_with(&format!("{top}/")))
-        };
-        Ok(self.api.trash()?.into_iter().filter(|t| mine(&t.path)).collect())
+        Ok(self.api.trash()?.into_iter().filter(|t| of_run(&self.cloud, &t.path)).collect())
     }
 
     /// Everything the run started goes: the cloud folder and its kept versions (to the trash, then
@@ -524,6 +527,7 @@ fn other_local_clients() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::time::Duration;
 
     use super::options;
 
@@ -544,5 +548,29 @@ mod tests {
         assert_eq!(bins(&["--bin", "new", "--bin-studio", "old"]), (p("new"), p("old")), "a side's own option wins over --bin");
         assert_eq!(bins(&["--bin-laptop", "old"]), (p("old"), None), "the other side: this tree's build");
         assert!(options(&["--bin-studio".to_owned()]).is_err(), "needs a value");
+    }
+
+    /// T-060: a pass sooner than the 2 s a changed file is held would skip it; more than a minute
+    /// isn't a settle wait. Both are refused.
+    #[test]
+    fn settle_waits_outside_2_to_60_seconds_are_refused() {
+        let settle = |s: &str| options(&["--settle".to_owned(), s.to_owned()]);
+        for bad in ["2", "1.5", "0", "-3", "61", "soon"] {
+            assert!(settle(bad).is_err(), "{bad}");
+        }
+        assert_eq!(settle("2.5").unwrap().unwrap().settle, Duration::from_millis(2500));
+        assert_eq!(settle("60").unwrap().unwrap().settle, Duration::from_secs(60));
+    }
+
+    /// Only the run's own folder and its kept versions count as the run's trash (#38).
+    #[test]
+    fn only_the_runs_own_trash_is_its_own() {
+        let run = "e2e-sync-123";
+        assert!(super::of_run(run, "john/e2e-sync-123"));
+        assert!(super::of_run(run, "john/e2e-sync-123/a.txt"));
+        assert!(super::of_run(run, "john/.craftcloud/versions/e2e-sync-123/a.txt/1"));
+        assert!(!super::of_run(run, "john/e2e-sync-1234"), "another run's");
+        assert!(!super::of_run(run, "john/Docs/e2e-sync-123"));
+        assert!(!super::of_run(run, "john/.craftcloud/versions/Docs/a.txt/1"));
     }
 }

@@ -600,6 +600,26 @@ fn file_commands_through_the_trait(env: &Env, base: &str, server_trash: bool) {
     env.ok(&["get", &b, "got.txt", "--force"]);
     assert_eq!(std::fs::read_to_string(env.work.path().join("got.txt")).unwrap(), "version one");
 
+    // `save --if-match` on this kind of server too (#123): over the version listed it writes;
+    // over one that is gone it exits 5 and writes nothing.
+    let c = format!("{docs}/c.md");
+    std::fs::write(env.work.path().join("c.md"), "first").unwrap();
+    env.ok(&["save", "c.md", "--to", &docs]);
+    let listed = env.ok(&["ls", &c]);
+    let etag = listed[0]["etag"].as_str().unwrap_or_else(|| panic!("no etag: {listed}")).to_owned();
+    if server_trash {
+        // Nextcloud names a version by its second (see above).
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+    }
+    std::fs::write(env.work.path().join("c.md"), "second").unwrap();
+    let saved = env.ok(&["save", "c.md", "--to", &docs, "--if-match", &etag]);
+    assert_eq!((saved["via"].as_str(), saved["replaced"].as_bool()), (Some("server"), Some(true)), "{saved}");
+    std::fs::write(env.work.path().join("c.md"), "third").unwrap();
+    let err = env.fails(5, &["save", "c.md", "--to", &docs, "--if-match", &etag]);
+    assert_eq!(err["error"]["kind"], "conflict", "{err}");
+    assert_eq!(env.run(&["get", &c, "-"]).stdout, b"second", "nothing written over it");
+    env.ok(&["rm", &c]);
+
     env.ok(&["rm", &b]);
     assert!(paths(&env.ok(&["ls", &docs])).is_empty());
     assert!(paths(&env.ok(&["trash", "ls"])).contains(&b), "{}", env.ok(&["trash", "ls"]));

@@ -323,8 +323,18 @@ fn request_token(page: &str) -> Option<String> {
 }
 
 /// A value inside a double-quoted string in curl's config file syntax.
+/// A line break would end the value (and start a line curl reads as another option): written as
+/// the escapes curl reads back (`\n`, `\r`, `\t`).
 fn curl_quote(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t")
+}
+
+#[test]
+fn curl_config_values_stay_one_value() {
+    assert_eq!(curl_quote(r#"pa"ss\word"#), r#"pa\"ss\\word"#);
+    let quoted = curl_quote("line\n--insecure\r\tx");
+    assert!(!quoted.contains('\n') && !quoted.contains('\r') && !quoted.contains('\t'), "{quoted}");
+    assert_eq!(quoted, r"line\n--insecure\r\tx");
 }
 
 /// Runs `curl -s <args>` with `config` (curl's `-K` syntax) on stdin: (exit code, stdout).

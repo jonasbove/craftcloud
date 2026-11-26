@@ -79,7 +79,10 @@ fn login(server: &ServerUrl, user: &str, password: &str) -> Tokens {
     loop {
         match auth::parse_login(&execute(&auth::login(server, user, password)).unwrap()) {
             Ok(tokens) => return tokens,
-            Err(e) if e.status() == Some(429) && Instant::now() < deadline => std::thread::sleep(Duration::from_secs(65)),
+            Err(e) if e.status() == Some(429) && Instant::now() < deadline => {
+                eprintln!("signing in as {user}: the server asks for a wait (429); trying again in 65 s");
+                std::thread::sleep(Duration::from_secs(65));
+            }
             Err(e) => panic!("signing in as {user}: {e}"),
         }
     }
@@ -644,15 +647,15 @@ fn settle(handles: &[&Handle]) {
 
 /// Nothing became a conflict on this computer, nothing is left unsynced, and no error stayed:
 /// on CraftCloud's own server there was none at all; on another, one is fine only when the same
-/// path synced later (the server answered "not now" once, see [`settle`]).
+/// path's last word is that it synced (the server answered "not now" once, see [`settle`]): any
+/// later line about the path, a skip or another error, doesn't clear it.
 fn no_conflicts_or_lasting_errors(live: &Live, h: &Handle) {
     let p = h.progress.lock().unwrap();
     assert!(!p.activity.iter().any(|e| e.kind == ActivityKind::Conflict), "{:?}", p.activity);
     assert!(p.unsynced.is_empty(), "{:?}", p.unsynced);
     for (i, e) in p.activity.iter().enumerate().filter(|(_, e)| e.kind == ActivityKind::Error) {
-        let came_right = p.activity[i + 1..].iter().any(|later| {
-            later.path == e.path && matches!(later.kind, ActivityKind::Up | ActivityKind::Down | ActivityKind::Moved | ActivityKind::Deleted)
-        });
+        let last = p.activity[i + 1..].iter().rev().find(|later| later.path == e.path);
+        let came_right = last.is_some_and(|l| matches!(l.kind, ActivityKind::Up | ActivityKind::Down | ActivityKind::Moved | ActivityKind::Deleted));
         assert!(live.kind() != Kind::Oxicloud && came_right, "an error that stayed: {e:?} in {:?}", p.activity);
     }
 }
