@@ -305,13 +305,13 @@ A profile is small: it knows where things are, never what they guarantee.
 
 | | OxiCloud | Nextcloud | ownCloud | OpenCloud | Other WebDAV |
 |---|---|---|---|---|---|
-| Detected by | `GET /api/auth/status` | `GET /status.php` (`productname`) | `GET /status.php` | its well-known config | the person chooses it |
-| WebDAV base | `/webdav/` | `/remote.php/dav/files/<user id>/` | `/remote.php/dav/files/<user id>/` | to verify (personal space URL) | the URL the person gives |
-| User id | from the token | `current-user-principal` (the login name can differ) | `current-user-principal` | to verify | from the URL |
-| Trash | REST (today) | WebDAV trashbin | WebDAV trashbin | spaces trash | client |
-| Versions | client | server, by file id | server, by file id | server, by file id | client |
-| Quota | REST | OCS user endpoint | WebDAV props | WebDAV props | WebDAV props, else unknown |
-| Sign-in | device flow | Login Flow v2 | app password | OIDC (to verify) | app password |
+| Detected by | `GET /api/auth/status` | `GET /status.php` (`productname`) | `GET /status.php` | `GET /status.php` (`productname` OpenCloud; the version is `productversion`, verified on 9.1.1: `version` says `0.1.0.0`) | the person chooses it |
+| WebDAV base | `/webdav/` | `/remote.php/dav/files/<user id>/` | `/remote.php/dav/files/<user id>/` | the personal space, `/remote.php/dav/spaces/<drive id>/` (the drive id from Graph `me/drives`; verified: the same `oc:fileid`s as `files/<user>/`, and the trash restores only through the space's URL) | the URL the person gives |
+| User id | from the token | `current-user-principal` (the login name can differ) | `current-user-principal` | the login name (Graph `me`, `onPremisesSamAccountName`; `current-user-principal` answers 404, verified) | from the URL |
+| Trash | REST (today) | WebDAV trashbin | WebDAV trashbin | spaces trash (`spaces/trash-bin/<drive id>/`, restore by `MOVE` to the original path with `Overwrite: F`) | client |
+| Versions | client | server, by file id | server, by file id | server, by file id (`meta/<file id>/v/`; a restore is a guarded `PUT` of the version's bytes) | client |
+| Quota | REST | OCS user endpoint | WebDAV props | WebDAV props (`-2`: no limit, read as unknown) | WebDAV props, else unknown |
+| Sign-in | device flow | Login Flow v2 | app password | app token made in the web UI (Account › App Tokens; § 10, Q14) | app password |
 
 The OxiCloud driver is today's code moved behind the trait. Nextcloud, ownCloud and OpenCloud use the
 generic WebDAV driver with their profile.
@@ -702,6 +702,65 @@ and `profile/nextcloud.rs`, `crates/native/src/storage/{webdav,probe}.rs`, `apps
   10); the client-trash entries a run of the generic driver may have left in a Nextcloud drive, which the profile's
   `trash ls` doesn't list (`trash restore` still takes them by id).
 
+As built (pull request 8, § 14's row 8; `crates/core/src/api/opencloud.rs`, `crates/core/src/storage.rs`,
+`crates/native/src/storage/profile/opencloud.rs`, `crates/native/src/storage/probe.rs`, `apps/craftcloud/src/cli/account.rs`):
+
+- **The sign-in, verified first** (§ 10, § 15). Against OpenCloud 9.1.1 (`tests/other-servers/compose.yaml`) and
+  its documentation: `/.well-known/openid-configuration` names the identity provider (authorization and token
+  endpoints; no registration endpoint, no device endpoint); the `idp` service registers only OpenCloud's own
+  clients, and a new client is an admin's edit of `opencloud.yaml`; the `auth-app` service is "enabled by default
+  and started automatically", a person makes a token in the web UI (Account › App Tokens › New) or through
+  `POST /auth-app/tokens?expiry=…` from a signed-in request, and the proxy's `PROXY_ENABLE_APP_AUTH` (default
+  `true`) takes it as Basic auth independently of `PROXY_ENABLE_BASIC_AUTH` (default `false`). Measured by
+  restarting the test container with basic auth off: the token answers 207 on `PROPFIND` and 200 on Graph, the
+  account password 401. So a sign-in a person can use without an admin exists, and `craftcloud login <server>
+  --kind opencloud --user NAME` takes the token from `CRAFTCLOUD_APP_PASSWORD` or a prompt (never an argument),
+  asks Graph for the user and the personal space (which shows the token works), saves the sign-in under the
+  server's origin, sets `storage` and `dav_url` to the space, and runs the check on connect. The test containers
+  keep `PROXY_ENABLE_BASIC_AUTH` on only so the suites can make a token with the account password. No OIDC flow
+  is built, and `logout` only forgets the token (the listing names tokens without their secrets); the output says
+  to revoke it on the server.
+- **The ceiling on the mode** (§ 7.5, "Atomicity"; § 16, Q1). `Capabilities` gains `lowered: Option<Lowered { to,
+  why }>` (serde default none, so every saved check and OxiCloud's known capabilities read unchanged), `mode_for`
+  takes the lesser of the measured mode and the ceiling (`Mode::lesser`; a ceiling can only lower, never raise:
+  a unit test over OxiCloud's capabilities, a table test, and a property test over every combination of guards
+  and ceilings), `ServerProfile::lowered()` supplies it, the probe records it in the verdict's capabilities (so
+  the saved check, `server check`, `webdav_for_writes` and the engine's `effective_mode` all read the same mode),
+  and `probe::checks` adds one row, "Known about this kind of server", only when a ceiling is set, so OxiCloud's
+  `server check` prints exactly the rows it printed. The OpenCloud profile's ceiling is download only, with why
+  (reva#959, reva#961). The probe against a scripted OpenCloud that honours every guard still gives download
+  only with the profile and two-way without it; the saved check carries the ceiling to the next connect.
+- **OpenCloud's profile** knows: the base is the personal space (`/remote.php/dav/spaces/<drive id>/`, the drive
+  id from Graph `me/drives`, built from the address the client uses, since the answer's `webDavUrl` carries the
+  server's public URL); the space's trash bin (`spaces/trash-bin/<drive id>/`, items by key with their original
+  location and deletion time) with a restore `MOVE` to the original path under the space **with `Overwrite: F`**
+  (measured: a taken name answers 412 with it and is overwritten without it; a restore to another name answers
+  500, so `--as PATH` is refused before anything is sent); versions by file id (`meta/<file id>/v/`, named
+  `<node>.REV.<RFC 3339 time>`, the current file not among them, shown as times), each readable with a `GET`; a
+  restore is the driver's guarded write of pull request 6 (the version's bytes `PUT` with `If-Match` on the
+  file's tag, `Restored::Changed` on a 412), never OpenCloud's own `COPY` of the version over the file, which
+  takes no precondition (it worked, and kept the replaced file as a version, when measured; under download only a
+  restore is refused anyway, code 10); the quota from WebDAV's props (`-2`,
+  read as unknown); the version string from `status.php`'s `productversion`. No checksum check (Q9): nothing is
+  written under download only. The answers are recorded in `crates/core/tests/fixtures/opencloud-9.1.1/`
+  (status, the OpenID configuration, Graph `me` and `me/drives`, the app-token listing, the space's root, a
+  folder listing with ids and checksums, versions, the trash bin, the 400 to `Depth: infinity`).
+- **Steps 16 and 17 on OpenCloud.** Step 15's `DELETE` with a stale `If-Match` deletes `c.txt` there (reva#961),
+  so step 17 works on `d.txt` after step 16 restored it: a depth-0 listing for its id and tag, an overwrite with
+  `If-Match` in a later second, the versions listing by id. The runner's `guarded` allows one more shape on
+  another root, as tightly: on the spaces root, a `MOVE` from `trash-bin/<space>/<key>` to exactly
+  `<space>/<the path the server said the item came from>`, that path inside the probe's folder, with
+  `Overwrite: F`; any other destination, space, header, or a `DELETE` there is refused (tested).
+- **Measured on 9.1.1 while building this** (§ 5's column holds): `PUT` with `If-None-Match: *` over an existing
+  file overwrites (204); a `DELETE` with a stale `If-Match` deletes (204); `Depth: infinity` 400; `oc:fileid` is
+  `<storage>$<space>!<node>` under both the files and the spaces URL; `oc:checksums` lists SHA1, MD5 and
+  Adler-32; `quota-available-bytes` is `-2`; no `Server` header. The live suite's download-only tests and the
+  command line's test run with the profile (`CRAFTCLOUD_TEST_KIND=opencloud`; the test resolves the space through
+  Graph as the sign-in does, and cleans its own items out of the space's trash bin).
+- **UPSTREAM.md H** links reva#866, #959, #961 and opencloud#3736 with what was observed; nothing is filed.
+- **Left as is:** the desktop's sign-in (row 10); the day OpenCloud's guards hold under a race, the ceiling is
+  removed by hand in the profile (Q1's "until") with its own "upgrade all devices together" entry.
+
 ## 8. How each non-negotiable is met
 
 | Non-negotiable | Server has it (honoured, measured) | Server lacks it | OpenCloud as measured |
@@ -782,7 +841,7 @@ local side:
 | OxiCloud | Device flow, as today | Access and refresh tokens, as today | As today |
 | Nextcloud | Login Flow v2: the client opens the browser, the person signs in there, the client polls and receives an app password made for this device | The login name and that app password | `DELETE` the app password (`/ocs/v2.php/core/apppassword`), then forget it |
 | ownCloud | An app password the person makes in Settings › Security and pastes in. OAuth2 only where an admin has set it up for CraftCloud (later, a bonus) | Login name and app password | Forget it; the person revokes it on the server (the client says where) |
-| OpenCloud | OIDC with PKCE in the browser, through the server's own identity provider. **To verify in its profile pull request**: which client registration a third-party desktop app can use without an admin, and whether app tokens are available to a person. Basic auth works only when an admin turns on `PROXY_ENABLE_BASIC_AUTH`, so it is not relied on | Tokens, like OxiCloud | Ends the session where the server allows |
+| OpenCloud | An **app token** the person makes in the web UI (Account › App Tokens › New) and pastes in (`login <server> --kind opencloud --user NAME`), sent as the password of Basic auth with the login name. **Verified in pull request 8** (OpenCloud 9.1.1 and its documentation): the `auth-app` service that makes tokens is on by default; the proxy takes a token whether or not basic auth is on (`PROXY_ENABLE_APP_AUTH` defaults to `true`, `PROXY_ENABLE_BASIC_AUTH` to `false`; measured with basic auth off: the token is taken, 207 and 200, the account password refused, 401); the identity provider registers only OpenCloud's own clients (`web`, `OpenCloudDesktop`, `OpenCloudAndroid`, `OpenCloudIOS`, public clients with PKCE), has no dynamic registration, and a new client is an admin's edit of `opencloud.yaml`, so no OIDC flow is built in 0.3.0 (decided, Q14) and no other product's client id is used. The token API (`POST /auth-app/tokens`) needs a signed-in request, so the client never calls it | Login name and app token | Forget it; the person revokes the token on the same page (the token listing has no secrets to match ours by) |
 | Other WebDAV | Address, user name and an app or WebDAV password (Q6) | User name and password | Forget it |
 
 - **Storage.** The same `TokenStore` (system keychain, else the private file), keyed by server as today. What it
@@ -931,11 +990,11 @@ on.
 | Probe files in the person's server trash | One folder per probe, named clearly (`.craftcloud/probe/…`) |
 | Client trash fills the person's storage | 30 days, flat (Q5); only the person empties it sooner; storage use counts it |
 | A person gives the account password anyway | The wording and the browser sign-ins; nothing more can be checked |
-| OpenCloud's sign-in for a third-party app needs an admin | Verified first in PR 8; if it needs an admin, OpenCloud waits, the rest ships |
+| OpenCloud's sign-in for a third-party app needs an admin | Settled (Q14; verified first in PR 8): it doesn't; an app token the person makes in the web UI works with the defaults (§ 10). OIDC would have (its clients are an admin's configuration) and isn't built |
 
 ## 16. Decisions
 
-The maintainer took the recommendations below after a research pass confirmed them, and answered Q10 and Q12. No
+The maintainer took the recommendations below after a research pass confirmed them, and answered Q10, Q12, Q13 and Q14. No
 decision is pending.
 
 | # | Question | Decision | Why, and the evidence |
@@ -953,6 +1012,7 @@ decision is pending.
 | Q11 | **AGENTS.md said the client never sees a password** | **Amended in this change** to: "The client never asks for or stores your account password: it signs in through the server's browser sign-in, or with an app password you make on the server." (modelled on Nextcloud's public Login Flow docs) | It is already true of today's client (device flow only), and it binds the pull requests that follow |
 | Q12 | **AGENTS.md's "WebDAV `DELETE` is permanent" rule** was written for OxiCloud only | **Amended in this change** to: "A delete never removes a file for good: it goes to the server's own trash (OxiCloud: over REST; Nextcloud and ownCloud: their WebDAV `DELETE`, which the check on connect confirms lands in the trash), or to `.craftcloud/trash/` where the server has none. A folder goes as one item, so a restore brings it back whole." | It changes a non-negotiable, so it was decided on its own, not folded into Q11. The rule's meaning stays (never a permanent delete of the person's files; a folder as one item); the wording now says how each server meets it |
 | Q13 | **Nextcloud and ownCloud reuse a file's ETag within one second** (Jonas, 2026-11-18): two writes to one file within the same second can't be told apart by `If-Match`, so a second client's write could land under the first client's tag and be overwritten by its next edit. Two-way sync or not? | **Two-way stays on, and the window is closed by a checksum check.** On these profiles every `PUT` (create and overwrite) carries `OC-Checksum: SHA1:<hex>`; afterwards the server's `oc:checksums` of the file must be that checksum, else the server holds someone else's write under our tag and the engine makes a **conflict copy** of the local bytes, never a silent overwrite, and says so. That closes the window after our write; the other direction (someone else's write lands within the same second as a write this client already synced, so the ETag this client saved still matches and its next `If-Match` would pass) is closed in the listing: on these profiles a file's **version tag is its ETag plus the SHA1 the server lists**, and a tag that differs from the saved one is a cloud change like any other (downloaded, or a conflict copy when the local file changed too). The driver does the check behind the profile's "verify writes by checksum" switch, so ownCloud (row 7) shares the code | Pull request 3 measured it with `curl`: Nextcloud 31 and ownCloud 10.15 keep the tag while the file's modified time in whole seconds is unchanged (3 of 3 rounds each; the file-cache scanner derives the tag from the storage mtime). The probe already waits a second between its own overwrites; the engine can't wait for other clients. Nextcloud lists `oc:checksums` only for a file whose last `PUT` carried `OC-Checksum`, and stores what it is sent without checking it (measured on 31.0.14), so the header goes on every `PUT` and a mismatch, or no checksum at all, means another write; any write without the header (the web page, another client) clears the listed checksum, also when the ETag stays (5 of 5 same-second rounds on 2026-11-18), and a `GET` answers the stored checksum in `OC-Checksum`, so the tag of downloaded bytes comes from the same answer. What stays open: two writes within one second that both carry no checksum and that this client synced in between, which a one-second window makes all but impossible for a sync that lists first. A test against the scripted server reusing the tag shows the write landing silently without the check and a conflict copy with it. UPSTREAM.md E1 proposes a fresh ETag on every write; nothing is filed |
+| Q14 | **OpenCloud's sign-in** (Jonas, 2026-11-19): § 10 planned OIDC with PKCE in the browser and left open which client registration a third-party app could use without an admin, and whether a person can make an app token | **An app token the person makes in OpenCloud's web UI (Account › App Tokens)**, given to `craftcloud login <server> --kind opencloud --user NAME` (from a prompt or `CRAFTCLOUD_APP_PASSWORD`) and sent as Basic auth with the login name. **No OIDC flow in 0.3.0** | Pull request 8 verified it on OpenCloud 9.1.1 and in its documentation: the `auth-app` service is on by default and the proxy's `PROXY_ENABLE_APP_AUTH` defaults to `true`, so a token works with OpenCloud's defaults; measured with `PROXY_ENABLE_BASIC_AUTH` off (its default): the token answers 207 on `PROPFIND` and 200 on Graph, the account password 401. Registering an OIDC client for CraftCloud needs an admin's edit of `opencloud.yaml` (the identity provider registers only OpenCloud's own clients and has no dynamic registration), which § 2 rules out, and another product's client id is never used (Rust rule 2). The client never sees the account password (Q11) |
 
 ### The opt-in until 0.3.0 (Q10)
 
@@ -990,6 +1050,12 @@ Measured by hand and with the spike on 2026-11-16 (section 5), and:
     https://github.com/opencloud-eu/opencloud/releases/tag/v9.2.0
   - reva PRs #808 and #809, on-disk changes picked up: https://github.com/opencloud-eu/reva/pull/808,
     https://github.com/opencloud-eu/reva/pull/809
+  - The `auth-app` service (app tokens, on by default): https://docs.opencloud.eu/docs/dev/server/services/auth-app/information
+  - App tokens for a person (Account › App Tokens): https://docs.opencloud.eu/docs/user/admin/app-tokens
+  - The proxy's settings (`PROXY_ENABLE_APP_AUTH` true, `PROXY_ENABLE_BASIC_AUTH` false by default):
+    https://docs.opencloud.eu/docs/dev/server/services/proxy/environment-variables,
+    https://docs.opencloud.eu/docs/dev/server/services/proxy/information
+  - The `idp` service and its clients: https://docs.opencloud.eu/docs/dev/server/services/idp/information
 - Go and rclone, nginx:
   - golang/go#44492: https://github.com/golang/go/issues/44492
   - `x/net/webdav`, `webdav.go`: https://github.com/golang/net/blob/master/webdav/webdav.go

@@ -1,0 +1,82 @@
+{
+  "issuer": "https://cloud.example.org",
+  "authorization_endpoint": "https://cloud.example.org/signin/v1/identifier/_/authorize",
+  "token_endpoint": "https://cloud.example.org/konnect/v1/token",
+  "userinfo_endpoint": "https://cloud.example.org/konnect/v1/userinfo",
+  "end_session_endpoint": "https://cloud.example.org/signin/v1/identifier/_/endsession",
+  "check_session_iframe": "https://cloud.example.org/konnect/v1/session/check-session.html",
+  "jwks_uri": "https://cloud.example.org/konnect/v1/jwks.json",
+  "scopes_supported": [
+    "openid",
+    "offline_access",
+    "LibgreGraph.UUID",
+    "LibreGraph.RawSub",
+    "profile",
+    "email"
+  ],
+  "response_types_supported": [
+    "id_token token",
+    "id_token",
+    "code id_token",
+    "code id_token token"
+  ],
+  "subject_types_supported": [
+    "public"
+  ],
+  "id_token_signing_alg_values_supported": [
+    "PS512",
+    "RS256",
+    "RS384",
+    "RS512",
+    "PS256",
+    "PS384"
+  ],
+  "userinfo_signing_alg_values_supported": [
+    "PS512",
+    "RS256",
+    "RS384",
+    "RS512",
+    "PS256",
+    "PS384"
+  ],
+  "request_object_signing_alg_values_supported": [
+    "ES256",
+    "ES384",
+    "ES512",
+    "RS256",
+    "RS384",
+    "RS512",
+    "PS256",
+    "PS384",
+    "PS512",
+    "none",
+    "EdDSA"
+  ],
+  "token_endpoint_auth_methods_supported": [
+    "client_secret_basic",
+    "none"
+  ],
+  "token_endpoint_auth_signing_alg_values_supported": [
+    "PS512",
+    "RS256",
+    "RS384",
+    "RS512",
+    "PS256",
+    "PS384"
+  ],
+  "claims_parameter_supported": true,
+  "claims_supported": [
+    "iss",
+    "sub",
+    "aud",
+    "exp",
+    "iat",
+    "name",
+    "family_name",
+    "given_name",
+    "email",
+    "email_verified"
+  ],
+  "request_parameter_supported": true,
+  "request_uri_parameter_supported": false
+}

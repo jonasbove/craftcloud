@@ -1639,6 +1639,29 @@ fn webdav_an_upload_answered_500_is_tried_again_next_pass_and_not_marked_refused
     assert!(p.unsynced.is_empty() && p.activity.iter().any(|e| e.kind == ActivityKind::Up && e.path == "sf/a.txt"), "{:?}", p.activity);
 }
 
+/// A profile's ceiling on the mode (docs/WEBDAV-STORAGE.md § 16, Q1) reaches the engine through
+/// the driver's capabilities and nothing else. The OxiCloud driver has none, so the engine syncs
+/// both ways exactly as before; the same engine over capabilities that differ only by a ceiling at
+/// download only is download only, and a ceiling never raises what was measured.
+#[test]
+fn a_ceiling_lowers_the_engines_mode_and_oxicloud_has_none() {
+    use craftcloud_core::storage::{Lowered, Mode};
+    let server = FakeServer::start(|_| (404, String::new()));
+    let dir = tempfile::tempdir().unwrap();
+    let oxicloud = engine(server.server(), dir.path(), &[]);
+    assert_eq!(oxicloud.storage.capabilities(), &Capabilities::oxicloud(), "the driver's capabilities are the known ones");
+    assert_eq!(oxicloud.storage.capabilities().lowered, None);
+    assert_eq!(oxicloud.effective_mode(), Mode::TwoWay);
+    let capped = Capabilities { lowered: Some(Lowered { to: Mode::DownloadOnly, why: "a race lost".into() }), ..Capabilities::oxicloud() };
+    assert_eq!(engine_with(server.server(), dir.path(), capped).effective_mode(), Mode::DownloadOnly);
+    let raised = Capabilities {
+        create_if_absent: Guard::Ignored,
+        lowered: Some(Lowered { to: Mode::TwoWay, why: String::new() }),
+        ..Capabilities::oxicloud()
+    };
+    assert_eq!(engine_with(server.server(), dir.path(), raised).effective_mode(), Mode::DownloadOnly, "a ceiling never raises");
+}
+
 /// Every file under `dir`.
 fn walkdir(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();

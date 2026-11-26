@@ -25,7 +25,7 @@ use crate::session::Session;
 const RECOUNT_EVERY: Duration = Duration::from_secs(60);
 
 /// What OxiCloud v0.10.0 guarantees, filled in by hand ([`Capabilities::oxicloud`]).
-const CAPABILITIES: Capabilities = Capabilities::oxicloud();
+static CAPABILITIES: Capabilities = Capabilities::oxicloud();
 
 pub struct OxiCloud {
     pub(crate) session: Session,

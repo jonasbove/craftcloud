@@ -551,6 +551,15 @@ impl Live {
         if matches!(self.kind(), Kind::Nextcloud | Kind::Owncloud) {
             self.purge_server_trash()?;
         }
+        if self.kind() == Kind::Opencloud {
+            // The space's trash bin lists each item with where it was: the test's own go.
+            for (key, original, is_folder) in self.server.opencloud_trash()? {
+                let top = original.split('/').next().unwrap_or("");
+                if self.mine(top) {
+                    self.server.purge_opencloud_trash_item(&key, is_folder);
+                }
+            }
+        }
         Ok(())
     }
 

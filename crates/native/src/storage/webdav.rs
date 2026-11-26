@@ -582,11 +582,16 @@ pub fn probe_with(transport: &mut AppPasswordSession, base: &Base, profile: &dyn
 /// Runs the check on connect with the profile's known-server checks (steps 16 and 17), where it
 /// has them.
 fn run_probe(transport: &mut dyn Transport, base: &Base, profile: &dyn ServerProfile, limits: Limits) -> Verdict {
+    let lowered = profile.lowered();
     match profile.probe_checks() {
-        Some((mut trash, mut versions)) => {
-            probe::run(transport, base, &probe::folder_name(), Profile { trash: Some(trash.as_mut()), versions: Some(versions.as_mut()) }, limits)
-        }
-        None => probe::run(transport, base, &probe::folder_name(), Profile::default(), limits),
+        Some((mut trash, mut versions)) => probe::run(
+            transport,
+            base,
+            &probe::folder_name(),
+            Profile { trash: Some(trash.as_mut()), versions: Some(versions.as_mut()), lowered },
+            limits,
+        ),
+        None => probe::run(transport, base, &probe::folder_name(), Profile { lowered, ..Profile::default() }, limits),
     }
 }
 
@@ -992,6 +997,7 @@ pub(crate) mod tests {
             versions: Versions::Client,
             quota: Quota::WebDavProps,
             names: craftcloud_core::names::NameRules::oxicloud(),
+            lowered: None,
         }
     }
 

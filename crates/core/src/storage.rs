@@ -104,6 +104,19 @@ pub enum Quota {
     Unknown,
 }
 
+/// A ceiling a known server's profile puts on the mode, from measurements the check on connect
+/// can't make itself (docs/WEBDAV-STORAGE.md § 7.5, "Atomicity"; § 16, Q1): a guard the server
+/// honours in a single request but loses under a race (OpenCloud's conditional uploads, reva#959;
+/// its `MOVE` with `Overwrite: F`, both of two creates won in 1 of 3 runs). A profile can only
+/// lower the mode this way, never raise it ([`mode_for`]).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Lowered {
+    /// The most the sync may do with this kind of server.
+    pub to: Mode,
+    /// Why, in plain words (shown as a row of "What was checked").
+    pub why: String,
+}
+
 /// What a server guarantees the sync (docs/WEBDAV-STORAGE.md § 7.3).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default = "Capabilities::unknown")]
@@ -138,6 +151,10 @@ pub struct Capabilities {
     pub quota: Quota,
     /// The names it can't take (left alone by the one skip rule, `names::skipped`).
     pub names: NameRules,
+    /// A ceiling the server's profile puts on the mode (none for a server nobody knows, and none
+    /// for OxiCloud); absent in a saved check from before it existed.
+    #[serde(default)]
+    pub lowered: Option<Lowered>,
 }
 
 impl Capabilities {
@@ -177,6 +194,7 @@ impl Capabilities {
             quota: Quota::OxiCloudRest,
             // A backslash, a control character, more than 255 bytes: never sent.
             names: NameRules::oxicloud(),
+            lowered: None,
         }
     }
 
@@ -204,6 +222,7 @@ impl Capabilities {
             versions: Versions::None,
             quota: Quota::Unknown,
             names: NameRules::oxicloud(),
+            lowered: None,
         }
     }
 }
@@ -243,6 +262,20 @@ impl Mode {
             Self::Refused => "refused",
         }
     }
+
+    /// How much the mode allows: refused 0, download only 1, two-way 2.
+    pub const fn allows(self) -> u8 {
+        match self {
+            Self::Refused => 0,
+            Self::DownloadOnly => 1,
+            Self::TwoWay => 2,
+        }
+    }
+
+    /// The lesser of two modes (the one that allows less).
+    pub const fn lesser(self, other: Self) -> Self {
+        if other.allows() < self.allows() { other } else { self }
+    }
 }
 
 /// The mode a server's capabilities allow (docs/WEBDAV-STORAGE.md § 7.3). Never two-way unless
@@ -258,11 +291,23 @@ impl Mode {
 ///   the bytes, since then no change in the cloud could be seen.
 /// - A guarded delete the server ignores doesn't lower the mode: deletes are checked by a fresh
 ///   listing, then moved into a trash (§ 8).
+/// - A ceiling the server's profile put on the mode ([`Capabilities::lowered`], from measurements
+///   the check can't make: a guard that holds once but not under a race) only ever lowers what
+///   was measured, never raises it: a profile can take two-way away, not grant it.
 ///
 /// Listings that fail, files without ETags or a check on connect that didn't finish are refused
 /// too, but they leave no capabilities to decide from: the check on connect refuses them itself
 /// (§ 7.5).
-pub const fn mode_for(c: &Capabilities) -> Mode {
+pub fn mode_for(c: &Capabilities) -> Mode {
+    let measured = measured_mode(c);
+    match &c.lowered {
+        Some(l) => measured.lesser(l.to),
+        None => measured,
+    }
+}
+
+/// [`mode_for`] from the measurements alone, before the profile's ceiling.
+const fn measured_mode(c: &Capabilities) -> Mode {
     if !c.etag_changes_on_write {
         return Mode::Refused;
     }
@@ -279,7 +324,9 @@ pub const fn mode_for(c: &Capabilities) -> Mode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Capabilities, DeleteGuard, FolderEtags, Guard, MissingParent, Mode, Quota, Trash, Versions, mode_for};
+    use proptest::prelude::{ProptestConfig, any, prop_oneof, proptest};
+
+    use super::{Capabilities, DeleteGuard, FolderEtags, Guard, Lowered, MissingParent, Mode, Quota, Trash, Versions, mode_for};
     use crate::names::NameRules;
 
     #[test]
@@ -293,6 +340,73 @@ mod tests {
         assert!(!c.depth_infinity && !c.file_ids && !c.case_insensitive && c.checksums.is_none());
         assert_eq!((c.trash, c.versions, c.quota), (Trash::Server, Versions::Client, Quota::OxiCloudRest));
         assert_eq!(c.names, NameRules::oxicloud());
+        assert_eq!(c.lowered, None, "no profile lowers CraftCloud's own server");
+    }
+
+    /// A profile's ceiling (docs/WEBDAV-STORAGE.md § 7.5, "Atomicity") takes two-way away from
+    /// a server that measured two-way, leaves a lower measurement as it is, and never raises:
+    /// a ceiling of two-way over a measured download only stays download only, over a refused
+    /// server stays refused.
+    #[test]
+    fn a_profile_can_only_lower_the_mode() {
+        let lowered = |to: Mode, c: Capabilities| Capabilities { lowered: Some(Lowered { to, why: "a race lost".into() }), ..c };
+        let two_way = Capabilities::oxicloud();
+        assert_eq!(mode_for(&lowered(Mode::DownloadOnly, two_way.clone())), Mode::DownloadOnly, "the OpenCloud case");
+        assert_eq!(mode_for(&lowered(Mode::Refused, two_way.clone())), Mode::Refused);
+        assert_eq!(mode_for(&lowered(Mode::TwoWay, two_way.clone())), Mode::TwoWay, "a ceiling at two-way changes nothing");
+        let download_only = Capabilities { create_if_absent: Guard::Ignored, ..two_way.clone() };
+        assert_eq!(mode_for(&lowered(Mode::TwoWay, download_only.clone())), Mode::DownloadOnly, "never raised");
+        assert_eq!(mode_for(&lowered(Mode::DownloadOnly, download_only)), Mode::DownloadOnly);
+        let refused = Capabilities { etag_changes_on_write: false, ..two_way };
+        assert_eq!(mode_for(&lowered(Mode::TwoWay, refused.clone())), Mode::Refused);
+        assert_eq!(mode_for(&lowered(Mode::DownloadOnly, refused)), Mode::Refused);
+        assert_eq!((Mode::TwoWay.allows(), Mode::DownloadOnly.allows(), Mode::Refused.allows()), (2, 1, 0));
+        assert_eq!(Mode::TwoWay.lesser(Mode::DownloadOnly), Mode::DownloadOnly);
+        assert_eq!(Mode::Refused.lesser(Mode::TwoWay), Mode::Refused);
+    }
+
+    /// A saved check from before the ceiling existed reads as having none; one with it round-trips.
+    #[test]
+    fn the_ceiling_is_optional_in_a_saved_check() {
+        let json = serde_json::to_string(&Capabilities::oxicloud()).unwrap();
+        assert!(json.contains("\"lowered\":null"), "{json}");
+        let without: Capabilities = serde_json::from_str(&json.replace(",\"lowered\":null", "")).unwrap();
+        assert_eq!(without, Capabilities::oxicloud());
+        let with = Capabilities { lowered: Some(Lowered { to: Mode::DownloadOnly, why: "reva#959".into() }), ..Capabilities::oxicloud() };
+        let json = serde_json::to_string(&with).unwrap();
+        assert!(json.contains("\"lowered\":{\"to\":\"download_only\",\"why\":\"reva#959\"}"), "{json}");
+        assert_eq!(serde_json::from_str::<Capabilities>(&json).unwrap(), with);
+    }
+
+    fn any_mode() -> impl proptest::strategy::Strategy<Value = Mode> {
+        prop_oneof![proptest::strategy::Just(Mode::TwoWay), proptest::strategy::Just(Mode::DownloadOnly), proptest::strategy::Just(Mode::Refused)]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+        /// For every set of capabilities and every ceiling, the mode with the ceiling allows no
+        /// more than the mode without it, and exactly as much when the ceiling is at two-way.
+        #[test]
+        fn a_ceiling_never_raises_the_mode(
+            create in any::<bool>(), replace in any::<bool>(), move_no_overwrite in any::<bool>(), etag_changes in any::<bool>(),
+            copy in any::<bool>(), versions in 0u8..3, ceiling in any_mode(),
+        ) {
+            let without = Capabilities {
+                create_if_absent: if create { Guard::Honoured } else { Guard::Ignored },
+                replace_if_match: if replace { Guard::Honoured } else { Guard::Ignored },
+                move_no_overwrite,
+                etag_changes_on_write: etag_changes,
+                copy,
+                versions: match versions { 0 => Versions::Server, 1 => Versions::Client, _ => Versions::None },
+                ..Capabilities::oxicloud()
+            };
+            let with = Capabilities { lowered: Some(Lowered { to: ceiling, why: String::new() }), ..without.clone() };
+            proptest::prop_assert!(mode_for(&with).allows() <= mode_for(&without).allows(), "{:?} -> {:?}", mode_for(&without), mode_for(&with));
+            if ceiling == Mode::TwoWay {
+                proptest::prop_assert_eq!(mode_for(&with), mode_for(&without));
+            }
+        }
     }
 
     /// OxiCloud syncs both ways, exactly as before the modes.

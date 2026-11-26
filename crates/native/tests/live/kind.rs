@@ -12,7 +12,9 @@
 //!   password is used once, to make an app password the way a person would; the client then signs
 //!   in with that, never the account password (§ 10). On a plain WebDAV server it is the WebDAV
 //!   password (§ 16, Q6). `CRAFTCLOUD_TEST_APP_PASSWORD` hands one in instead of making one.
-//! - `CRAFTCLOUD_TEST_DAV_URL`: the WebDAV base where it isn't `<server>/remote.php/dav/files/<user>/`.
+//! - `CRAFTCLOUD_TEST_DAV_URL`: the WebDAV base where it isn't `<server>/remote.php/dav/files/<user>/`
+//!   (OpenCloud: the personal space, `<server>/remote.php/dav/spaces/<drive id>/`, found through
+//!   the Graph API with the app token, as `login --kind opencloud` does).
 //! - `CRAFTCLOUD_TEST_MODE`: the sync mode the server must get (`two_way` or `download_only`);
 //!   required for `webdav`, where it depends on the server, and otherwise what § 5 and § 16 say.
 //!
@@ -164,7 +166,47 @@ impl Server {
                 panic!("CRAFTCLOUD_TEST_KIND=webdav needs CRAFTCLOUD_TEST_MODE (two_way or download_only): the mode depends on the server")
             }),
         };
-        Some(Self { kind, url, user, password, app_password, dav_url, mode })
+        let mut server = Self { kind, url, user, password, app_password, dav_url, mode };
+        if kind == Kind::Opencloud && std::env::var("CRAFTCLOUD_TEST_DAV_URL").ok().filter(|u| !u.trim().is_empty()).is_none() {
+            server.dav_url = server.opencloud_space_base();
+        }
+        Some(server)
+    }
+
+    /// OpenCloud: the personal space's WebDAV base, from the Graph API with the app token (what
+    /// `login --kind opencloud` does), once per run.
+    fn opencloud_space_base(&self) -> String {
+        static BASE: Mutex<Option<String>> = Mutex::new(None);
+        let mut base = BASE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(b) = base.as_ref() {
+            return b.clone();
+        }
+        let origin = Base::parse(&format!("{}/", self.url)).unwrap_or_else(|e| panic!("{e}"));
+        let mut session = AppPasswordSession::new(origin, &self.user, &self.app_password()).unwrap_or_else(|e| panic!("{e}"));
+        let (_, drive) =
+            profile::opencloud::personal_space(&mut session, &self.url).unwrap_or_else(|e| panic!("asking OpenCloud for the personal space: {e}"));
+        let found = craftcloud_core::api::opencloud::spaces_base(&self.url, &drive.id);
+        *base = Some(found.clone());
+        found
+    }
+
+    /// OpenCloud: the space's trash bin, as (key, original location, is a folder), for the cleanup.
+    pub fn opencloud_trash(&self) -> Result<Vec<(String, String, bool)>, String> {
+        use craftcloud_core::api::opencloud as oc;
+        let Some((origin, drive)) = oc::split_spaces_base(&self.base()) else { return Err(format!("{}: not an OpenCloud space", self.dav_url)) };
+        let root = Base::parse(&oc::trash_root(&origin, &drive))?;
+        let mut session = AppPasswordSession::new(root.clone(), &self.user, &self.app_password()).map_err(|e| e.to_string())?;
+        let resp = session.call(&oc::trash_list(root.url()))?;
+        Ok(oc::parse_trash(&resp, &root)?.into_iter().map(|t| (t.name, t.original_location, t.is_folder)).collect())
+    }
+
+    /// OpenCloud: purges one item of the space's trash bin, as the person would on the web (the
+    /// test's own cleanup, never the sync's).
+    pub fn purge_opencloud_trash_item(&self, key: &str, is_folder: bool) {
+        use craftcloud_core::api::opencloud as oc;
+        let Some((origin, drive)) = oc::split_spaces_base(&self.base()) else { return };
+        let root = oc::trash_root(&origin, &drive);
+        Dav::at(self, &root).delete(key, is_folder);
     }
 
     /// The account password: OxiCloud's sign-in, and on a plain WebDAV server the WebDAV password.
@@ -189,11 +231,16 @@ impl Server {
     }
 
     /// What this kind of server adds to the generic driver (docs/WEBDAV-STORAGE.md § 7.4): the
-    /// Nextcloud profile (its trash, versions and quota, the probe's known-server checks); the
-    /// generic one for the rest until their profiles land (§ 14, rows 7 and 8).
+    /// Nextcloud profile (its trash, versions and quota, the probe's known-server checks), the
+    /// OpenCloud profile (its space's trash and versions, and the ceiling at download only); the
+    /// generic one for the rest until their profiles land (§ 14, row 7).
     pub fn profile(&self) -> Box<dyn ServerProfile> {
         match self.kind {
             Kind::Nextcloud => Box::new(profile::nextcloud::Nextcloud::new(&self.url, &self.user)),
+            Kind::Opencloud => Box::new(
+                profile::opencloud::Opencloud::from_base(&self.base())
+                    .unwrap_or_else(|| panic!("{}: not an OpenCloud space (CRAFTCLOUD_TEST_DAV_URL)", self.dav_url)),
+            ),
             _ => Box::new(profile::Generic),
         }
     }
