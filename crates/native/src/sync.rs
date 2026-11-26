@@ -3061,6 +3061,20 @@ mod tests {
         assert!(!part.exists(), "the part file is gone");
     }
 
+    /// #122: the staging files craft-atomic writes beside a file while saving it (its naming, not
+    /// this client's) are left alone by the sync, whatever the file is called, also inside a
+    /// synced folder.
+    #[test]
+    fn craft_atomics_staging_files_never_sync() {
+        use craftcloud_core::names::{NameRules, Platform, skipped};
+        let long = "x".repeat(300);
+        for file in ["report.docx", "a", "naïve café.md", long.as_str()] {
+            let staged = craft_atomic::temp_name(file);
+            assert!(craftcloud_core::names::ignored(&staged), "{staged}");
+            assert!(skipped(&format!("Docs/{staged}"), true, Platform::current(), &NameRules::oxicloud()), "{staged}");
+        }
+    }
+
     /// Leftover part files are cleaned up: only this client's own, only old ones, never inside
     /// `.craftcloud/`.
     #[test]

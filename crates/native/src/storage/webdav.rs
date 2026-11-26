@@ -1565,4 +1565,24 @@ pub(crate) mod tests {
         WebDav::connect(session(&server), "Laptop", Some(dir.path()), quick);
         assert!(probed(before), "a day-old check is re-probed");
     }
+
+    /// #106: the checksum read back after a `PUT` the server took fails (the listing answers 500).
+    /// The write is then neither "saved" nor a conflict but an error: the engine records nothing
+    /// as synced, keeps the version it knew, and the next pass compares both sides again.
+    #[test]
+    fn a_failed_checksum_read_back_is_an_error_not_a_saved_write() {
+        use crate::storage::profile::nextcloud::Nextcloud;
+        let server = FakeServer::start_full(|r| match r.method.as_str() {
+            "PUT" => Answer::new(201, "").header("ETag", "\"n1\""),
+            _ => Answer::new(500, "the listing failed"),
+        });
+        let mut s = WebDav::new(session(&server), two_way(), "Laptop").with_profile(Box::new(Nextcloud::new(&server.url, "john")));
+        let dir = tempfile::tempdir().unwrap();
+        let local = file(dir.path(), "a.txt", "abc");
+        let written = s.replace("Docs/a.txt", "\"e1\"", &local);
+        assert!(written.is_err(), "unknown, never taken as saved: {written:?}");
+        let seen = server.seen();
+        assert!(seen.iter().any(|r| r.method == "PUT" && r.header("oc-checksum").is_some_and(|c| c.starts_with("SHA1:"))), "{seen:?}");
+        assert!(seen.iter().any(|r| r.method == "PROPFIND"), "read back: {seen:?}");
+    }
 }

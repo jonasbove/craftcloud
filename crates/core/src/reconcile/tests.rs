@@ -550,3 +550,35 @@ fn a_folder_a_set_aside_file_was_leaving_is_not_removed() {
     let r = remote(&[("A/S", "e0", 3)], &["A"]);
     assert_eq!(plan(&s, &l, &r), [Action::LocalClash("A/S".into())]);
 }
+
+/// #72: a cloud file whose new ETag is that of another synced file gone from the cloud (a copy, or
+/// that file moved onto it) isn't taken as the file renamed here and edited there: no move is
+/// paired, and every version is kept (the cloud one comes down, the renamed one goes up).
+#[test]
+fn an_edit_with_the_etag_of_a_vanished_file_is_not_paired_with_a_rename_here() {
+    // Here: `a.txt` renamed to `b.txt`. In the cloud: `a.txt` now has `c.txt`'s ETag, and `c.txt`
+    // is gone from there.
+    let s = state(&[("a.txt", known("e1", 5, 100)), ("c.txt", known("e2", 7, 200))], &[]);
+    let l = local(&[("b.txt", 5, 100), ("c.txt", 7, 200)], &[]);
+    let r = remote(&[("a.txt", "e2", 7)], &[]);
+    let p = plan(&s, &l, &r);
+    assert!(!p.iter().any(|a| matches!(a, Action::MoveRemote { .. } | Action::MoveLocal { .. })), "{p:?}");
+    assert!(p.contains(&Action::Download("a.txt".into())) && p.contains(&Action::UploadNew("b.txt".into())), "both kept: {p:?}");
+}
+
+/// #73: two files that each take the place of the other's folder (`A/x` moved to `B`, `B/y` to
+/// `A`) have no order that works in one pass. The plan keeps both moves and deletes nothing; the
+/// next pass finishes what this one can't.
+#[test]
+fn files_swapping_with_each_others_folder_lose_nothing() {
+    let s = state(&[("A/x", known("ex", 5, 100)), ("B/y", known("ey", 7, 200))], &["A", "B"]);
+    let l = local(&[("B", 5, 100), ("A", 7, 200)], &[]);
+    let r = remote(&[("A/x", "ex", 5), ("B/y", "ey", 7)], &["A", "B"]);
+    let p = plan(&s, &l, &r);
+    assert!(p.contains(&Action::MoveRemote { from: "A/x".into(), to: "B".into(), etag: "ex".into() }), "{p:?}");
+    assert!(p.contains(&Action::MoveRemote { from: "B/y".into(), to: "A".into(), etag: "ey".into() }), "{p:?}");
+    assert!(
+        !p.iter().any(|a| matches!(a, Action::DeleteRemote { .. } | Action::DeleteLocal(_) | Action::DeleteRemoteFolder { .. })),
+        "nothing deleted: {p:?}"
+    );
+}

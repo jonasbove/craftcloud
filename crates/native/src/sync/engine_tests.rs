@@ -1649,3 +1649,60 @@ fn walkdir(dir: &Path) -> Vec<std::path::PathBuf> {
     }
     out
 }
+
+// --- Review follow-ups: tests ---------------------------------------------------------------
+
+/// #113: while a folder's move waits, a file is made in its old folder in the cloud. Nothing of it
+/// is deleted on either side meanwhile, and once the server can move again the file ends up here.
+#[test]
+fn webdav_a_cloud_file_made_in_a_folder_whose_move_waits_is_never_lost() {
+    let (server, dav, down) = server_that_cant_move();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let mut engine = webdav_engine(&server, root, two_way());
+    renamed_folder_scene(&mut engine, &dav);
+    down.store(true, Ordering::SeqCst);
+    engine.cycle(Deletes::Hold);
+    dav.lock().unwrap().add_file("Proj/from-the-cloud.txt", b"made in the cloud");
+    for _ in 0..2 {
+        engine.cycle(Deletes::Hold);
+        let wrote = writes(&server);
+        assert!(wrote.iter().all(|w| w.starts_with("MOVE ")), "only the move is tried: {wrote:?}");
+        assert!(dav.lock().unwrap().body("Proj/from-the-cloud.txt").is_some(), "still in the cloud");
+        assert!(!root.join("Proj").exists(), "the old name isn't made again here");
+    }
+
+    down.store(false, Ordering::SeqCst);
+    time_passes(Duration::from_secs(121));
+    for _ in 0..3 {
+        engine.cycle(Deletes::Hold);
+    }
+    let here: Vec<String> = walkdir(root)
+        .into_iter()
+        .filter(|f| !f.starts_with(root.join(".craftcloud")) && std::fs::read(f).is_ok_and(|b| b == b"made in the cloud"))
+        .map(|f| f.strip_prefix(root).unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(here.len(), 1, "here once: {here:?}");
+    let wrote = writes(&server);
+    assert!(!wrote.iter().any(|w| w.starts_with("DELETE ") && w.contains("from-the-cloud")), "{wrote:?}");
+}
+
+/// #99: a file deleted in the cloud whose move into `.craftcloud/trash/` fails stays where it is,
+/// and the state keeps it (the next pass tries again); nothing is lost on a failure.
+#[test]
+fn a_cloud_delete_that_cant_reach_the_local_trash_keeps_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let file = write(root, "Docs/f.txt", "abc");
+    let mut state = State::default();
+    state.files.insert("Docs/f.txt".into(), as_synced(&file));
+    // `.craftcloud` is a file: no trash folder can be made in it.
+    std::fs::write(root.join(".craftcloud"), "in the way").unwrap();
+    let mut engine = engine(ServerUrl::parse("http://127.0.0.1:9").unwrap(), root, &[]);
+    let root_path = engine.root();
+    let mut folders = BTreeSet::new();
+    let done = engine.apply(&root_path, &Action::TrashLocal("Docs/f.txt".into()), &mut state, &mut folders, &Tree::default());
+    assert!(done.is_err(), "{done:?}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "abc", "the file stays");
+    assert!(state.files.contains_key("Docs/f.txt"), "and the state keeps it");
+}

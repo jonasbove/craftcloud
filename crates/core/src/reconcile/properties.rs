@@ -33,9 +33,25 @@ fn skipped(path: &str, is_file: bool, platform: Platform) -> bool {
 }
 
 fn config() -> ProptestConfig {
-    let cases = std::env::var("PROPTEST_CASES").ok().and_then(|c| c.parse().ok()).unwrap_or(256);
+    let cases = cases_from(std::env::var("PROPTEST_CASES").ok());
     // Inputs left out (a name that doesn't sync, a known bug) don't count as cases.
     ProptestConfig { cases, max_global_rejects: cases.saturating_mul(2).max(1024), ..ProptestConfig::default() }
+}
+
+/// The number of cases `PROPTEST_CASES` asks for (256 when it isn't set). One that isn't a number
+/// stops the run, rather than quietly running the 256 a long run was meant to replace.
+fn cases_from(asked: Option<String>) -> u32 {
+    match asked {
+        None => 256,
+        Some(c) => c.trim().parse().unwrap_or_else(|_| panic!("PROPTEST_CASES={c:?} isn't a number of cases")),
+    }
+}
+
+#[test]
+fn proptest_cases_are_read_or_refused() {
+    assert_eq!(cases_from(None), 256);
+    assert_eq!(cases_from(Some("50000".into())), 50_000);
+    assert!(std::panic::catch_unwind(|| cases_from(Some("50k".into()))).is_err(), "a typo fails loudly");
 }
 
 /// Folders and names the generated paths are made of. `S` is both a folder (`A/S`) and a file

@@ -112,6 +112,13 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: Sync: tests the review asked for, no change in behaviour. The plan keeps both versions when a cloud
+  edit carries the ETag of a synced file gone from the cloud (#72), and keeps both moves, deleting nothing, when two
+  files take each other's folder's place (#73). A file deleted in the cloud that can't reach the local trash stays,
+  with its state (#99). A checksum read back that fails after a good `PUT` is an error, never a saved write (#106).
+  A file made in the cloud in a folder whose move waits is never lost (#113). craft-atomic's staging files are
+  skipped, by its own naming (#122). A `PROPTEST_CASES` that isn't a number stops the property tests instead of
+  quietly running 256 (#65).
 - 2026-11-26: Docs: M10 part 1 is done and marked so: `scripts/create-owner`, `add-user`, `app-password` and
   `smoke-test` need only sh and curl, and the packaging icons come from `cargo xtask icons`; nothing in `.github/`,
   `docker/`, the Dockerfile, `compose.yaml` or `nix/` runs Python. The design build in `design/tools/` is the one
