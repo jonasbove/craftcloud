@@ -30,6 +30,19 @@ pub(super) fn keychain_ui(ui: &mut Ui, area: Rect) {
     ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
 }
 
+/// A push button of the sign-in sheets: craft-ui's, styled as CraftCloud's (`framework::button`). The module is also
+/// built for wasm32, which never shows it and has no craft-ui, so there it is CraftCloud's own. Whether it was clicked.
+fn push(ui: &mut Ui, text: &str, kind: Kind, icon: Option<Icon>, enabled: bool) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::framework::button(ui, text, kind, icon, enabled)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        chrome::button(ui, text, kind, icon, enabled).clicked()
+    }
+}
+
 fn error_text(ui: &mut Ui, error: &str) {
     let t = Look::get(ui.ctx());
     ui.add(egui::Label::new(egui::RichText::new(error).size(13.0).color(t.bad)).wrap());
@@ -73,13 +86,13 @@ impl<H: DesktopHost> DesktopApp<H> {
                     }
                 }
                 Part::ActionsLeft => {
-                    if chrome::button(ui, "Quit", Kind::Secondary, None, true).clicked() {
+                    if push(ui, "Quit", Kind::Secondary, None, true) {
                         self.host.quit();
                     }
                 }
                 Part::ActionsRight => {
                     let busy = checking || found;
-                    if chrome::button(ui, "Continue", Kind::Primary, Some(Icon::Arrow), connect.ready() && !busy).clicked() {
+                    if push(ui, "Continue", Kind::Primary, Some(Icon::Arrow), connect.ready() && !busy) {
                         action = connect.submit();
                     }
                 }
@@ -124,10 +137,10 @@ impl<H: DesktopHost> DesktopApp<H> {
                     error_text(ui, e);
                 }
             }
-            Part::ActionsLeft => cancel = chrome::button(ui, "Cancel", Kind::Secondary, None, true).clicked(),
+            Part::ActionsLeft => cancel = push(ui, "Cancel", Kind::Secondary, None, true),
             Part::ActionsRight => {
                 let label = if opened { "Open browser again" } else { "Try the browser again" };
-                again = chrome::button(ui, label, Kind::Secondary, Some(Icon::External), true).clicked();
+                again = push(ui, label, Kind::Secondary, Some(Icon::External), true);
             }
         });
         if again {
@@ -171,7 +184,7 @@ impl<H: DesktopHost> DesktopApp<H> {
                             ui.add_space(4.0);
                             ui.add(egui::Label::new(egui::RichText::new(short.as_str()).size(14.0).color(t.ink_strong)).truncate());
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if chrome::button(ui, "Change…", Kind::Secondary, None, true).clicked() {
+                                if push(ui, "Change…", Kind::Secondary, None, true) {
                                     *changing = true;
                                 }
                             });
@@ -193,7 +206,7 @@ impl<H: DesktopHost> DesktopApp<H> {
                     ui.label(egui::RichText::new(format!("{n} of {} folders{files}", choice.folders.len())).size(13.0).color(t.muted));
                 }
                 Part::ActionsRight => {
-                    start = chrome::button(ui, "Start syncing", Kind::Primary, Some(Icon::Refresh), !local.trim().is_empty()).clicked();
+                    start = push(ui, "Start syncing", Kind::Primary, Some(Icon::Refresh), !local.trim().is_empty());
                 }
             }
         });

@@ -146,13 +146,23 @@ type H = Harness<'static, DesktopApp<FakeDesktop>>;
 
 fn app(settings: ClientSettings, tokens: Option<Tokens>) -> H {
     let app = DesktopApp::new(&egui::Context::default(), FakeDesktop::default(), settings, tokens);
-    Harness::builder().with_size(egui::vec2(960.0, 640.0)).build_ui_state(|ui, app: &mut DesktopApp<FakeDesktop>| app.ui(ui), app)
+    window(app)
+}
+
+/// The desktop window as `main` makes it: the craft-ui runtime installed before the first pass, its root values set.
+fn window(app: DesktopApp<FakeDesktop>) -> H {
+    let h = Harness::builder()
+        .with_context_setup(crate::framework::install_headless)
+        .with_size(egui::vec2(960.0, 640.0))
+        .build_ui_state(|ui, app: &mut DesktopApp<FakeDesktop>| app.ui(ui), app);
+    crate::framework::before_input(&h.ctx);
+    h
 }
 
 fn connect(h: &mut H) {
     h.state_mut().screen = Screen::Connect(crate::connect::ConnectScreen::new("http://127.0.0.1:8093"));
     h.run();
-    h.get_by_label("CONTINUE").click();
+    h.get_by_label("Continue").click();
     h.run();
 }
 
@@ -172,7 +182,7 @@ fn the_sign_in_address_is_always_shown_and_a_failed_browser_says_so() {
 
     // The browser works the second time: the sheet says so, and the address stays.
     h.state_mut().host.no_browser = false;
-    h.get_by_label("TRY THE BROWSER AGAIN").click();
+    h.get_by_label("Try the browser again").click();
     h.run();
     h.get_by_label("We opened 127.0.0.1:8093 in your browser. Sign in there and check it shows this code:");
     h.get_by_label("http://127.0.0.1:8093/device?code=KOQY-2239");
@@ -193,7 +203,7 @@ fn signs_in_through_the_browser_and_starts_syncing() {
     h.run();
     assert!(h.state().host.net.opened[0].contains("/device?code="), "the browser opens the approval page");
     h.get_by_label("Continue in your browser");
-    h.get_by_label("OPEN BROWSER AGAIN").click();
+    h.get_by_label("Open browser again").click();
     h.run();
     assert_eq!(h.state().host.net.opened.len(), 2);
 
@@ -220,7 +230,7 @@ fn signs_in_through_the_browser_and_starts_syncing() {
     assert!(h.query_by_label(".craftcloud").is_none(), "CraftCloud's own folder is never offered");
     h.get_by_label("Signed in");
 
-    h.get_by_label("START SYNCING").click();
+    h.get_by_label("Start syncing").click();
     h.run();
     let (settings, _) = h.state().host.saved.clone().expect("session saved");
     assert_eq!(settings.local_folder, "/home/john/CraftCloud");
@@ -243,11 +253,11 @@ fn the_choose_sheet_switches_folders_and_the_local_folder() {
     h.get_by_label("Photos: OFF").click();
     h.get_by_label("Files at the top level: OFF").click();
     h.run();
-    h.get_by_label("CHANGE…").click();
+    h.get_by_label("Change…").click();
     h.run();
     h.get_by_label("LOCAL FOLDER").click();
     h.run();
-    h.get_by_label("START SYNCING").click();
+    h.get_by_label("Start syncing").click();
     h.run();
     let (settings, _) = h.state().host.saved.clone().expect("session saved");
     assert_eq!(settings.excluded, ["Photos"]);
@@ -267,7 +277,7 @@ fn a_server_that_is_not_craftcloud_is_refused() {
 #[test]
 fn quit_on_the_connect_sheet_ends_the_client() {
     let mut h = app(ClientSettings::default(), None);
-    h.get_by_label("QUIT").click();
+    h.get_by_label("Quit").click();
     h.run();
     assert!(h.state().host.quit);
 }
@@ -674,7 +684,7 @@ fn a_missing_folder_turns_off_sync_now_and_open_folder() {
 /// Starting the client as `main` does: the settings now, the keychain's answer to come.
 fn starting(settings: ClientSettings) -> H {
     let app = DesktopApp::waiting_for_keychain(&egui::Context::default(), FakeDesktop::default(), settings);
-    Harness::builder().with_size(egui::vec2(960.0, 640.0)).build_ui_state(|ui, app: &mut DesktopApp<FakeDesktop>| app.ui(ui), app)
+    window(app)
 }
 
 /// What `craftcloud login` leaves: the server in the settings, the tokens in the keychain.
@@ -698,7 +708,7 @@ fn a_sign_in_from_the_command_line_goes_on_to_choosing_folders() {
     h.run();
     h.get_by_label("Choose what to sync");
     h.get_by_label("Documents");
-    h.get_by_label("START SYNCING").click();
+    h.get_by_label("Start syncing").click();
     h.run();
     let (settings, saved) = h.state().host.saved.clone().expect("session saved");
     assert_eq!((settings.local_folder.as_str(), saved), ("/home/john/CraftCloud", tokens()));
@@ -982,4 +992,77 @@ fn an_address_without_a_scheme_tries_https_then_http_and_enter_continues() {
     h.run();
     h.get_by_label("CraftCloud at cloud.example.org:8090 over http:// (not encrypted)");
     assert_eq!(h.state().settings.server, "http://cloud.example.org:8090");
+}
+
+/// The Connect sheet's buttons are craft-ui's `Button`, in craft-ui's design: buttons to screen readers, named as
+/// written (Continue, Quit).
+#[test]
+fn the_connect_sheets_buttons_are_craft_ui_buttons() {
+    use craft_ui_contract::runtime::inspect;
+    let key = egui::Id::unique("connect sheet");
+    let app = DesktopApp::new(&egui::Context::default(), FakeDesktop::default(), ClientSettings::default(), None);
+    let mut h = Harness::builder().with_context_setup(crate::framework::install_headless).with_size(egui::vec2(960.0, 640.0)).build_ui_state(
+        move |ui, app: &mut DesktopApp<FakeDesktop>| {
+            inspect::record(ui, key, |ui| app.ui(ui));
+        },
+        app,
+    );
+    crate::framework::before_input(&h.ctx);
+    h.state_mut().screen = Screen::Connect(crate::connect::ConnectScreen::new("http://127.0.0.1:8093"));
+    h.run();
+    let recorded = inspect::recorded(&h.ctx, key).expect("the sheet was recorded");
+    for name in ["Continue", "Quit"] {
+        let element =
+            recorded.elements.iter().find(|e| e.facts.as_ref().and_then(|f| f.name.as_deref()) == Some(name)).unwrap_or_else(|| {
+                panic!("no craft-ui component named {name}: {:?}", recorded.elements.iter().map(|e| e.component).collect::<Vec<_>>())
+            });
+        assert_eq!(element.component, "Button", "{name}");
+        assert_eq!(element.facts.as_ref().map(|f| f.role.as_str()), Some("Button"), "{name}");
+        h.get_by_role_and_label(egui::accesskit::Role::Button, name);
+    }
+}
+
+/// The craft-ui runtime takes Escape window-wide; the desktop hands it back to egui, where CraftCloud's menus and
+/// sheets read it.
+#[test]
+fn escape_still_reaches_craftclouds_own_widgets() {
+    let seen = |with_app: bool| {
+        let app = DesktopApp::new(&egui::Context::default(), FakeDesktop::default(), ClientSettings::default(), None);
+        let mut h = Harness::builder().with_context_setup(crate::framework::install_headless).with_size(egui::vec2(960.0, 640.0)).build_ui_state(
+            move |ui, (app, seen): &mut (DesktopApp<FakeDesktop>, bool)| {
+                if with_app {
+                    app.ui(ui);
+                }
+                *seen |= ui.input(|i| i.key_pressed(egui::Key::Escape));
+            },
+            (app, false),
+        );
+        crate::framework::before_input(&h.ctx);
+        h.run();
+        h.key_press(egui::Key::Escape);
+        h.run();
+        h.state().1
+    };
+    assert!(!seen(false), "the runtime takes Escape when nothing hands it back");
+    assert!(seen(true), "DesktopApp::ui hands Escape back");
+}
+
+/// The hand-back gives egui only Escape's key-down; the key-up comes through on its own, so after a press and a
+/// release nothing stays held.
+#[test]
+fn escape_is_not_left_held_after_the_hand_back() {
+    let app = DesktopApp::new(&egui::Context::default(), FakeDesktop::default(), ClientSettings::default(), None);
+    let mut h = Harness::builder().with_context_setup(crate::framework::install_headless).with_size(egui::vec2(960.0, 640.0)).build_ui_state(
+        |ui, (app, held): &mut (DesktopApp<FakeDesktop>, bool)| {
+            app.ui(ui);
+            *held = ui.input(|i| i.key_down(egui::Key::Escape));
+        },
+        (app, false),
+    );
+    crate::framework::before_input(&h.ctx);
+    h.run();
+    h.key_press(egui::Key::Escape);
+    h.run();
+    h.run();
+    assert!(!h.state().1, "Escape is still held after its press and release");
 }

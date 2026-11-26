@@ -368,6 +368,9 @@ impl<H: DesktopHost> DesktopApp<H> {
     }
 
     pub fn ui(&mut self, ui: &mut Ui) {
+        // The craft-ui runtime takes Escape window-wide; CraftCloud's sheets and menus read it from egui.
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::framework::return_window_escape(ui.ctx());
         if self.themed.as_ref() != Some(ui.ctx()) {
             crate::theme::install(ui.ctx());
             self.themed = Some(ui.ctx().clone());

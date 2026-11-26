@@ -7,6 +7,9 @@ pub mod backend;
 pub mod chrome;
 mod connect;
 pub mod desktop;
+/// The craft-ui runtime and its components, on the desktop client only.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod framework;
 pub mod kit;
 pub mod theme;
 pub mod themes;

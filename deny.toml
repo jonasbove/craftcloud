@@ -64,10 +64,9 @@ allow-wildcard-paths = true
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# craft-libs pinned by rev (Cargo.toml), and the egui and winit forks the Craft apps share
-# ([patch.crates-io]).
-allow-git = [
-    "https://github.com/storytold/craft-libs",
-    "https://github.com/storytold/egui.git",
-    "https://github.com/storytold/winit.git",
-]
+# Any repository of the Craft apps' organisation (storytold) may be a git source, and nothing from elsewhere:
+# craft-libs pinned by rev (Cargo.toml), the egui and winit forks the Craft apps share ([patch.crates-io]), and the
+# repositories craft-libs itself pulls from (vectorcraft's geometry, through craft-ui's craft-svg). The maintainer
+# allowed the whole organisation, so a craft-libs bump that adds another storytold repository needs no change here.
+[sources.allow-org]
+github = ["storytold"]

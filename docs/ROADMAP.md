@@ -116,6 +116,16 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: Desktop: craft-ui's buttons on the sign-in sheets (Connect, Continue in your browser, Choose what to
+  sync), the first step of adopting craft-libs' craft-ui, on the desktop client only, as craft-launcher hosts it
+  (`crates/ui-egui/src/framework.rs`): the runtime is installed on the window before its first pass, is handed the
+  palette in use (pinned onto a craft theme, so a colour theme reaches it), the appearance and the zoom every pass,
+  gives Escape back to CraftCloud's own widgets, and keeps egui's Ctrl/Cmd with + and - zoom. The buttons follow
+  craft-ui's design as it comes: its primary and secondary variants and sizes, Inter labels as written, and its
+  icons (refresh, open; it has no right arrow, so Continue shows none). CraftCloud adapts to craft-libs' design
+  rather than restyling it; the FigCraft design follows later. The web frontend links none of craft-ui: its wasm
+  dependency graph and size are unchanged. `deny.toml` allows any storytold repository as a git source; NOTICE
+  credits craft-ui's embedded icon sets and faces.
 - 2026-11-26: UI: seven colour themes besides CraftCloud's own look, on the desktop and the web: Catppuccin,
   Dracula, Gruvbox, Nord, One Dark, Solarized Light and Tokyo Night. They are craft-libs `craft-design-theme`
   files, parsed and derived by craft-libs' `craft-theme` (not craft-ui) and mapped onto CraftCloud's colour

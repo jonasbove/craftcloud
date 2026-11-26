@@ -188,6 +188,13 @@ in `crates/ui-egui/src/themes.rs` (`map`: `bg` is the theme's `surface.panel`, `
 accent the theme's own); the shots are `activity-theme-*`, `settings-theme-catppuccin`, `web-files-theme-*` and
 `web-account-menu-theme-gruvbox`.
 
+**Desktop buttons from craft-ui** (not in the FigCraft file): on the desktop sign-in sheets (Connect, Continue in
+your browser, Choose what to sync) the push buttons are craft-libs' craft-ui `Button` in craft-ui's own design: its
+primary and secondary variants, sizes, Inter labels as written and its icons (`crates/ui-egui/src/framework.rs`).
+CraftCloud's palette, or the chosen colour theme, reaches them through the craft theme it pins. CraftCloud is moving
+to craft-libs' design rather than restyling craft-ui; bringing the FigCraft design in `design/` in line with
+craft-libs and craft-ui is a follow-up. Every other button, and the whole web frontend, is still `chrome::button`.
+
 ## App names (`Apps` string variables)
 
 Files are named by their format, never by another vendor's product: a `.pptx` is a "PPTX presentation", a `.psd` a
