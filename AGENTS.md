@@ -70,10 +70,11 @@ them, this says why. Nothing here weakens a rule for new work; it says what exis
 
 - **Not a storytold repository.** CraftCloud lives at https://github.com/jonasbove/craftcloud, its only home: the
   code, issues, pull requests, releases and images are all there. It follows the Craft apps' house rules by choice.
-  Its CI does not call `storytold/craft-common-actions` (core rule 11): `.github/workflows/ci.yml` writes the same gate
-  out, because the shared workflow needs a paid StepSecurity subscription in a private repository (see the comment
-  at its top), which this repository was when that was decided; it is public since 2026-11-14. For the same reason
-  there is no `house-rules.yml` workflow yet.
+  Its CI calls `storytold/craft-common-actions` (core rule 11) for the Nix check (`nix.yml`, pinned to a commit).
+  `.github/workflows/ci.yml` and `packaging-lint.yml` still write the shared gate and lint out: the shared workflows
+  use StepSecurity's actions, which need a paid subscription in a private repository, and this repository was
+  private when that was decided. It is public since 2026-11-14, so they move to the shared workflows, each in a pull
+  request of its own. For the same reason there is no `house-rules.yml` workflow yet.
 - **`main` changes only through a pull request** (core rule 8), enforced by a GitHub ruleset. **Every pull
   request is merged by a maintainer's explicit confirmation; agents open pull requests and ask, they never merge on
   their own.** One topic per pull request, on a branch (`fix/…`, `docs/…`, `feature/…`, `chore/…`), titled with a
@@ -288,6 +289,10 @@ README's Status section in step.
   two tags there (never `latest`).
 - `.github/workflows/dockerhub-page.yml` (**Docker Hub page**): the Docker Hub description and overview, from
   `docker/DOCKERHUB.md`, on a push that changes it and by hand.
+- `.github/workflows/nix.yml` (**Nix**): on a change to the flake, `nix/`, `Cargo.lock` or itself, calls
+  craft-common-actions' `nix.yml` (`nix flake check --no-build --all-systems`: the packages, the dev shell and the
+  NixOS module evaluate on every system, nothing is built), pinned to a commit rather than `@main`: CraftCloud is
+  not a storytold repository, so a breaking change there would come without a pull request here.
 - `.github/workflows/packaging-lint.yml` (**Packaging lint**): actionlint, shellcheck on `packaging/`, and the
   desktop entry, AppStream file, Info.plist and MSI sources; shellcheck and the tests for `.github/scripts/`.
 - `.github/workflows/claude-pr.yml` (**Claude pull request check**): on every pull request that isn't a draft or a

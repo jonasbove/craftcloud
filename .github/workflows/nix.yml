@@ -1,8 +1,8 @@
 # Evaluates the Nix flake (no build, a minute or two): the packages, the dev shell and the NixOS
 # server module (checks.module). `nix build` / `nix develop` stop at evaluation when Cargo.lock or
 # nix/module.nix gains something the flake can't handle, and nothing else would notice. The Craft
-# apps' check (craft-common-actions nix.yml), written out here for the same reason as the gate in
-# ci.yml.
+# apps' check: craft-common-actions' nix.yml, which runs `nix flake check --no-build --all-systems`
+# (its default extra-args, passed here anyway so a change of default can't change this check).
 name: Nix
 
 on:
@@ -22,13 +22,9 @@ concurrency:
 
 jobs:
   nix:
-    name: eval
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
-      - name: Check flake evaluation
-        run: nix flake check --no-build --all-systems
+    # Pinned to a craft-common-actions commit (main on 2026-11-26), not @main as the Craft apps call
+    # it: CraftCloud is not a storytold repository, so a breaking change there would not come with a
+    # pull request here. Move the pin in a CI pull request of its own, after reading the change.
+    uses: storytold/craft-common-actions/.github/workflows/nix.yml@4ec2a14646b538253fd5ebe109bf463a3d31b061
+    with:
+      extra-args: "--no-build --all-systems"
