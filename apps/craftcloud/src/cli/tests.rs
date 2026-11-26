@@ -314,6 +314,10 @@ fn a_left_out_name_says_who_cant_have_it() {
     assert_eq!(reason_words("t13/link", "symlink", Platform::Other), "a symbolic link, never followed");
     assert_eq!(reason_words("t13/a.tmp", "temporary", Platform::Other), "looks like a temporary file");
     assert_eq!(reason_words("t13/x", "new_reason", Platform::Other), "new_reason", "a reason this build doesn't know is shown as is");
+    // #85: elsewhere a name only Windows refuses never says "Windows".
+    for path in ["t13/report:final.txt", "t13/trailing./a.txt", "t13/CON.txt"] {
+        assert!(!reason_words(path, "name", Platform::Other).contains("Windows"), "{path}");
+    }
 }
 
 /// T-033: a place that can't be read holds the sync (code 9, and the headline says so); a

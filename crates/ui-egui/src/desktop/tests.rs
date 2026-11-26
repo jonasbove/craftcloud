@@ -343,6 +343,21 @@ fn who_is_signed_in_is_asked_again_after_a_wait_that_grows() {
     assert!(h.state().error.is_none(), "who is signed in is a detail: no error shown");
 }
 
+/// #84: a 200 that names nobody (an empty answer from a proxy, say) is no answer: who is signed
+/// in stays unknown, no error is shown, and it is asked again after the wait.
+#[test]
+fn an_answer_naming_nobody_is_asked_again() {
+    let mut h = with_state(SyncState::UpToDate);
+    let asked = |h: &H| h.state().host.net.sent_to("/api/auth/me");
+    h.state_mut().host.net.answer("/api/auth/me", ok(b"{}"));
+    h.run();
+    assert!(h.state().me.is_none());
+    assert!(h.state().error.is_none(), "who is signed in is a detail: no error shown");
+    h.state_mut().host.net.clock = 5.0;
+    h.run();
+    assert_eq!(asked(&h), 2, "asked again after the wait");
+}
+
 #[test]
 fn a_saved_session_goes_straight_to_syncing() {
     let mut h = with_state(SyncState::UpToDate);
