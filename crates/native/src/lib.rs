@@ -1,6 +1,8 @@
 //! CraftCloud's desktop platform layer: HTTP on worker threads, tokens in the keychain, settings
 //! through craft-settings, and the sync transfers. Only the desktop client depends on it.
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
 pub mod control;
 pub mod experimental;
 #[cfg(test)]

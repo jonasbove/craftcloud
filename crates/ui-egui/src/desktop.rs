@@ -500,7 +500,8 @@ impl<H: DesktopHost> DesktopApp<H> {
                 return;
             }
             if now >= *next_poll && !self.net.is_waiting(&Key::Poll) {
-                let req = auth::device_token(self.server_ref(), &start.device_code);
+                let Some(server) = self.server.as_ref() else { return self.lost_server() };
+                let req = auth::device_token(server, &start.device_code);
                 self.net.send(&mut self.host, Key::Poll, req);
             }
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
@@ -532,10 +533,11 @@ impl<H: DesktopHost> DesktopApp<H> {
         Some(tokens.authorize(make(self.server.as_ref()?)))
     }
 
-    #[allow(clippy::expect_used)]
-    fn server_ref(&self) -> &ServerUrl {
-        // Every screen after Connect has a server; Connect never sends.
-        self.server.as_ref().expect("a server is chosen before any request")
+    /// Every screen after Connect has a server, and Connect never sends; should one ever be
+    /// missing, the sign-in starts again rather than stopping the client.
+    fn lost_server(&mut self) {
+        self.error = Some("No server is chosen. Start again.".into());
+        self.screen = Screen::Connect(ConnectScreen::new(self.settings.server.clone()));
     }
 
     fn on_answer(&mut self, key: Key, result: NetResult) {
@@ -566,7 +568,8 @@ impl<H: DesktopHost> DesktopApp<H> {
             Key::Config => {
                 if craftcloud_core::RuntimeConfig::from_json(&resp.body).is_ok() && resp.is_success() {
                     self.http_fallback = None;
-                    let req = auth::device_authorize(self.server_ref(), &self.host.client_name());
+                    let Some(server) = self.server.as_ref() else { return self.lost_server() };
+                    let req = auth::device_authorize(server, &self.host.client_name());
                     self.net.send(&mut self.host, Key::Authorize, req);
                 } else if let Some(http) = self.http_fallback.take() {
                     self.ask_config(http);
@@ -699,8 +702,9 @@ impl<H: DesktopHost> DesktopApp<H> {
                 *next_poll = now + *interval;
             }
             Ok(DevicePoll::Approved(tokens)) => {
-                let req = tokens.authorize(dav::list(self.server_ref(), ""));
-                let me = tokens.authorize(auth::me(self.server_ref()));
+                let Some(server) = self.server.as_ref() else { return self.lost_server() };
+                let req = tokens.authorize(dav::list(server, ""));
+                let me = tokens.authorize(auth::me(server));
                 self.tokens = Some(tokens);
                 self.net.send(&mut self.host, Key::ListRoot, req);
                 self.net.send(&mut self.host, Key::Me, me);

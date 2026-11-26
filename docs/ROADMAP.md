@@ -112,6 +112,12 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: Lint: the no-panic `deny` attributes (`clippy::unwrap_used`, `expect_used`, `panic`,
+  `unimplemented`, `todo`, `unreachable`) now also sit on the library crates' roots, `crates/core`, `crates/native`
+  and `crates/ui-egui`, as on the apps' (Rust rule 1, review #100). The one violation was in test-only code: the web
+  screens' scripted `FakeBackend`, now `#[cfg(test)]`. The desktop sign-in's one `#[allow(clippy::expect_used)]`
+  (`server_ref`) is gone: a sign-in that lost its server starts again instead of stopping the client, with a test
+  that panicked before. AGENTS.md says so.
 - 2026-11-26: Docs: M10 part 1 is done and marked so: `scripts/create-owner`, `add-user`, `app-password` and
   `smoke-test` need only sh and curl, and the packaging icons come from `cargo xtask icons`; nothing in `.github/`,
   `docker/`, the Dockerfile, `compose.yaml` or `nix/` runs Python. The design build in `design/tools/` is the one

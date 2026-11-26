@@ -83,8 +83,9 @@ them, this says why. Nothing here weakens a rule for new work; it says what exis
   follow core rule 15.
 - **`plan/`** (core rule 9) is `PLAN.md` here: a gitignored notebook, not rules.
 - **No panics** (Rust rule 1): `unsafe_code` is forbidden workspace-wide, and the three app roots
-  (`apps/*/src/main.rs`) carry the `deny` attributes. The library crates `crates/{core,native,ui-egui}` do not carry
-  them yet; adding them is its own task. New crate roots copy the attributes from `apps/craftcloud/src/main.rs`.
+  (`apps/*/src/main.rs`) and the library crates `crates/{core,native,ui-egui}` (`src/lib.rs`) carry the `deny`
+  attributes. Test-only helpers (`FakeBackend`, `fake_server`) are `#[cfg(test)]`, where `clippy.toml` lets tests
+  unwrap and panic. New crate roots copy the attributes from `apps/craftcloud/src/main.rs`.
 - **Fonts and assets** (Rust rule 3): Inter, Archivo and Geist Mono (OFL-1.1) are vendored in
   `crates/ui-egui/assets/fonts/` with their licences, because the web frontend builds them in. Credits are in
   `NOTICE`; there is no `ATTRIBUTION.md`. A new asset gets its line in `NOTICE` in the same change.

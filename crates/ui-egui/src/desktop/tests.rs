@@ -288,6 +288,24 @@ fn a_denied_sign_in_goes_back_to_the_start() {
     assert!(matches!(h.state().screen, Screen::Connect(_)));
 }
 
+/// Rust rule 1: a sign-in that somehow lost its server starts again instead of stopping the
+/// client (it was an `expect` before).
+#[test]
+fn a_sign_in_without_a_server_starts_again_instead_of_crashing() {
+    let mut h = app(ClientSettings::default(), None);
+    connect(&mut h);
+    h.state_mut().host.net.answer("/craftcloud/config.json", ok(br#"{"version":"0.1.0","web_apps":false,"public_url":"x"}"#));
+    h.run();
+    h.state_mut().host.net.answer("/api/auth/device/authorize", ok(&fixture("device-authorize.json")));
+    h.run();
+    h.state_mut().server = None;
+    h.state_mut().host.net.clock = 5.0;
+    h.run();
+    assert_eq!(h.state().host.net.sent_to("/api/auth/device/token"), 0, "nothing sent without a server");
+    assert!(matches!(h.state().screen, Screen::Connect(_)));
+    h.get_by_label("No server is chosen. Start again.");
+}
+
 fn signed_in_settings() -> ClientSettings {
     ClientSettings {
         server: "http://127.0.0.1:8093".into(),

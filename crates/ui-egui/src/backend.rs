@@ -1,6 +1,6 @@
 //! How screens reach the network without blocking the frame: they hand requests to a [`Backend`]
 //! and read the answers on a later frame (the launcher's send/poll pattern). The desktop client
-//! sends with `ureq` on a worker thread, the web frontend with `fetch`; tests use [`FakeBackend`].
+//! sends with `ureq` on a worker thread, the web frontend with `fetch`; tests use `FakeBackend`.
 
 use craftcloud_core::http::{HttpRequest, HttpResponse};
 
@@ -142,7 +142,9 @@ impl<K: Clone + PartialEq> Net<K> {
     }
 }
 
-/// A scripted backend for tests: records what was sent, answers with what the test queues.
+/// A scripted backend for tests: records what was sent, answers with what the test queues. Test-only,
+/// so its lookups may panic: a missing request is a failing test.
+#[cfg(test)]
 #[derive(Default)]
 pub struct FakeBackend {
     pub sent: Vec<(u64, HttpRequest)>,
@@ -168,6 +170,7 @@ pub struct FakeBackend {
     pub prefs: std::collections::BTreeMap<String, String>,
 }
 
+#[cfg(test)]
 impl FakeBackend {
     /// Answers the oldest unanswered request whose URL ends with `url_end`.
     pub fn answer(&mut self, url_end: &str, response: NetResult) {
@@ -192,6 +195,7 @@ impl FakeBackend {
     }
 }
 
+#[cfg(test)]
 impl Backend for FakeBackend {
     fn send(&mut self, id: u64, request: HttpRequest) {
         self.sent.push((id, request));
