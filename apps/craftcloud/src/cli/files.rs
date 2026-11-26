@@ -173,23 +173,77 @@ pub fn put(ctx: &Ctx, local: &str, remote_path: Option<&str>, force: bool) -> Re
         path = join(&path, &name);
         existing = remote.stat(&path)?;
     }
-    let replaced = upload_to(&mut remote, file, &path, existing, force)?;
-    let verb = if replaced { "Replaced" } else { "Uploaded" };
-    done(ctx, json!({"path": path, "size": meta.len(), "replaced": replaced}), &format!("{verb} {path}"))
+    let saved = upload_to(&mut remote, file, &path, existing, &Overwrite::from_force(force))?;
+    let verb = if saved.replaced { "Replaced" } else { "Uploaded" };
+    done(ctx, json!({"path": path, "size": meta.len(), "replaced": saved.replaced, "etag": saved.etag}), &format!("{verb} {path}"))
+}
+
+/// What `put` and `save` do when a file is already at the cloud path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Overwrite {
+    /// Refuse (the default): a new file only, written with `If-None-Match: *`.
+    Never,
+    /// Replace whatever version is there (`--force`).
+    Any,
+    /// Replace only this version (`save --if-match`), written with `If-Match`.
+    IfMatch(String),
+}
+
+impl Overwrite {
+    pub fn from_force(force: bool) -> Self {
+        if force { Self::Any } else { Self::Never }
+    }
+}
+
+/// How a write goes, from what is at `path` now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Plan {
+    /// Nothing is there: create it (`If-None-Match: *`).
+    Create,
+    /// Replace the version with this tag (`If-Match`), once the old bytes are kept; `None` when
+    /// the listing gave none.
+    Replace(Option<String>),
+}
+
+/// Decides a write from what is at `path` (`existing`: whether it is a folder, and its version
+/// tag) and what `overwrite` allows. With `--if-match` a file that isn't there, or isn't that
+/// version any more, is a conflict before anything is written or kept.
+pub fn plan_write(path: &str, existing: Option<(bool, Option<&str>)>, overwrite: &Overwrite) -> Result<Plan> {
+    match (existing, overwrite) {
+        (Some((true, _)), _) => Err(CliError::conflict(format!("{path} is a folder"))),
+        (None, Overwrite::IfMatch(_)) => {
+            Err(CliError::conflict(format!("{path} isn't in the cloud any more (moved or deleted elsewhere); nothing was written")))
+        }
+        (None, _) => Ok(Plan::Create),
+        (Some(_), Overwrite::Never) => Err(CliError::conflict(format!("{path} is already there (--force replaces it; the old version is kept)"))),
+        (Some((_, etag)), Overwrite::Any) => Ok(Plan::Replace(etag.map(str::to_owned))),
+        (Some((_, etag)), Overwrite::IfMatch(wanted)) => match etag {
+            Some(now) if crate::cli::output::same_etag(now, wanted) => Ok(Plan::Replace(Some(now.to_owned()))),
+            Some(now) => Err(CliError::conflict(format!("{path} changed in the cloud (it is version {now} now, not {wanted}); nothing was written"))),
+            None => Err(CliError::conflict(format!("{path} is listed without a version tag, so it can't be shown unchanged; nothing was written"))),
+        },
+    }
+}
+
+/// What an upload did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Saved {
+    /// It replaced a file (whose old version was kept).
+    pub replaced: bool,
+    /// The new version's tag, when the server said it.
+    pub etag: Option<String>,
 }
 
 /// Uploads `file` to the cloud file `path` (`existing` is what is there now): refuses to replace
-/// a file without `force`, and snapshots the old version before it does. Whether it replaced one.
-pub(super) fn upload_to(remote: &mut Remote, file: &Path, path: &str, existing: Option<dav::Entry>, force: bool) -> Result<bool> {
+/// a file unless `overwrite` allows it, and snapshots the old version before it does.
+pub(super) fn upload_to(remote: &mut Remote, file: &Path, path: &str, existing: Option<dav::Entry>, overwrite: &Overwrite) -> Result<Saved> {
     let path = path.to_owned();
     let name = split(&path).1.to_owned();
-    let write = match existing {
-        None => Write::Create,
-        Some(e) if e.is_folder => return Err(CliError::conflict(format!("{path} is a folder"))),
-        Some(_) if !force => return Err(CliError::conflict(format!("{path} is already there (--force replaces it; the old version is kept)"))),
-        Some(e) => {
+    let write = match plan_write(&path, existing.as_ref().map(|e| (e.is_folder, e.etag.as_deref())), overwrite)? {
+        Plan::Create => Write::Create,
+        Plan::Replace(etag) => {
             remote.session.snapshot(&path).map_err(CliError::transport)?;
-            Write::Replace { etag: e.etag.unwrap_or_default() }
+            Write::Replace { etag: etag.unwrap_or_default() }
         }
     };
     let req = dav::upload(remote.server(), &path, Vec::new(), &write).header("Content-Type", content_type(&name));
@@ -199,13 +253,13 @@ pub(super) fn upload_to(remote: &mut Remote, file: &Path, path: &str, existing: 
     }
     match dav::parse_upload(&resp).map_err(|e| CliError::api(&e).context(&path))? {
         Uploaded::Conflict => Err(CliError::conflict(format!("{path} changed on the server meanwhile; nothing was written"))),
-        Uploaded::Saved { .. } if matches!(write, Write::Replace { .. }) => Ok(true),
-        Uploaded::Saved { .. } => {
+        Uploaded::Saved { etag } if matches!(write, Write::Replace { .. }) => Ok(Saved { replaced: true, etag }),
+        Uploaded::Saved { etag } => {
             // A new file starts with no history: versions still kept at this path belong to a
             // file that was here before (deleted, or moved without them), and restoring one of
             // them would put that file's bytes in place of this one (T-050). They go for good.
             remote.session.drop_versions(&path).map_err(CliError::transport)?;
-            Ok(false)
+            Ok(Saved { replaced: false, etag })
         }
     }
 }
@@ -339,7 +393,8 @@ pub fn pick<'a>(items: &'a [TrashItem], wanted: &str) -> Result<&'a TrashItem> {
 }
 
 fn trash_item(i: &TrashItem) -> Item {
-    Item { trashed_at: Some(i.trashed_at.clone()), expires_at: Some(i.expires_at.clone()), ..Item::listed(&i.resource) }
+    // A trashed file can't be written to: no version tag.
+    Item { trashed_at: Some(i.trashed_at.clone()), expires_at: Some(i.expires_at.clone()), etag: None, ..Item::listed(&i.resource) }
 }
 
 /// `trash ls|restore|rm|empty`.
@@ -575,7 +630,7 @@ pub fn search(ctx: &Ctx, args: &SearchArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{content_type, pick, target};
+    use super::{Overwrite, Plan, content_type, pick, plan_write, target};
     use craftcloud_core::api::resources::{File, Resource};
     use craftcloud_core::api::trash::TrashItem;
     use std::path::PathBuf;
@@ -624,5 +679,38 @@ mod tests {
         assert_eq!(content_type("notes.MD"), "text/markdown");
         assert_eq!(content_type("report.pdf"), "application/pdf");
         assert_eq!(content_type("noext"), "application/octet-stream");
+    }
+
+    /// What a write does with what is there: never replaces by accident, and `--if-match` only
+    /// replaces the version named, deciding before any old version is kept.
+    #[test]
+    fn writes_replace_only_what_they_may() {
+        let file = |tag: &'static str| Some((false, Some(tag)));
+        let code = |r: crate::cli::output::Result<Plan>| r.unwrap_err().kind.code();
+        let if_match = |t: &str| Overwrite::IfMatch(t.into());
+
+        // Nothing there: created (If-None-Match: *), unless the caller expected a version.
+        assert_eq!(plan_write("a.md", None, &Overwrite::Never).unwrap(), Plan::Create);
+        assert_eq!(plan_write("a.md", None, &Overwrite::Any).unwrap(), Plan::Create);
+        let gone = plan_write("a.md", None, &if_match("\"v1\"")).unwrap_err();
+        assert_eq!((gone.kind.code(), gone.kind.name()), (5, "conflict"), "{}", gone.message);
+
+        // A file there: refused by default, replaced with --force under the listed tag.
+        assert_eq!(code(plan_write("a.md", file("\"v1\""), &Overwrite::Never)), 5);
+        assert_eq!(plan_write("a.md", file("\"v1\""), &Overwrite::Any).unwrap(), Plan::Replace(Some("\"v1\"".into())));
+
+        // --if-match: the same version (quotes or not) is replaced, under the server's own tag.
+        assert_eq!(plan_write("a.md", file("\"v1\""), &if_match("\"v1\"")).unwrap(), Plan::Replace(Some("\"v1\"".into())));
+        assert_eq!(plan_write("a.md", file("\"v1\""), &if_match("v1")).unwrap(), Plan::Replace(Some("\"v1\"".into())));
+        // Another version, or one without a tag: a conflict, nothing written or kept.
+        let changed = plan_write("a.md", file("\"v2\""), &if_match("\"v1\"")).unwrap_err();
+        assert_eq!((changed.kind.code(), changed.kind.name()), (5, "conflict"));
+        assert!(changed.message.contains("changed in the cloud") && changed.message.contains("nothing was written"), "{}", changed.message);
+        assert_eq!(code(plan_write("a.md", Some((false, None)), &if_match("\"v1\""))), 5);
+
+        // A folder is never written over.
+        for o in [Overwrite::Never, Overwrite::Any, if_match("\"v1\"")] {
+            assert_eq!(code(plan_write("a", Some((true, Some("\"d\""))), &o)), 5);
+        }
     }
 }

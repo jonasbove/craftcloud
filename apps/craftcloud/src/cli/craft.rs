@@ -177,11 +177,26 @@ pub struct SaveArgs<'a> {
     pub app: Option<&'a str>,
     pub force: bool,
     pub wait: bool,
+    /// Replace only this version of the cloud file (`--if-match`).
+    pub if_match: Option<&'a str>,
 }
 
-/// `save <file> [--to] [--app] [--force] [--wait]`: into the sync folder for the running client
-/// to upload; with no client running (or a folder it doesn't sync), straight to the server.
+/// What `save` may do to a file already in the cloud: `--if-match` names the one version it may
+/// replace (an empty tag is a usage error), `--force` any, neither none.
+pub fn save_overwrite(force: bool, if_match: Option<&str>) -> Result<files::Overwrite> {
+    match if_match {
+        Some(tag) if tag.trim().is_empty() => Err(CliError::usage("--if-match needs the version tag from `craftcloud files --json` (its \"etag\")")),
+        Some(tag) => Ok(files::Overwrite::IfMatch(tag.trim().to_owned())),
+        None => Ok(files::Overwrite::from_force(force)),
+    }
+}
+
+/// `save <file> [--to] [--app] [--force | --if-match ETAG] [--wait]`: into the sync folder for
+/// the running client to upload; with no client running (or a folder it doesn't sync), straight
+/// to the server. `--if-match` always goes straight to the server: only the server can say which
+/// version it has.
 pub fn save(ctx: &Ctx, args: &SaveArgs) -> Result<()> {
+    let overwrite = save_overwrite(args.force, args.if_match)?;
     let file = Path::new(args.local);
     let meta = std::fs::metadata(file).map_err(|e| CliError::not_found(format!("{}: {e}", args.local)))?;
     if !meta.is_file() {
@@ -189,8 +204,9 @@ pub fn save(ctx: &Ctx, args: &SaveArgs) -> Result<()> {
     }
     let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).ok_or_else(|| CliError::usage("no file name"))?;
     let path = save_target(&name, args.to, pick_app(args.app)?)?;
+    let guarded = matches!(overwrite, files::Overwrite::IfMatch(_));
 
-    if let Some((dir, dest)) = client_target(ctx, &path) {
+    if let Some((dir, dest)) = client_target(ctx, &path).filter(|_| !guarded) {
         let replaced = place(file, &dest, &path, args.force)?;
         let mut state = "queued";
         if args.wait {
@@ -204,24 +220,29 @@ pub fn save(ctx: &Ctx, args: &SaveArgs) -> Result<()> {
         let said = if args.wait { format!("Saved {path} (uploaded)") } else { format!("Saved {path} (the desktop client uploads it)") };
         return done(
             ctx,
-            json!({"path": path, "local_path": local, "via": "client", "state": state, "replaced": replaced, "size": meta.len()}),
+            json!({"path": path, "local_path": local, "via": "client", "state": state, "replaced": replaced, "size": meta.len(), "etag": null}),
             &said,
         );
     }
 
-    let replaced = if ctx.is_webdav() {
-        super::webdav::save_direct(ctx, file, &path, args.force)?
+    let saved = if ctx.is_webdav() {
+        super::webdav::save_direct(ctx, file, &path, &overwrite)?
     } else {
         let mut remote = ctx.remote()?;
         let folder = split(&path).0.to_owned();
-        if !folder.is_empty() {
+        // With --if-match the file must be there, so its folder is too; none is made.
+        if !folder.is_empty() && !guarded {
             files::make_folder(&mut remote, &folder, true)?;
         }
         let existing = remote.stat(&path)?;
-        files::upload_to(&mut remote, file, &path, existing, args.force)?
+        files::upload_to(&mut remote, file, &path, existing, &overwrite)?
     };
-    let said = format!("{} {path}", if replaced { "Replaced" } else { "Uploaded" });
-    done(ctx, json!({"path": path, "local_path": null, "via": "server", "state": "uploaded", "replaced": replaced, "size": meta.len()}), &said)
+    let said = format!("{} {path}", if saved.replaced { "Replaced" } else { "Uploaded" });
+    done(
+        ctx,
+        json!({"path": path, "local_path": null, "via": "server", "state": "uploaded", "replaced": saved.replaced, "size": meta.len(), "etag": saved.etag}),
+        &said,
+    )
 }
 
 fn done(ctx: &Ctx, value: serde_json::Value, human: &str) -> Result<()> {
@@ -304,7 +325,8 @@ fn wait_uploaded(dir: &Path, path: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{inside, keep_for, locate_all, pick_app, place, save_target};
+    use super::{inside, keep_for, locate_all, pick_app, place, save_overwrite, save_target};
+    use crate::cli::files::Overwrite;
     use crate::cli::output::Item;
     use craftcloud_core::sync::SyncPlan;
     use craftcloud_native::local_files::LocalView;
@@ -325,6 +347,7 @@ mod tests {
             trashed_at: None,
             expires_at: None,
             score: None,
+            etag: None,
         }
     }
 
@@ -397,5 +420,13 @@ mod tests {
         let json = serde_json::to_value(&items[0]).unwrap();
         assert!(json.as_object().unwrap().contains_key("local_path") && json["local_path"].is_null());
         assert!(json.get("sync").is_none());
+    }
+
+    #[test]
+    fn save_replaces_by_force_or_by_version() {
+        assert_eq!(save_overwrite(false, None).unwrap(), Overwrite::Never, "the default never replaces");
+        assert_eq!(save_overwrite(true, None).unwrap(), Overwrite::Any);
+        assert_eq!(save_overwrite(false, Some(" \"v1\" ")).unwrap(), Overwrite::IfMatch("\"v1\"".into()));
+        assert_eq!(save_overwrite(false, Some("  ")).unwrap_err().kind.code(), 2, "an empty tag is a usage error");
     }
 }

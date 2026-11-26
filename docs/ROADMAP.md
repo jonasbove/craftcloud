@@ -33,7 +33,7 @@ backup of anything you sync with it.
 | Web file browser (upload, download, rename, move, delete, trash, versions, details, recent, starred, search) | done | [design-notes/pass-2.md](design-notes/pass-2.md) |
 | Share links | done: public share page, CLI, the web's "Share link" sheet and "Your share links" page | [CLI.md › Share links](CLI.md#share-links) |
 | Admin (users, server settings, Craft web apps on or off) | done, on the web and in the CLI | [CLI.md](CLI.md#server-administration-owners-and-admins) |
-| Command line | done; on Windows through `craftcloud.com` (untried on Windows); `server check` says what the server guarantees the sync; behind `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, `login --kind webdav|nextcloud` and the file and sync commands on any other WebDAV server or a Nextcloud (its own trash and versions) | [CLI.md](CLI.md) |
+| Command line | done; `save --if-match` and `etag` in listings for cloud backends; on Windows through `craftcloud.com` (untried on Windows); `server check` says what the server guarantees the sync; behind `CRAFTCLOUD_EXPERIMENTAL_WEBDAV=1`, `login --kind webdav|nextcloud` and the file and sync commands on any other WebDAV server or a Nextcloud (its own trash and versions) | [CLI.md](CLI.md) |
 | Craft apps through the sync folder | done (every app) | [CRAFT-INTEGRATION.md § 1](CRAFT-INTEGRATION.md#1-the-sync-folder-works-today-every-app) |
 | `craftcloud://` deep links | done on Linux and Windows; macOS needs an Apple Event handler | [CRAFT-INTEGRATION.md § 2](CRAFT-INTEGRATION.md#2-deep-links-craftcloud) |
 | Integration contract (`craftcloud apps`, `files`, `save`) | done; desktop-only apps (`web = false`) listed too | [CRAFT-INTEGRATION.md § 3](CRAFT-INTEGRATION.md#3-the-integration-contract-the-craftcloud-command) |
@@ -116,6 +116,15 @@ In the order planned so far; detail in [STATUS.md](STATUS.md#known-limits) and t
 
 ## Progress log
 
+- 2026-11-26: CLI: what a cloud backend that runs `craftcloud … --json` needs. Files listed from the server (`ls`,
+  `files` without a client, `starred`, `recent`, `search`) carry their version tag `etag` in its HTTP form, from the
+  listing already made (OxiCloud computes the REST and WebDAV tags with one formula). `save --if-match ETAG` writes
+  only over that version: straight to the server, the old version kept first, `If-Match` on the write; a file that
+  changed, moved or went meanwhile is exit 5 (`conflict`) with nothing written or kept. `save` and `put` answer with
+  the new `etag`. `save` without `--force` already creates only (`If-None-Match: *`), and `get PATH -` already
+  streams the bytes alone to stdout; both are now documented as the contract (CRAFT-INTEGRATION.md § 3.5). Tests:
+  the write decision (`files::plan_write`), the tag forms and JSON shape, the flags, and the whole round trip in
+  `cli_live.rs` (CI's `live` job).
 - 2026-11-26: Sync: a finished download is put in place through craft-libs' `craft-atomic`. A rename another
   program holds up for a moment (on Windows, a virus scanner reading the new part file) is tried again, with the
   last look at the file here before every try, so a file saved here meanwhile is never overwritten; before, the

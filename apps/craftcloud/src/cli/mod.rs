@@ -145,7 +145,7 @@ pub enum Cmd {
     /// Save a file into CraftCloud: into the sync folder for the desktop client to upload, or,
     /// with no client running, straight to the server.
     #[command(
-        after_help = "Examples:\n  craftcloud save notes.md                   into WordCraft/ (the app that opens it)\n  craftcloud save q3.xlsx --to Documents/Q3 --wait --json\n  craftcloud save logo.png --app figcraft --force"
+        after_help = "Examples:\n  craftcloud save notes.md                   into WordCraft/ (the app that opens it)\n  craftcloud save q3.xlsx --to Documents/Q3 --wait --json\n  craftcloud save logo.png --app figcraft --force\n  craftcloud save notes.md --to Documents --if-match '\"9ff164e6f5312e5a-1794606820\"' --json\n\nWithout --force or --if-match a save never replaces a file that is there (exit code 5)."
     )]
     Save {
         /// The local file to save.
@@ -159,6 +159,11 @@ pub enum Cmd {
         /// Replace a file that is already there (its old version is kept, see `versions`).
         #[arg(long, short)]
         force: bool,
+        /// Replace the cloud file only if it is still this version (its `etag` from `files --json`
+        /// or `ls --json`); else exit code 5 and nothing is written. Goes straight to the server,
+        /// even with the desktop client running; the old version is kept.
+        #[arg(long, value_name = "ETAG", conflicts_with = "force")]
+        if_match: Option<String>,
         /// Wait until the desktop client has uploaded it.
         #[arg(long)]
         wait: bool,
@@ -563,8 +568,8 @@ fn run(ctx: &mut Ctx, command: Cmd) -> Result<()> {
         Cmd::Ls { path, all, app } => files::ls(ctx, &path, all, app.as_deref()),
         Cmd::Apps => craft::apps(ctx),
         Cmd::Files { app, within } => craft::files(ctx, app.as_deref(), within.as_deref()),
-        Cmd::Save { local, to, app, force, wait } => {
-            craft::save(ctx, &craft::SaveArgs { local: &local, to: to.as_deref(), app: app.as_deref(), force, wait })
+        Cmd::Save { local, to, app, force, if_match, wait } => {
+            craft::save(ctx, &craft::SaveArgs { local: &local, to: to.as_deref(), app: app.as_deref(), force, wait, if_match: if_match.as_deref() })
         }
         Cmd::Get { remote, local, force } => files::get(ctx, &remote, local.as_deref(), force),
         Cmd::Put { local, remote, force } => files::put(ctx, &local, remote.as_deref(), force),
